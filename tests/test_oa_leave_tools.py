@@ -166,7 +166,10 @@ class SignContextTest(unittest.TestCase):
         import hmac as hmac_module
 
         with patch("service.enterprise_hub_client._secret", return_value="unit-test-secret"):
-            headers = hub.sign_context(1, 2, ["a.b"], "op", is_org_admin=True, is_team_admin=False)
+            headers = hub.sign_context(
+                1, 2, ["a.b"], "op", is_org_admin=True, is_team_admin=False,
+                method="post", path="/oa/leave/requests", body_sha256="deadbeef",
+            )
         payload = headers["X-Context"]
         expected_sig = hmac_module.new(
             b"unit-test-secret", payload.encode("utf-8"), hashlib.sha256
@@ -182,12 +185,19 @@ class SignContextTest(unittest.TestCase):
         self.assertEqual(decoded["is_team_admin"], False)
         self.assertIn("nonce", decoded)
         self.assertIn("timestamp", decoded)
+        # P1-8（第四轮审计）：method/path/body_sha256 现在也在签名覆盖范围内，
+        # 不能只签 X-Context 本身——不然截获一份合法头之后能换个请求打过去。
+        self.assertEqual(decoded["method"], "POST")  # 统一转大写，跟 HTTP 方法惯例一致
+        self.assertEqual(decoded["path"], "/oa/leave/requests")
+        self.assertEqual(decoded["body_sha256"], "deadbeef")
 
     def test_sign_context_defaults_admin_flags_to_false(self):
         import base64
 
         with patch("service.enterprise_hub_client._secret", return_value="unit-test-secret"):
-            headers = hub.sign_context(1, 2, ["a.b"], "op")
+            headers = hub.sign_context(
+                1, 2, ["a.b"], "op", method="GET", path="/oa/leave/balance", body_sha256="e3b0c4",
+            )
         decoded = json.loads(base64.b64decode(headers["X-Context"]))
         self.assertEqual(decoded["is_org_admin"], False)
         self.assertEqual(decoded["is_team_admin"], False)

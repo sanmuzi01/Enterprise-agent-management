@@ -1379,3 +1379,67 @@ Java 侧 Flyway 迁移和业务请求处理仍在同一个进程生命周期内�
 也没有做——这是比账号最小权限更大的架构改动（需要引入消息队列或 WAL 式的
 写入保证"业务成功但审计写入失败"不会发生），评估后判断超出这一轮的合理范围，
 留作后续单独评估。
+
+## 28. 第四轮审计 P1：Java 集成请求没有完整绑定到操作内容（2026-09-28）
+
+### P1-8：HMAC 只签 X-Context，幂等处理"先查再执行"
+
+两个独立的并发/完整性缺口，都在 FastAPI ↔ Java 企业业务中心这条签名 HTTP 调用链上。
+
+**问题1：签名不覆盖方法/URL/请求体**。`HmacSignatureVerifier` 之前只对
+`X-Context`（base64 后的 JSON）本身算 HMAC，不包含 HTTP 方法、URL、请求体；
+`RequestContext` 里虽然带着 `operation` 字段，但从没有代码真的拿它跟实际调用
+的接口做匹配（纯摆设）。截获一份合法的 `X-Context`/`X-Signature` 之后，
+理论上能在到达服务端前换个方法/路径打过去，或者直接替换请求体，只要签名
+本身没变、scope 恰好满足目标接口就能蒙混过关——不需要知道共享密钥。
+
+修复：`RequestContext` 新增 `method`/`path`/`body_sha256` 三个字段，FastAPI
+签发时把这次请求真正的方法、路径（含 query string）、请求体 SHA-256 都签
+进 `X-Context`（整个 JSON 都在 HMAC 覆盖范围内，这三个字段也就跟着被保护）。
+Java 侧 `SignedRequestContextFilter` 收到请求后，逐项核对这三个字段是不是
+跟真实收到的请求一致，对不上直接 401。
+
+请求体核对要求 Java 侧能在 Controller 反序列化之前先读一遍原始字节算哈希，
+读完还要让下游 `@RequestBody` 正常拿到——原生 `HttpServletRequest` 的输入流
+只能读一次，新增 `CachedBodyHttpServletRequest`（构造时整个缓存进内存，
+`getInputStream()`/`getReader()` 每次调用都返回基于缓存的新流）解决。
+
+FastAPI 侧 `service/enterprise_hub_client.py::call()` 必须自己把请求体序列化
+成确定的字节串，再用这份完全一样的字节串去算哈希、签名、发送——不能用
+`requests` 的 `json=` 参数让它自己再序列化一遍（哪怕语义相同，字段顺序不
+保证一样，body_sha256 就会跟 Java 侧重新算的对不上，所有带请求体的合法请求
+都会被拒）。改成手动 `json.dumps(...)` 一次、算哈希、`data=` 原样发送。
+
+**问题2：幂等处理"先查再执行"**，跟第25节审批去重是同一类并发缺口。
+`IdempotencyService.execute` 之前是"查有没有记录→没有就执行→执行完再插入"，
+两个并发请求可能都查到"没有"，都各自执行一遍——外部 SAP/CRM 调用因此可能
+被打两次。修复：改成"抢占式插入占位记录"，`idempotency_record` 新增
+`completed` 列（迁移 `V4__idempotency_completed_flag.sql`）区分"占位"和
+"已完成"；请求一进来先插一行 `completed=false` 的占位记录，主键唯一约束
+保证两个并发请求只有一个能插入成功，插不进去的直接返回 409（"重复提交，
+稍后重试"），不会跟着往下执行业务逻辑——不做"阻塞轮询等对方结果"（那需要
+独立事务+轮询+超时，复杂度换来的只是极短时间内的体验优化，不是正确性
+问题，正确性已经靠抢占式插入保证了）。
+
+**真实验证**（不是只改代码就当作修好）：
+- Python：`tests/test_enterprise_hub_client.py::CallSignsRealRequestBytesTest`
+  直接 mock `requests.request`，拦下真正要发出去的 `data=` 字节，反过来验证
+  `X-Context` 里签的 `body_sha256` 跟这份字节完全一致，不是另外算的一份。
+- Java：`Leave`/`Procurement`/`Crm` 三个 `ControllerIntegrationTest` 各自新增
+  `tamperedBodyAfterSigning_returns401`（签完名之后换请求体，必须被拒绝，
+  用数据库状态确认没有被当成合法请求处理，不只看 HTTP 状态码——POST+401
+  会撞一个已知的 JDK `HttpURLConnection` 限制，`ResourceAccessException` 也
+  算通过，见测试内注释）和 `LeaveControllerIntegrationTest::
+  replayingSignatureAgainstDifferentPath_returns401`（对 A 接口签的有效签名
+  拿去打 B 接口，即使 scope 恰好也满足，必须因为 method/path 不匹配被拒绝）。
+  这次改动同时要求全部 66 处已有的 `signedHeaders` 测试调用点改造成传入
+  真实的 method/path/body（之前测试头是独立于请求构造的，现在必须绑定），
+  改造后全量 40 个 Java 测试通过（含新增的 6 个）。
+- 幂等并发修复复用了跟第25节一样的真实并发测试手法（`concurrentSameIdempotencyKey_
+  onlyOneSucceeds`，见第25节旁边补的 `LeaveControllerIntegrationTest` 测试，
+  这次跟 HMAC 改动一起验证）。
+
+全量 40 个 Java 测试 + 880 个 Python 测试通过，`release_check.py` 全量跑通。
+
+至此第四轮审计报告里的全部条目（2 个 P0 + 全部 5 个可独立处理的 P1）都已完成。
+剩余 P2（测试资源清理、覆盖率、README/文档过期内容同步）见文档末尾。

@@ -5,7 +5,10 @@
 `agent_type='department'`），没有部门 Agent 上下文时才退回"用户自己在职的
 第一个部门"（旧行为，作为兜底保留）。修复记录见 docs/enterprise-rbac-plan.md。
 """
+import hashlib
+import json
 import unittest
+from unittest.mock import Mock, patch
 
 from models.init_db import Agent, SessionLocal
 from service import enterprise_hub_client as hub
@@ -13,6 +16,55 @@ from tests import _route_client as rc
 from tests.test_enterprise_access import _add_org_member, _add_team_member, _create_org, _create_team
 
 _AVAILABLE, _WHY = rc.route_tests_available()
+
+
+class CallSignsRealRequestBytesTest(unittest.TestCase):
+    """P1-8（第四轮审计）：`call()` 签名里的 body_sha256 必须是真正发到线上的那份
+    字节的哈希，不能是另外序列化的一份——哪怕语义相同，字段顺序不一样字节就不
+    一样，Java 侧重新算的哈希就对不上，会把所有带请求体的合法请求都拒了。这里
+    直接 mock `requests.request`，拦下真正发出去的 `data=` 参数，反过来验证
+    X-Context 里签的 body_sha256/method/path 是不是跟它一致。"""
+
+    def _do_call(self, method, path, json_body):
+        captured = {}
+
+        def fake_request(m, url, headers=None, data=None, timeout=None):
+            captured["method"] = m
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["data"] = data
+            resp = Mock()
+            resp.status_code = 200
+            resp.content = b'{"ok": true}'
+            resp.json.return_value = {"ok": True}
+            return resp
+
+        with patch("service.enterprise_hub_client._secret", return_value="unit-test-secret"), \
+                patch("requests.request", side_effect=fake_request):
+            hub.call(method, path, 1, 2, ["oa.leave.write"], "op", json_body=json_body)
+        return captured
+
+    def test_body_sha256_matches_actual_bytes_sent(self):
+        import base64
+
+        captured = self._do_call("POST", "/oa/leave/requests", {"reason": "测试", "days": 2})
+        expected_hash = hashlib.sha256(captured["data"]).hexdigest()
+
+        context = json.loads(base64.b64decode(captured["headers"]["X-Context"]))
+        self.assertEqual(context["body_sha256"], expected_hash)
+        self.assertEqual(context["method"], "POST")
+        self.assertEqual(context["path"], "/oa/leave/requests")
+        # data= 发的必须是 json_body 序列化后的原始字节，不是 requests 自己另外
+        # 序列化的一份（用 json= 参数会绕开我们控制的那份字节，见 call() 的实现）。
+        self.assertEqual(json.loads(captured["data"]), {"reason": "测试", "days": 2})
+
+    def test_get_request_with_no_body_hashes_empty_bytes(self):
+        import base64
+
+        captured = self._do_call("GET", "/oa/leave/balance", None)
+        context = json.loads(base64.b64decode(captured["headers"]["X-Context"]))
+        self.assertEqual(context["body_sha256"], hashlib.sha256(b"").hexdigest())
+        self.assertEqual(captured["data"], b"")
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")

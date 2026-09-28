@@ -51,12 +51,22 @@ def sign_context(
         *,
         is_org_admin: bool = False,
         is_team_admin: bool = False,
+        method: str,
+        path: str,
+        body_sha256: str,
 ) -> Dict[str, str]:
     """`is_org_admin`/`is_team_admin` 必须来自 `resolve_caller_context()`（服务端按
     user_id 查 enterprise_role 算出来的），不能由调用方随便传 True——这两个布尔值是
     企业业务中心判断"能不能跨部门审批/查看"的唯一依据，Java 那边自己没有
     organization_members/team_members 的数据源，只信这里签的值（docs/
-    enterprise-business-hub-plan.md 第16节，修复"工具能直接签发审批权限"那个问题）。"""
+    enterprise-business-hub-plan.md 第16节，修复"工具能直接签发审批权限"那个问题）。
+
+    `method`/`path`/`body_sha256`（第四轮审计 P1-8）：之前只签 `X-Context` 本身，
+    不含 HTTP 方法/URL/请求体，截获一份合法的头之后理论上能在到达服务端前换个
+    方法/路径打过去，或者替换请求体，只要 scope 凑巧满足目标接口就能蒙混过关。
+    这三个字段现在也在 `X-Context` 里，一起被下面的 HMAC 签了，Java 侧
+    `SignedRequestContextFilter` 会拿它们跟真实收到的请求逐项核对——调用方必须
+    传真实要发的 method/path 和请求体的 sha256，不能随便填，见 `call()`。"""
     context = {
         "user_id": user_id,
         "team_id": team_id,
@@ -67,6 +77,9 @@ def sign_context(
         "trace_id": str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "nonce": uuid.uuid4().hex,
+        "method": method.upper(),
+        "path": path,
+        "body_sha256": body_sha256,
     }
     context_b64 = base64.b64encode(json.dumps(context).encode("utf-8")).decode("ascii")
     signature = hmac.new(_secret().encode("utf-8"), context_b64.encode("utf-8"), hashlib.sha256).hexdigest()
@@ -144,9 +157,17 @@ def call(
         timeout_default: float = 10.0,
 ) -> Any:
     """签名 + 请求 + 韧性封装；4xx/5xx 统一翻成 EnterpriseHubError，调用方
-    （Agent 工具）负责把它转成给用户看的自然语言，不要在这里假设调用场景。"""
+    （Agent 工具）负责把它转成给用户看的自然语言，不要在这里假设调用场景。
+
+    请求体必须自己序列化成确定的字节串再签名、再原样发出去（`data=body_bytes`，
+    不能用 `requests` 的 `json=` 参数让它自己序列化）——如果签名时算的哈希和
+    实际发送的字节不是同一份序列化结果（哪怕只是字段顺序不同），Java 侧重新
+    计算的 body_sha256 就对不上，每个带请求体的调用都会被拒。"""
+    body_bytes = b"" if json_body is None else json.dumps(json_body, ensure_ascii=False).encode("utf-8")
+    body_sha256 = hashlib.sha256(body_bytes).hexdigest()
     headers = sign_context(
         user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin,
+        method=method, path=path, body_sha256=body_sha256,
     )
     headers["Content-Type"] = "application/json"
     if idempotency_key:
@@ -154,7 +175,7 @@ def call(
 
     def sender(timeout: float) -> requests.Response:
         return requests.request(
-            method, f"{_base_url()}{path}", headers=headers, json=json_body, timeout=timeout,
+            method, f"{_base_url()}{path}", headers=headers, data=body_bytes, timeout=timeout,
         )
 
     response = request_with_retry(
