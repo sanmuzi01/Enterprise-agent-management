@@ -268,7 +268,12 @@ class BindingMergeTest(unittest.TestCase):
         skill_loader.invalidate_skill_config()
 
     def _merge(self):
-        with patch.object(binding, "dao_list_by_agent", return_value=[self.skill]):
+        # get_agent_skills_merged_config 现在会查 Agent 的 owner 来判断"这是不是作者
+        # 自己绑自己的 Skill"（P0：别人的共享 Skill 被作者改回非 published 后运行时
+        # 要跟着停用，见 service/skills_core/binding.py）——这里测的是自己绑自己，
+        # 伪造一个 owner 跟 self.skill.user_id 一致的 Agent，不受那条新规则影响。
+        with patch.object(binding, "dao_list_by_agent", return_value=[self.skill]), \
+                patch.object(binding, "get_agent_by_id", return_value=SimpleNamespace(user_id=self.skill.user_id)):
             return binding.get_agent_skills_merged_config(SimpleNamespace(), 1)
 
     def test_sandbox_on_adds_tool_bundle_and_instructions(self):

@@ -1123,3 +1123,80 @@ engine/session（`AUDIT_DB_USER`/`AUDIT_DB_PASSWORD`，留空退回主账号
 里的 `_audit`）没有做同样的账号隔离——这次范围严格对应第21节承诺的
 `audit_event` 表，`kb_audit_log` 是另一张表、另一个模块，需要单独评估要不要照
 同样的模式做，不在这次顺手带上。
+
+## 24. 第四轮审计 P0：Agent/Skill 生命周期强制在运行时被绕过（2026-09-28）
+
+用户提交的第四份审计报告点出两个 P0：发布生命周期字段只在"入口"查过一次，
+没有在"每次真正使用"时复查，导致 draft/reviewing/retired 的 Agent/Skill 在
+某些路径下仍然能被继续使用。
+
+### P0-1：部门/企业共享 Agent 的生命周期检查可以被绕过
+
+`service/access_control.py::get_usable_agent`（`chat_service.py`/
+`agent_pipeline_service.py`/`memory_async_service.py`/评估路由等 16 处调用方的
+唯一权限入口）之前只查"是不是同部门/同企业在职成员"，完全没查
+`lifecycle_status`。生命周期检查只在 `central_router.py::resolve_target_agent`
+（自动路由挑选目标 Agent 那条路径）里做了——`chat_service.py` 的
+`POST /chat/{agent_id}` 直接拿 `resolve_target_agent_async` 算出来的 `agent_id`
+去调 `get_usable_agent_async`，如果知道一个还在 draft/reviewing/retired 的部门
+Agent 的 ID，企业成员可以绕开路由直接聊。
+
+修复收口到 `get_usable_agent`/`get_usable_agent_async` 这一个函数（两处，同步/
+异步各一份）：作者自己（`agent.user_id == user_id`）任何状态都能用，唯独
+`retired` 例外（跟 Skill 的 `can_bind_skill` 是同一个道理，草稿要留给作者自己
+测）；部门/企业共享的那两条来源（非作者）现在必须 `lifecycle_status in
+BINDABLE_BY_OTHERS_STATUSES`（即 `published`）才放行。因为所有 16 个调用方
+共用这一个函数，且 `chat_service.py` 每次收到消息都会重新调用它（不是只在
+创建会话那一刻查一次），"已有会话继续对话时也要重新校验"这条也顺带自动满足，
+不需要在 `central_router.py`/`chat_service.py` 再加代码。
+
+`tests/test_access_control_agent_skill_scope.py` 里部门/企业共享的测试 Agent
+之前默认 `lifecycle_status=draft`（字段默认值），补上 `lifecycle_status=
+"published"` 才符合新规则；新增两个测试：非作者在 Agent 被改回
+draft/reviewing/retired 后立刻不能用，作者自己在除 retired 外任何状态都能用。
+
+### P0-2：Skill 绑定后作者改回未发布，运行时仍会继续加载
+
+`service/skills_core/binding.py::get_agent_skills_merged_config`（`ToolExecutor`
+唯一的运行时入口）之前的注释写着"绑定时的 `can_bind_skill` 已经保证了别人绑到
+的一定是已发布状态，这里不重复判断"——这个假设是错的：`can_bind_skill` 只在
+"绑定那一刻"检查过一次，之后作者把 Skill 改回 draft/reviewing（比如发现问题
+想先撤回），已经绑定过它的别人的 Agent 会继续拿旧配置跑下去，运行时从来没有
+重新校验过。
+
+修复：`get_agent_skills_merged_config` 现在会查一次绑定它的 Agent 的 owner
+（`models.agent_dao.get_agent_by_id`），逐条 Skill 判断"是不是 Agent owner
+自己的 Skill"——是，除 retired 外任何状态照常加载（自己拿草稿喂自己的测试
+Agent，这条豁免本来就有）；不是（绑定的是别人分享/发布过的 Skill），现在必须
+仍然是 `published` 才继续加载，否则跳过（不强制解绑，后台随时能重新发布）。
+
+同时补了审计报告点出的另一半："已发布 Skill 的配置可以直接原地修改，修改会
+立即影响所有使用者，没有重新审核过程"——`service/skills_core/crud.py::
+update_skill_with_config` 现在只要满足"这次请求带了 `config_fields`（改
+system_prompt/tool_names/permissions）" + "Skill 当前是 published" + "请求里没
+有一次主动的、跟当前值不同的 `lifecycle_status` 变更"，就会把 `fields` 里的
+`lifecycle_status` 强制改成 `draft`，跟其他基础字段的改动走同一次原子更新
+（同一次 `row_version` 递增）。判断"是不是主动决定"不能只看请求里有没有带
+`lifecycle_status` 这个键——前端编辑弹窗（上一轮加的发布状态下拉）每次保存都
+会带上当前选中的值，哪怕没碰过那个下拉框；只有请求里的值跟数据库现有值
+**不一样**，才算是管理员自己主动做的状态决定（比如同时把它改成 retired），
+此时才不覆盖。编辑弹窗里加了一行静态提示告诉管理员这条规则的存在，不然会
+很困惑"为什么改了内容状态就自动变回草稿了"。
+
+真实 DB 测试（新增，均为真实 MySQL，不是纯 mock）：
+- `tests/test_skill_lifecycle.py::NonOwnerSharedSkillDemotedAtRuntimeTest`：
+  一个 Skill 被作者绑到自己的 Agent、也被另一个用户绑到他们自己的 Agent（绑定
+  那一刻是 published）；作者改回 draft/reviewing 后，非作者的 Agent 立刻从
+  merged config 里丢了这个 Skill，作者自己的 Agent 完全不受影响。
+- `tests/test_skill_lifecycle.py::PublishedSkillAutoDemotesOnConfigEditTest`：
+  改一个 published Skill 的 system_prompt 会自动打回 draft；同一次请求里显式
+  改成 retired 会尊重这个主动选择，不覆盖；模拟前端每次都重发当前状态值的
+  场景（带的还是 published）确认仍然会打回 draft；只改名字不碰运行配置不触发。
+
+改动波及 4 个既有测试文件（`test_skill_sandbox.py`/`test_skill_script_policy.py`/
+`test_skill_script_report.py`）——它们用 `SimpleNamespace` 假 `db` +
+`patch.object(binding, "dao_list_by_agent", ...)` 只 mock 了 Skill 列表，没
+mock 新增的 `get_agent_by_id` 查询，补上匹配的假 Agent owner（跟被测 Skill的
+`user_id` 一致，还原"自己绑自己"场景，不影响这些测试原本要测的沙箱/脚本逻辑）
+后恢复正常。全量 867 个测试（867 = 860 基线 + 本轮新增 27 个，减掉个别合并）
+全部通过。

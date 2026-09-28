@@ -31,14 +31,23 @@ def get_usable_agent(db, user_id: int, agent_id: int) -> Optional[Agent]:
 
     只放宽"用"，不放宽"改"：改名/删除/绑定知识库空间/绑定 Skill 这些配置类操作继续用
     `get_owned_agent`，不要在这些地方换成这个函数。
+
+    发布生命周期（跟 `can_bind_skill` 是同一个道理）：作者自己任何状态都能用（除
+    retired——退役就是彻底停用，哪怕是作者自己也不行），部门/企业共享的那两条来源
+    只认 `published`。这里是唯一入口：所有调用方（聊天/记忆/会话/流水线/评估/RAG）
+    都走这个函数，不需要各自再查一次 `lifecycle_status`；且每次聊天请求都会重新
+    调用这个函数，所以已有会话继续对话时也会重新校验，不是只在创建会话那一刻查一次。
     """
     from models.enterprise_dao import is_team_member_of_team, is_org_member
+    from service.lifecycle import BINDABLE_BY_OTHERS_STATUSES, RETIRED_STATUS
 
     agent = get_agent_by_id(db, agent_id)
     if not agent:
         return None
     if agent.user_id == user_id:
-        return agent
+        return None if agent.lifecycle_status == RETIRED_STATUS else agent
+    if agent.lifecycle_status not in BINDABLE_BY_OTHERS_STATUSES:
+        return None
     if agent.scope_type == "department" and is_team_member_of_team(db, user_id, agent.team_id):
         return agent
     if agent.scope_type == "enterprise" and is_org_member(db, user_id):
@@ -152,12 +161,15 @@ async def get_usable_agent_async(db, user_id: int, agent_id: int) -> Optional[Ag
     """`get_usable_agent` 的异步版，语义完全一致（见其 docstring）。"""
     from models.agent_async_dao import get_agent_by_id_async
     from models.enterprise_dao import is_team_member_of_team_async, is_org_member_async
+    from service.lifecycle import BINDABLE_BY_OTHERS_STATUSES, RETIRED_STATUS
 
     agent = await get_agent_by_id_async(db, agent_id)
     if not agent:
         return None
     if agent.user_id == user_id:
-        return agent
+        return None if agent.lifecycle_status == RETIRED_STATUS else agent
+    if agent.lifecycle_status not in BINDABLE_BY_OTHERS_STATUSES:
+        return None
     if agent.scope_type == "department" and await is_team_member_of_team_async(db, user_id, agent.team_id):
         return agent
     if agent.scope_type == "enterprise" and await is_org_member_async(db, user_id):

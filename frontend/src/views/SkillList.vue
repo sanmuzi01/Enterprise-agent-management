@@ -582,6 +582,11 @@
             <p v-if="isPublicBool && form.lifecycle_status !== 'published'" class="mt-2 text-xs text-amber-600">
               提示：「公开给其他用户使用」已勾选，但状态不是「已发布」，其他用户暂时还看不到它。
             </p>
+            <p v-if="editing?.lifecycle_status === 'published'" class="mt-2 text-xs text-slate-400">
+              这个能力当前已发布。如果这次保存改了下面的工具/说明/权限内容，且没有手动
+              把发布状态改成别的值，会自动退回「草稿」——已经绑定它的其他人的助手会
+              停止使用改动前的版本，需要你确认无误后再重新选「已发布」。
+            </p>
           </div>
         </main>
 

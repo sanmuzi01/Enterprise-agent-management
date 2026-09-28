@@ -163,8 +163,12 @@ class StoreInstallKeepsScriptsTest(PolicyTestBase):
         self.assertEqual(cfg["origin"], "official")
         self.assertTrue(os.path.isfile(os.path.join(cfg["scripts_root"], "scripts", "a.py")))
 
+        # get_agent_skills_merged_config 现在会查 Agent owner 判断"是不是作者自己绑
+        # 自己的 Skill"（见 service/skills_core/binding.py 的 P0 修复）——装到自己账号
+        # 下之后就是自己绑自己了，伪造一个 owner 跟 installed["user_id"] 一致的 Agent。
         with patch.dict(os.environ, {"SANDBOX_ENABLED": "true", "SANDBOX_TOKEN": "t"}), \
-                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**installed)]):
+                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**installed)]), \
+                patch.object(binding, "get_agent_by_id", return_value=SimpleNamespace(user_id=installed["user_id"])):
             merged = binding.get_agent_skills_merged_config(SimpleNamespace(), 1)
         self.assertIn("run_skill_script", merged["tool_names"])
         self.assertEqual(merged["skill_bundles"]["pdf"]["scripts"], ["scripts/a.py"])

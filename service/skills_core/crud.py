@@ -295,6 +295,18 @@ def update_skill_with_config(
     skill_model = dao_get(db, skill_id)
     if not can_manage_skill(skill_model, user_id, allow_admin):
         return None
+    requested_status = fields.get("lifecycle_status")
+    is_explicit_status_change = requested_status is not None and requested_status != skill_model.lifecycle_status
+    if config_fields and skill_model.lifecycle_status == "published" and not is_explicit_status_change:
+        # 已发布的 Skill 改运行配置（system_prompt/tool_names/permissions）就是在动
+        # "所有已绑定它的人正在用的东西"，不能悄悄原地生效——强制打回 draft，运行时
+        # （get_agent_skills_merged_config）会跟着立刻停止把它喂给非作者的 Agent，
+        # 管理员确认没问题后要再手动发布一次，等于强制走一遍"重新审核"。
+        # 判断"调用方是不是真的主动决定了状态"不能只看 fields 里有没有
+        # lifecycle_status 这个键——前端编辑弹窗每次保存都会带上当前选中的状态
+        # （哪怕没改过下拉框），所以只有请求里的值跟数据库现有值不一样，才算是
+        # 管理员自己主动做的状态决定，此时才不覆盖（比如同时把它改成"已退役"）。
+        fields = {**fields, "lifecycle_status": "draft"}
     snapshot_before_edit(db, skill_id, user_id, allow_admin)
     if fields:
         skill = update_skill(

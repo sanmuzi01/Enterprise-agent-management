@@ -142,8 +142,11 @@ class ImportAndBindingTest(unittest.TestCase):
             self.assertFalse(validate_skill_config_file(self.skill["config_file"])["sandbox_enabled"])
 
     def test_assistant_only_gets_the_runnable_scripts(self):
+        # 见 service/skills_core/binding.py 的 P0 修复：运行时现在会查 Agent owner
+        # 判断是不是作者自己绑自己的 Skill，这里伪造一个匹配的 owner。
         with patch.dict(os.environ, {"SANDBOX_ENABLED": "true", "SANDBOX_TOKEN": "t"}), \
-                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**self.skill)]):
+                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**self.skill)]), \
+                patch.object(binding, "get_agent_by_id", return_value=SimpleNamespace(user_id=self.skill["user_id"])):
             merged = binding.get_agent_skills_merged_config(SimpleNamespace(), 1)
         self.assertEqual(merged["skill_bundles"]["mix"]["scripts"], ["scripts/good.py"])
         self.assertNotIn("net.py", merged["system_prompt"])
@@ -154,8 +157,10 @@ class ImportAndBindingTest(unittest.TestCase):
             zf.writestr("v/SKILL.md", "---\nname: v\n---\nbody")
             zf.writestr("v/a.py", "import torch\n")
         res = import_skill_bundle(SimpleNamespace(commit=lambda: None), 1, "v.zip", buf.getvalue())
+        imported = res["imported"][0]
         with patch.dict(os.environ, {"SANDBOX_ENABLED": "true", "SANDBOX_TOKEN": "t"}), \
-                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**res["imported"][0])]):
+                patch.object(binding, "dao_list_by_agent", return_value=[SimpleNamespace(**imported)]), \
+                patch.object(binding, "get_agent_by_id", return_value=SimpleNamespace(user_id=imported["user_id"])):
             merged = binding.get_agent_skills_merged_config(SimpleNamespace(), 1)
         self.assertNotIn("run_skill_script", merged["tool_names"])
         self.assertEqual(merged["skill_bundles"], {})

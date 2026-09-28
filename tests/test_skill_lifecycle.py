@@ -184,6 +184,185 @@ class RetiredSkillIsSkippedAtRuntimeTest(unittest.TestCase):
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class NonOwnerSharedSkillDemotedAtRuntimeTest(unittest.TestCase):
+    """P0：别人绑定过的已发布 Skill，作者事后改回 draft/reviewing 后，运行时要
+    立刻停止把它喂给那个绑定它的 Agent——不能只信"绑定那一刻是 published"这个
+    一次性检查（docs/enterprise-rbac-plan.md 相关记录）。跟上面
+    `RetiredSkillIsSkippedAtRuntimeTest` 的区别：那个测的是 retired（作者自己的
+    Agent 也会被挡），这个测的是"作者不是 Agent owner 时，非 published 也会被挡"。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.author = rc.create_user("skl-dm-a")
+        cls.agent_owner = rc.create_user("skl-dm-o")
+        cls.root = tempfile.mkdtemp(prefix="skl_lifecycle_demote_")
+        cls._patches = [patch.object(skill_loader, "SKILLS_ROOT", cls.root)]
+        for p in cls._patches:
+            p.start()
+
+        cfg = {"name": "shared-skill", "description": "d",
+               "tools": [{"name": "word_count", "defaults": {}}],
+               "system_prompt": "prompt for shared-skill"}
+        with open(os.path.join(cls.root, "shared.yml"), "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        skill_loader.invalidate_skill_config()
+
+        # 作者自己的 own-skill：author 绑到 author 自己的 own-agent 上，用来确认
+        # "作者绑自己的 Skill 不受这条限制"（哪怕后面改回草稿也照常加载，只有
+        # retired 才会被挡——跟上面已有的 RetiredSkillIsSkippedAtRuntimeTest 是
+        # 同一条豁免规则，这里用它当对照组）。
+        cls.own_skill = Skill(user_id=cls.author["id"], name="shared-skill", description="d",
+                               config_file="shared.yml", is_public=1, lifecycle_status="published")
+        cls.db.add(cls.own_skill)
+        cls.db.commit()
+
+        cls.own_agent = Agent(user_id=cls.author["id"], name="demote-own-agent")
+        cls.shared_agent = Agent(user_id=cls.agent_owner["id"], name="demote-shared-agent")
+        cls.db.add_all([cls.own_agent, cls.shared_agent])
+        cls.db.commit()
+
+        binding.bind_skill(cls.db, cls.own_agent.id, cls.own_skill.id, cls.author["id"])
+        # 绑定那一刻 own_skill 是 published，agent_owner（非作者）能绑成功。
+        ok = binding.bind_skill(cls.db, cls.shared_agent.id, cls.own_skill.id, cls.agent_owner["id"])
+        assert ok, "绑定应该成功：绑定那一刻 Skill 是 published"
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        shutil.rmtree(cls.root, ignore_errors=True)
+        skill_loader.invalidate_skill_config()
+        from sqlalchemy import text
+        cls.db.execute(text("DELETE FROM agent_skill WHERE agent_id IN (:a, :b)"),
+                        {"a": cls.own_agent.id, "b": cls.shared_agent.id})
+        cls.db.execute(text("DELETE FROM agent WHERE id IN (:a, :b)"),
+                        {"a": cls.own_agent.id, "b": cls.shared_agent.id})
+        cls.db.execute(text("DELETE FROM skill WHERE id=:i"), {"i": cls.own_skill.id})
+        cls.db.commit()
+        rc.cleanup()
+        cls.db.close()
+
+    def test_demoted_shared_skill_dropped_for_non_owner_agent_but_kept_for_own_agent(self):
+        from sqlalchemy import text
+
+        for status in ("draft", "reviewing"):
+            self.db.execute(text("UPDATE skill SET lifecycle_status=:s WHERE id=:i"),
+                             {"s": status, "i": self.own_skill.id})
+            self.db.commit()
+
+            shared_merged = binding.get_agent_skills_merged_config(self.db, self.shared_agent.id)
+            self.assertNotIn(
+                "shared-skill", shared_merged["skill_names"],
+                f"非作者绑定的 Agent 不应该继续加载 lifecycle_status={status} 的共享 Skill",
+            )
+
+            own_merged = binding.get_agent_skills_merged_config(self.db, self.own_agent.id)
+            self.assertIn(
+                "shared-skill", own_merged["skill_names"],
+                f"作者自己的 Agent 应该照常加载自己 lifecycle_status={status} 的 Skill",
+            )
+
+        self.db.execute(text("UPDATE skill SET lifecycle_status='published' WHERE id=:i"),
+                         {"i": self.own_skill.id})
+        self.db.commit()
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class PublishedSkillAutoDemotesOnConfigEditTest(unittest.TestCase):
+    """P0：改已发布 Skill 的运行配置（system_prompt/tool_names/permissions）必须
+    自动把它打回 draft，不能让内容改动悄悄对所有绑定它的人原地生效。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.owner = rc.create_user("skl-adm")
+        cls.root = tempfile.mkdtemp(prefix="skl_lifecycle_autodemote_")
+        cls._patches = [patch.object(skill_loader, "SKILLS_ROOT", cls.root)]
+        for p in cls._patches:
+            p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        shutil.rmtree(cls.root, ignore_errors=True)
+        skill_loader.invalidate_skill_config()
+        rc.cleanup()
+        cls.db.close()
+
+    def _make_published_skill(self, name: str) -> Skill:
+        # 至少要有一个工具，不然 _validate_tool_names 会拒（"工具不存在或未选择工具"），
+        # 保存不成功就测不了后面的自动降级逻辑。
+        cfg = {"name": name, "description": "d", "tools": [{"name": "word_count", "defaults": {}}],
+               "tool_names": ["word_count"], "system_prompt": "old prompt"}
+        skill = Skill(user_id=self.owner["id"], name=name, description="d",
+                       config_file=f"user_created/{name}.yml", is_public=1, lifecycle_status="published")
+        self.db.add(skill)
+        self.db.commit()
+        # 真正的配置文件路径要跟 config_file 一致，update_skill_config 只允许改
+        # user_created/ 或 imported/ 开头的文件（见 service/skills_core/crud.py）。
+        real_path = os.path.join(self.root, "user_created")
+        os.makedirs(real_path, exist_ok=True)
+        with open(os.path.join(real_path, f"{name}.yml"), "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        skill_loader.invalidate_skill_config()
+        return skill
+
+    def tearDown(self):
+        from sqlalchemy import text
+        self.db.execute(text("DELETE FROM skill_version WHERE skill_id IN "
+                              "(SELECT id FROM skill WHERE user_id=:u)"), {"u": self.owner["id"]})
+        self.db.execute(text("DELETE FROM skill WHERE user_id=:u"), {"u": self.owner["id"]})
+        self.db.commit()
+
+    def test_editing_config_of_published_skill_demotes_to_draft(self):
+        skill = self._make_published_skill("autodemote-a")
+        result = crud.update_skill_with_config(
+            self.db, skill.id, self.owner["id"],
+            fields={}, config_fields={"system_prompt": "new prompt"}, allow_admin=True,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["lifecycle_status"], "draft")
+
+    def test_editing_config_while_explicitly_retiring_keeps_explicit_choice(self):
+        # 同一次请求里管理员自己主动把状态改成了别的值（不是"不小心带了当前值"）——
+        # 这种情况尊重管理员的选择，不强制打回 draft。
+        skill = self._make_published_skill("autodemote-b")
+        result = crud.update_skill_with_config(
+            self.db, skill.id, self.owner["id"],
+            fields={"lifecycle_status": "retired"},
+            config_fields={"system_prompt": "new prompt"}, allow_admin=True,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["lifecycle_status"], "retired")
+
+    def test_editing_config_while_resending_same_published_value_still_demotes(self):
+        # 前端编辑弹窗每次保存都会带上当前选中的发布状态（哪怕没碰过那个下拉框）
+        # ——这里模拟这个真实场景：请求里的 lifecycle_status 跟数据库现有值一样，
+        # 必须仍然按"没有主动做状态决定"处理，照样打回 draft。
+        skill = self._make_published_skill("autodemote-c")
+        result = crud.update_skill_with_config(
+            self.db, skill.id, self.owner["id"],
+            fields={"lifecycle_status": "published"},
+            config_fields={"system_prompt": "new prompt"}, allow_admin=True,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["lifecycle_status"], "draft")
+
+    def test_editing_only_name_does_not_touch_lifecycle_status(self):
+        # 没碰运行配置（config_fields 空），只改名字这种基础字段——不触发自动降级。
+        skill = self._make_published_skill("autodemote-d")
+        result = crud.update_skill_with_config(
+            self.db, skill.id, self.owner["id"],
+            fields={"name": "renamed"}, config_fields={}, allow_admin=True,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["lifecycle_status"], "published")
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
 class OptimisticLockingTest(unittest.TestCase):
     """每个测试自己建一条 Skill（不共用一条跨测试改），避免 unittest 默认按字母序
     跑测试时，后面的测试意外依赖前一个测试已经把 row_version 推到了哪个值。"""

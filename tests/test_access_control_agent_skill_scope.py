@@ -63,11 +63,15 @@ class AgentSkillScopeTest(unittest.TestCase):
                                        role_id=org_member_role_id, status="active"))
             db.commit()
 
+            # 部门/企业共享的 Agent 必须是 published 才能被非作者使用（见
+            # service/access_control.py::get_usable_agent 的生命周期检查），
+            # 这里的 dept_member/org_member 用例都是测"非作者能不能用共享 Agent"，
+            # 所以要显式发布，不能用默认的 draft。
             agent_personal = Agent(user_id=cls.owner["id"], name="scope-agent-personal")
             agent_dept = Agent(user_id=cls.owner["id"], name="scope-agent-dept",
-                                scope_type="department", team_id=cls.team_id)
+                                scope_type="department", team_id=cls.team_id, lifecycle_status="published")
             agent_org = Agent(user_id=cls.owner["id"], name="scope-agent-org",
-                               scope_type="enterprise", organization_id=cls.org_id)
+                               scope_type="enterprise", organization_id=cls.org_id, lifecycle_status="published")
             db.add_all([agent_personal, agent_dept, agent_org])
             db.commit()
             cls.agent_personal_id = agent_personal.id
@@ -143,6 +147,43 @@ class AgentSkillScopeTest(unittest.TestCase):
             for agent_id in (self.agent_personal_id, self.agent_dept_id, self.agent_org_id):
                 self.assertIsNone(access_control.get_usable_agent(db, self.outsider["id"], agent_id))
         finally:
+            db.close()
+
+    def _set_agent_lifecycle_status(self, db, agent_id: int, status: str) -> None:
+        from sqlalchemy import text
+        db.execute(text("UPDATE agent SET lifecycle_status=:s WHERE id=:id"), {"s": status, "id": agent_id})
+        db.commit()
+
+    def test_non_owner_blocked_when_shared_agent_not_published(self):
+        # P0：部门共享的 Agent 改回 draft/reviewing/retired 后，非作者立刻不能用了
+        # ——哪怕之前是 published 过的、哪怕已经在跟它聊天（继续对话每次都会重新查
+        # get_usable_agent，不是只在创建会话那一刻查一次）。
+        db = SessionLocal()
+        try:
+            for status in ("draft", "reviewing", "retired"):
+                self._set_agent_lifecycle_status(db, self.agent_dept_id, status)
+                self.assertIsNone(
+                    access_control.get_usable_agent(db, self.dept_member["id"], self.agent_dept_id),
+                    f"dept_member 不应该能用 lifecycle_status={status} 的部门共享 Agent",
+                )
+        finally:
+            # 还原成 published，不影响其他测试方法（unittest 不保证方法执行顺序）
+            self._set_agent_lifecycle_status(db, self.agent_dept_id, "published")
+            db.close()
+
+    def test_owner_can_use_own_agent_regardless_of_status_except_retired(self):
+        # 作者自己任何状态都能用（测草稿版本天经地义），唯独 retired 例外
+        # ——即便是作者自己，退役了也不能再用（跟 service/lifecycle.py 的文档一致）。
+        db = SessionLocal()
+        try:
+            for status in ("draft", "reviewing", "published"):
+                self._set_agent_lifecycle_status(db, self.agent_dept_id, status)
+                self.assertIsNotNone(access_control.get_usable_agent(db, self.owner["id"], self.agent_dept_id))
+
+            self._set_agent_lifecycle_status(db, self.agent_dept_id, "retired")
+            self.assertIsNone(access_control.get_usable_agent(db, self.owner["id"], self.agent_dept_id))
+        finally:
+            self._set_agent_lifecycle_status(db, self.agent_dept_id, "published")
             db.close()
 
     def test_get_owned_agent_unaffected_by_scope_widening(self):

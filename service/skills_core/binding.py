@@ -4,7 +4,8 @@ from typing import Any, Dict, List
 from sqlalchemy.orm import Session
 
 from service.access_control import can_bind_skill, can_read_skill, get_owned_agent, get_usable_agent
-from service.lifecycle import RETIRED_STATUS
+from service.lifecycle import BINDABLE_BY_OTHERS_STATUSES, RETIRED_STATUS
+from models.agent_dao import get_agent_by_id
 from models.skill_dao import (
     bind_skill_to_agent as dao_bind,
     unbind_skill_from_agent as dao_unbind,
@@ -149,14 +150,26 @@ def get_agent_skills_merged_config(db: Session, agent_id: int) -> Dict[str, Any]
     load_errors: List[Dict[str, str]] = []
     skill_bundles: Dict[str, Dict[str, Any]] = {}
     sandbox_on = sandbox.is_enabled()
+    agent = get_agent_by_id(db, agent_id)
+    agent_owner_id = agent.user_id if agent else None
     for skill in skills:
         if skill.lifecycle_status == RETIRED_STATUS:
             # 退役即彻底停用：哪怕是作者自己的 Agent 也不再加载——跟"草稿能被作者
             # 自己拿来测试"不是一回事，退役是"不管是谁都不该再用"。已经绑定的关系
             # 不用跟着解绑（后台随时能重新发布，解绑了还要重新配一遍），只是运行时
-            # 跳过。已发布/待审核/草稿正常加载——绑定时的 can_bind_skill 已经保证
-            # 了别人绑到的一定是已发布状态，这里不重复判断"是不是作者"，只挡退役。
+            # 跳过。
             logger.info(f"跳过已退役Skill: agent={agent_id}, skill={skill.name}")
+            continue
+        if skill.user_id != agent_owner_id and skill.lifecycle_status not in BINDABLE_BY_OTHERS_STATUSES:
+            # 绑定时的 can_bind_skill 只保证了"绑定那一刻"是已发布状态——如果作者
+            # 之后把它改回草稿/待审核（比如发现问题想先撤回），已经绑定它的别人的
+            # Agent 不能继续用旧配置跑下去，运行时要跟着重新检查，不能只信一次性
+            # 检查过的绑定关系。Agent 自己作者绑自己的 Skill 不受这条限制（那是
+            # "拿自己的草稿喂自己的测试 Agent"，跟上面 RETIRED 的例外是同一个道理）。
+            logger.info(
+                f"跳过未发布的共享Skill: agent={agent_id}, skill={skill.name}, "
+                f"status={skill.lifecycle_status}"
+            )
             continue
         try:
             cfg = load_skill_config(skill.config_file)
