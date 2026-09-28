@@ -1,7 +1,7 @@
 <template>
   <div class="p-6">
     <div class="flex items-center justify-between mb-5">
-      <p class="text-xs text-slate-500">管理企业部门、成员分配、部门负责人和企业角色。</p>
+      <p class="text-xs text-slate-500">管理企业部门、成员分配、部门负责人、企业角色和中央/部门 Agent。</p>
       <button
         @click="reloadAll"
         :disabled="loading"
@@ -154,7 +154,7 @@
     </div>
 
     <!-- ============ 企业成员 ============ -->
-    <div v-else class="rounded-lg border border-slate-200 bg-white">
+    <div v-else-if="activeTab === 'members'" class="rounded-lg border border-slate-200 bg-white">
       <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
         <h2 class="text-sm font-semibold text-slate-900">企业成员</h2>
         <button
@@ -204,6 +204,137 @@
           <tr v-if="!orgMembers.length"><td colspan="4" class="px-4 py-8 text-center text-slate-400">还没有企业成员</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <!-- ============ Agent 管理 ============ -->
+    <div v-else class="rounded-lg border border-slate-200 bg-white">
+      <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
+        <h2 class="text-sm font-semibold text-slate-900">中央 / 部门 Agent</h2>
+        <button
+          @click="openCreateAgent"
+          class="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700"
+        >
+          <Plus :size="13" />
+          新建 Agent
+        </button>
+      </div>
+      <table class="w-full text-left text-sm">
+        <thead class="border-b border-slate-100 bg-slate-50 text-xs text-slate-500">
+          <tr>
+            <th class="px-4 py-2.5 font-medium">名称</th>
+            <th class="px-4 py-2.5 font-medium">类型</th>
+            <th class="px-4 py-2.5 font-medium">所属部门</th>
+            <th class="px-4 py-2.5 font-medium">发布状态</th>
+            <th class="px-4 py-2.5 font-medium">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="a in managedAgents" :key="a.id" class="border-b border-slate-100">
+            <td class="px-4 py-2.5 text-slate-900">{{ a.name }}<span class="ml-1 text-xs text-slate-400">#{{ a.id }}</span></td>
+            <td class="px-4 py-2.5">
+              <span class="rounded px-2 py-0.5 text-xs" :class="a.agent_type === 'central' ? 'bg-purple-50 text-purple-700' : 'bg-sky-50 text-sky-700'">
+                {{ a.agent_type === 'central' ? '中央' : '部门' }}
+              </span>
+            </td>
+            <td class="px-4 py-2.5 text-slate-600">
+              <span v-if="a.agent_type === 'department'">{{ a.team_name || '—' }}（{{ a.department_code }}）</span>
+              <span v-else class="text-slate-400">全企业</span>
+            </td>
+            <td class="px-4 py-2.5">
+              <span class="rounded px-2 py-0.5 text-xs" :class="lifecycleBadgeClass(a.lifecycle_status)">
+                {{ lifecycleLabel(a.lifecycle_status) }}
+              </span>
+            </td>
+            <td class="px-4 py-2.5">
+              <div class="flex flex-wrap gap-1.5">
+                <button @click="openEditAgent(a)" class="rounded border border-slate-200 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50">
+                  编辑
+                </button>
+                <button
+                  v-if="a.lifecycle_status !== 'published'"
+                  @click="onSetAgentLifecycle(a, 'published')"
+                  class="rounded border border-emerald-200 px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-50"
+                >
+                  发布
+                </button>
+                <button
+                  v-if="a.lifecycle_status === 'published'"
+                  @click="onSetAgentLifecycle(a, 'retired')"
+                  class="rounded border border-red-200 px-2.5 py-1 text-xs text-red-700 hover:bg-red-50"
+                >
+                  停用
+                </button>
+              </div>
+            </td>
+          </tr>
+          <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央/部门 Agent</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- ============ 弹窗：新建/编辑 Agent ============ -->
+    <div v-if="agentDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="agentDialog.visible = false">
+      <div class="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
+        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ agentDialog.editing ? '编辑 Agent' : '新建 Agent' }}</h3>
+        <div class="space-y-3">
+          <div>
+            <label class="mb-1 block text-xs text-slate-500">名称</label>
+            <input v-model="agentDialog.form.name" type="text"
+              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+          </div>
+          <div v-if="!agentDialog.editing">
+            <label class="mb-1 block text-xs text-slate-500">类型</label>
+            <select v-model="agentDialog.form.agent_type" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+              <option value="central">中央 Agent（全企业）</option>
+              <option value="department">部门 Agent</option>
+            </select>
+          </div>
+          <template v-if="agentDialog.form.agent_type === 'department'">
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">部门代码</label>
+              <select v-model="agentDialog.form.department_code" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                <option value="hr">hr（人事）</option>
+                <option value="procurement">procurement（采购）</option>
+                <option value="sales">sales（销售）</option>
+                <option value="finance">finance（财务）</option>
+                <option value="it">it（IT）</option>
+              </select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">绑定部门</label>
+              <select v-model.number="agentDialog.form.team_id" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                <option :value="null" disabled>选择部门</option>
+                <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
+              </select>
+            </div>
+          </template>
+          <div>
+            <label class="mb-1 block text-xs text-slate-500">模型</label>
+            <input v-model="agentDialog.form.model_name" type="text"
+              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-500">角色设定（role）</label>
+            <textarea v-model="agentDialog.form.role" rows="2"
+              class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
+          </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-500">任务说明（task）</label>
+            <textarea v-model="agentDialog.form.task" rows="2"
+              class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
+          </div>
+        </div>
+        <div class="mt-5 flex justify-end gap-2">
+          <button @click="agentDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
+          <button
+            @click="submitAgentDialog"
+            :disabled="acting || !agentDialog.form.name.trim() || (agentDialog.form.agent_type === 'department' && !agentDialog.form.team_id)"
+            class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
+          >
+            保存
+          </button>
+        </div>
+      </div>
     </div>
 
     <!-- ============ 弹窗：新建/重命名部门 ============ -->
@@ -287,15 +418,19 @@
 import { onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'
 import * as orgApi from '../../api/organizationAdmin'
-import type { OrgTeam, OrgTeamMember, OrgMember, EnterpriseRoleCatalog, TeamPermissions } from '../../api/organizationAdmin'
+import type {
+  OrgTeam, OrgTeamMember, OrgMember, EnterpriseRoleCatalog, TeamPermissions,
+  ManagedAgent, ManagedAgentType, LifecycleStatus,
+} from '../../api/organizationAdmin'
 import { listAdminUsers, type AdminUser } from '../../api/admin'
 import { getErrorMessage } from '../../utils/request'
 
-const tabs: { value: 'teams' | 'members'; label: string }[] = [
+const tabs: { value: 'teams' | 'members' | 'agents'; label: string }[] = [
   { value: 'teams', label: '部门管理' },
   { value: 'members', label: '企业成员' },
+  { value: 'agents', label: 'Agent 管理' },
 ]
-const activeTab = ref<'teams' | 'members'>('teams')
+const activeTab = ref<'teams' | 'members' | 'agents'>('teams')
 
 const loading = ref(true)
 const acting = ref(false)
@@ -304,6 +439,7 @@ const errorMsg = ref('')
 const teams = ref<OrgTeam[]>([])
 const orgMembers = ref<OrgMember[]>([])
 const roleCatalog = ref<EnterpriseRoleCatalog>({ organization: [], team: [] })
+const managedAgents = ref<ManagedAgent[]>([])
 
 const selectedTeam = ref<OrgTeam | null>(null)
 const teamMembers = ref<OrgTeamMember[]>([])
@@ -317,12 +453,16 @@ const loadOrgMembers = async () => {
   orgMembers.value = await orgApi.listOrgMembers()
 }
 
+const loadManagedAgents = async () => {
+  managedAgents.value = await orgApi.listManagedAgents()
+}
+
 const reloadAll = async () => {
   loading.value = true
   errorMsg.value = ''
   try {
     roleCatalog.value = await orgApi.getEnterpriseRoles()
-    await Promise.all([loadTeams(), loadOrgMembers()])
+    await Promise.all([loadTeams(), loadOrgMembers(), loadManagedAgents()])
     if (selectedTeam.value) {
       const stillThere = teams.value.find(t => t.id === selectedTeam.value!.id)
       if (stillThere) await selectTeam(stillThere)
@@ -495,6 +635,99 @@ const submitMemberDialog = async () => {
     alert(getErrorMessage(e, '添加失败'))
   } finally {
     acting.value = false
+  }
+}
+
+// ---- 中央/部门 Agent ----
+
+const lifecycleLabel = (status: LifecycleStatus) => ({
+  draft: '草稿', reviewing: '待审核', published: '已发布', retired: '已停用',
+}[status])
+
+const lifecycleBadgeClass = (status: LifecycleStatus) => ({
+  draft: 'bg-slate-100 text-slate-500',
+  reviewing: 'bg-amber-50 text-amber-700',
+  published: 'bg-emerald-50 text-emerald-700',
+  retired: 'bg-red-50 text-red-700',
+}[status])
+
+const agentDialog = ref<{
+  visible: boolean
+  editing: ManagedAgent | null
+  form: {
+    name: string
+    agent_type: ManagedAgentType
+    department_code: string
+    team_id: number | null
+    model_name: string
+    role: string
+    task: string
+  }
+}>({
+  visible: false,
+  editing: null,
+  form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '' },
+})
+
+const openCreateAgent = () => {
+  agentDialog.value = {
+    visible: true,
+    editing: null,
+    form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '' },
+  }
+}
+
+const openEditAgent = (a: ManagedAgent) => {
+  agentDialog.value = {
+    visible: true,
+    editing: a,
+    form: {
+      name: a.name, agent_type: a.agent_type, department_code: a.department_code || 'hr',
+      team_id: a.team_id, model_name: a.model_name, role: '', task: '',
+    },
+  }
+}
+
+const submitAgentDialog = async () => {
+  acting.value = true
+  try {
+    if (agentDialog.value.editing) {
+      await orgApi.updateManagedAgent(agentDialog.value.editing.id, {
+        name: agentDialog.value.form.name.trim(),
+        model_name: agentDialog.value.form.model_name || undefined,
+        department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
+        team_id: agentDialog.value.form.agent_type === 'department' ? (agentDialog.value.form.team_id ?? undefined) : undefined,
+        role: agentDialog.value.form.role || undefined,
+        task: agentDialog.value.form.task || undefined,
+      })
+    } else {
+      await orgApi.createManagedAgent({
+        name: agentDialog.value.form.name.trim(),
+        agent_type: agentDialog.value.form.agent_type,
+        department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
+        team_id: agentDialog.value.form.agent_type === 'department' ? (agentDialog.value.form.team_id ?? undefined) : undefined,
+        model_name: agentDialog.value.form.model_name || undefined,
+        role: agentDialog.value.form.role || undefined,
+        task: agentDialog.value.form.task || undefined,
+      })
+    }
+    agentDialog.value.visible = false
+    await loadManagedAgents()
+  } catch (e: any) {
+    alert(getErrorMessage(e, '保存失败'))
+  } finally {
+    acting.value = false
+  }
+}
+
+const onSetAgentLifecycle = async (a: ManagedAgent, status: LifecycleStatus) => {
+  const verb = status === 'published' ? '发布' : '停用'
+  if (!confirm(`确认${verb}「${a.name}」？`)) return
+  try {
+    await orgApi.updateManagedAgent(a.id, { lifecycle_status: status, expected_row_version: a.row_version })
+    await loadManagedAgents()
+  } catch (e: any) {
+    alert(getErrorMessage(e, `${verb}失败`))
   }
 }
 

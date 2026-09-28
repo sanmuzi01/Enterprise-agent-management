@@ -1,7 +1,9 @@
-"""企业组织管理后台路由：部门增删/成员分配/部门负责人/企业角色/权限关系查看。
+"""企业组织管理后台路由：部门增删/成员分配/部门负责人/企业角色/权限关系查看/
+中央与部门 Agent 管理。
 
-见 service/organization_admin_service.py 顶部注释——网关跟 FasdtApi/admin.py 的其它
-端点一样走平台超级管理员（`get_current_admin_user_async`），不是企业内部角色。
+见 service/organization_admin_service.py、service/agent_admin_service.py 顶部
+注释——网关跟 FasdtApi/admin.py 的其它端点一样走平台超级管理员
+（`get_current_admin_user_async`），不是企业内部角色。
 """
 from typing import Optional
 
@@ -10,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from models.async_db import get_async_db
 from models.init_db import User
+from service import agent_admin_service
 from service import organization_admin_service as svc
 from service.dependencies import get_current_admin_user_async
 
@@ -42,6 +45,31 @@ class OrgMemberCreate(BaseModel):
 class OrgMemberUpdate(BaseModel):
     role_code: Optional[str] = None
     status: Optional[str] = Field(default=None, description="active/disabled")
+
+
+class ManagedAgentCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    agent_type: str = Field(description="central/department")
+    department_code: Optional[str] = Field(default=None, description="agent_type=department 时必填")
+    team_id: Optional[int] = Field(default=None, description="agent_type=department 时必填")
+    model_name: str = Field(default="glm-4")
+    role: Optional[str] = None
+    task: Optional[str] = None
+    constraints: Optional[str] = None
+    output: Optional[str] = None
+
+
+class ManagedAgentUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=255)
+    department_code: Optional[str] = None
+    team_id: Optional[int] = None
+    model_name: Optional[str] = None
+    lifecycle_status: Optional[str] = Field(default=None, description="draft/reviewing/published/retired")
+    expected_row_version: Optional[int] = Field(default=None, description="乐观锁：传了才校验版本号")
+    role: Optional[str] = None
+    task: Optional[str] = None
+    constraints: Optional[str] = None
+    output: Optional[str] = None
 
 
 @router.get("/roles", summary="企业角色目录（组织/部门两个 scope，供角色选择器用）")
@@ -162,3 +190,39 @@ async def remove_org_member(
         current_user: User = Depends(get_current_admin_user_async),
 ):
     return await svc.remove_org_member(async_db, user_id)
+
+
+@router.get("/agents", summary="中央/部门 Agent 列表")
+async def get_managed_agents(
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.list_managed_agents(async_db)
+
+
+@router.post("/agents", summary="创建中央/部门 Agent（默认 draft，需要单独发布才会被路由使用）")
+async def create_managed_agent(
+        data: ManagedAgentCreate,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.create_managed_agent(
+        async_db, current_user.id, data.name, data.agent_type,
+        department_code=data.department_code, team_id=data.team_id, model_name=data.model_name,
+        role=data.role, task=data.task, constraints=data.constraints, output=data.output,
+    )
+
+
+@router.patch("/agents/{agent_id}", summary="更新中央/部门 Agent（含改绑部门、发布/退役）")
+async def update_managed_agent(
+        agent_id: int,
+        data: ManagedAgentUpdate,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.update_managed_agent(
+        async_db, agent_id, name=data.name, department_code=data.department_code, team_id=data.team_id,
+        model_name=data.model_name, lifecycle_status=data.lifecycle_status,
+        expected_row_version=data.expected_row_version,
+        role=data.role, task=data.task, constraints=data.constraints, output=data.output,
+    )

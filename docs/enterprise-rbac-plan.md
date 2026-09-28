@@ -865,8 +865,90 @@ ORM 对象的盲点——`test_skill_package_import.py`/`test_skill_script_polic
 
 ### 还没做
 
-Agent 那一半的生命周期强制逻辑（`central_router.py` 路由到部门 Agent 时应该只
-认 `lifecycle_status='published'`，草稿状态的部门 Agent 不该被路由过去）、中央/
-部门 Agent 的管理后台（创建/绑部门/发布/停用，目前还是要直接改数据库）——这两个
-放一起做，见下一节。前端 Skill 管理页面暂时还没有发布状态的切换 UI 和乐观锁冲突
-提示，后端已经就绪，接口已经支持。
+前端 Skill 管理页面暂时还没有发布状态的切换 UI 和乐观锁冲突提示，后端已经
+就绪，接口已经支持。
+
+## 20. Agent 发布生命周期 + 中央/部门 Agent 管理后台（2026-09-28）
+
+补第19节留的那一半，也是"中央 Agent 管理部门 Agent"这个目标下最后一块缺口：
+`agent_type`/`department_code`/`organization_id`/`team_id`/`scope_type` 字段
+Phase 3D 阶段1/3 就有了，中央路由（`service/runtime/central_router.py`）也认
+这些字段，但一直没有创建/维护它们的管理入口，只能直接改数据库；路由本身也没有
+检查 `lifecycle_status`，草稿状态的部门 Agent 会被当成可路由的目标。
+
+### 路由门禁
+
+`central_router.py` 的 `resolve_target_agent[_async]`（中央 Agent 本身）和
+`_find_department_agent[_async]`（部门 Agent 匹配的 SQL）都加了
+`lifecycle_status='published'` 检查——跟 Skill 的门禁是同一个思路：管理员可以
+先建、先配 prompt、先测，确认没问题再发布，不会一建好就立刻影响真实用户的路由。
+`tests/test_central_router.py` 的既有 fixture（`central`/`hr_dept`/
+`unowned_hr_dept`）补上了显式 `lifecycle_status="published"`（不然默认 draft，
+这次改动会让这些原本测"该不该路由"的用例全部失败，因为都卡在发布状态门槛上），
+新增 `draft_dept`/`test_draft_central_agent_does_not_route_at_all` 专门测这条
+新加的门禁本身。
+
+### 管理后台
+
+新增 `service/agent_admin_service.py` + `FasdtApi/organization_admin.py` 里
+`/admin/org/agents` 系列端点（跟第17节的部门/成员管理同一个路由文件、同一个
+权限网关——平台超级管理员）：
+
+- `GET /admin/org/agents`：列出所有中央/部门 Agent（不含普通用户的 personal
+  Agent），带绑定的部门名。
+- `POST /admin/org/agents`：创建。`agent_type=department` 时强制要求
+  `department_code`（校验合法值，复用 `central_router.VALID_DEPARTMENT_CODES`，
+  不再定义一份）+ `team_id`（必须是已存在且未停用的部门）；`agent_type=central`
+  时这两个字段强制清空（`scope_type` 相应设成 `enterprise`/`department`）。
+  新建的 Agent 一律 `lifecycle_status='draft'`，不接受创建时直接发布。可以带
+  `role`/`task`/`constraints`/`output` 一起把 prompt YAML 建好。
+- `PATCH /admin/org/agents/{id}`：改名/改模型/改绑部门/改发布状态，
+  `role`/`task`/`constraints`/`output` 部分更新时会先读旧的 prompt YAML 再合并
+  写回（`update_prompt_file` 是整份覆盖，不是 PATCH 语义，服务层必须自己做合并，
+  不然只传 `task` 会把已经配好的 `role` 冲掉）。`row_version` 乐观锁：不传
+  `expected_row_version` 就是旧行为，传了就是条件 UPDATE，版本不对抛
+  `Conflict`——跟 Skill（第19节）、审批（第18节）同一个模式，只在这个"多个
+  管理员协作编辑同一个央/部门 Agent"的场景接入，不碰
+  `service/agent_service.py`/`models/agent_dao.py` 那条给普通用户个人 Agent
+  用的既有更新路径（单一所有者编辑，并发冲突风险低，且是全项目测试最多的热
+  路径之一，没必要为了这个场景去改）。
+
+`Agent.skills` 是 `lazy=False`（联表预加载），查询完整 `Agent` 实体的
+`Result` 必须先 `.unique()` 再 `.scalars()`/`.scalar_one_or_none()`，不然
+SQLAlchemy 直接报错——这个坑在写 `list_managed_agents`/`update_managed_agent`
+时踩到过，两处都已经处理。
+
+前端：`AdminOrganization.vue` 新增第三个 tab"Agent 管理"，表格列出所有央/部门
+Agent（名称/类型/所属部门/发布状态徽章/操作），新建/编辑走同一个弹窗（类型选
+central 还是 department，department 时联动显示部门代码 + 部门下拉），发布/
+停用是行内按钮直接调 `PATCH`。`frontend/src/api/organizationAdmin.ts` 新增
+`ManagedAgent`/`listManagedAgents`/`createManagedAgent`/`updateManagedAgent`。
+
+### 测试
+
+新增 `tests/test_agent_admin_service.py`（9个，真实 DB）：创建中央/部门 Agent、
+非法 `agent_type`/`department_code`、部门 Agent 缺 `team_id`/绑定不存在的部门、
+列表、更新（改名/改绑部门/发布）、乐观锁冲突、非法 `lifecycle_status`。其中
+"创建部门 Agent 并绑定"这条会先确认本机的默认企业就是测试自己建的那个企业才跑，
+不是就 skip——`_get_default_organization` 取的是"id 最小的那个 Organization"，
+测试库和真实开发机的默认企业不是同一行，不能硬编时期望这条总能跑通。
+
+除了单测，还用真实起的 FastAPI + 真实浏览器做了两轮端到端验证：一轮是直接拿
+真实默认企业（这台机器上 `organizations.id=1`）走 `curl` 建部门 → 建部门
+Agent → 发布 → 列表确认状态同步，全部走真实 HTTP + 真实 DB；另一轮是在浏览器里
+真的点"新建 Agent"填表单提交，确认建出来的中央 Agent 显示"草稿"状态且
+编辑/发布按钮都在，网络请求全部 200（`read_network_requests` 确认，那次唯一的
+401 来自验证开始前一次过期 token 的旧请求，不是这次改动的问题）。两轮验证用的
+测试数据都已清理。
+
+全量 850 个 Python 测试全绿（2 个环境相关的条件跳过），ruff 干净，前端
+`npm run build`（含 vue-tsc 类型检查）通过。
+
+### 还没做
+
+Agent 生命周期没有做"至少要有一个 published 的中央 Agent"之类的不变量保护
+（管理员可以把唯一一个已发布的中央 Agent 退役，路由会全部原样落回中央 Agent
+自己回答——这是优雅降级不是崩溃，先不加这层保护）；`department_code` 目前
+硬编码在 `central_router.VALID_DEPARTMENT_CODES` 里（hr/procurement/sales/
+finance/it 五个），新增部门类型需要改代码，不是数据库配置驱动的，跟
+`_ROUTING_RULES` 关键词表是同一个"先用得上，不为假设的扩展性买单"的判断。

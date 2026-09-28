@@ -55,7 +55,7 @@ def resolve_target_agent(db, user_id: int, agent_id: int, message: str, conversa
         return conv.agent_id if conv else agent_id
 
     agent = get_agent_by_id(db, agent_id)
-    if not agent or agent.agent_type != "central":
+    if not agent or agent.agent_type != "central" or agent.lifecycle_status != "published":
         return agent_id
 
     department_code = match_department(message)
@@ -81,7 +81,7 @@ async def resolve_target_agent_async(db, user_id: int, agent_id: int, message: s
         return conv.agent_id if conv else agent_id
 
     agent = await get_agent_by_id_async(db, agent_id)
-    if not agent or agent.agent_type != "central":
+    if not agent or agent.agent_type != "central" or agent.lifecycle_status != "published":
         return agent_id
 
     department_code = match_department(message)
@@ -103,7 +103,7 @@ def _find_department_agent(db, user_id: int, department_code: str) -> Optional[i
     rows = db.execute(
         text(
             "SELECT id, user_id, scope_type, team_id, organization_id FROM agent "
-            "WHERE agent_type='department' AND department_code=:code"
+            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published'"
         ),
         {"code": department_code},
     ).all()
@@ -116,7 +116,7 @@ async def _find_department_agent_async(db, user_id: int, department_code: str) -
     result = await db.execute(
         text(
             "SELECT id, user_id, scope_type, team_id, organization_id FROM agent "
-            "WHERE agent_type='department' AND department_code=:code"
+            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published'"
         ),
         {"code": department_code},
     )

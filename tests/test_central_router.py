@@ -51,18 +51,26 @@ class ResolveTargetAgentTest(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            central = Agent(user_id=cls.owner["id"], name="router-central", agent_type="central")
+            # 路由只认已发布（published）的中央/部门 Agent——草稿状态的不参与路由，
+            # 见 docs/enterprise-rbac-plan.md 第20节。这里的 central/hr_dept/
+            # unowned_hr_dept 都显式发布，好让"该不该路由"这条独立于"发没发布"
+            # 这条来测；draft_dept 专门测发布状态门禁本身。
+            central = Agent(user_id=cls.owner["id"], name="router-central", agent_type="central",
+                             lifecycle_status="published")
             personal = Agent(user_id=cls.owner["id"], name="router-personal")  # 默认 personal
             hr_dept = Agent(user_id=cls.owner["id"], name="router-hr-dept",
-                             agent_type="department", department_code="hr")
+                             agent_type="department", department_code="hr", lifecycle_status="published")
             unowned_hr_dept = Agent(user_id=cls.outsider["id"], name="router-hr-dept-other-owner",
-                                     agent_type="department", department_code="it")
-            db.add_all([central, personal, hr_dept, unowned_hr_dept])
+                                     agent_type="department", department_code="it", lifecycle_status="published")
+            draft_dept = Agent(user_id=cls.owner["id"], name="router-finance-draft",
+                                agent_type="department", department_code="finance", lifecycle_status="draft")
+            db.add_all([central, personal, hr_dept, unowned_hr_dept, draft_dept])
             db.commit()
             cls.central_id = central.id
             cls.personal_id = personal.id
             cls.hr_dept_id = hr_dept.id
             cls.unowned_it_dept_id = unowned_hr_dept.id
+            cls.draft_finance_dept_id = draft_dept.id
 
             conv = Conversation(user_id=cls.owner["id"], agent_id=cls.central_id, title="existing")
             db.add(conv)
@@ -77,8 +85,9 @@ class ResolveTargetAgentTest(unittest.TestCase):
         db = SessionLocal()
         try:
             db.execute(text("DELETE FROM conversation WHERE id=:i"), {"i": cls.existing_conversation_id})
-            db.execute(text("DELETE FROM agent WHERE id IN (:a,:b,:c,:d)"),
-                       {"a": cls.central_id, "b": cls.personal_id, "c": cls.hr_dept_id, "d": cls.unowned_it_dept_id})
+            db.execute(text("DELETE FROM agent WHERE id IN (:a,:b,:c,:d,:e)"),
+                       {"a": cls.central_id, "b": cls.personal_id, "c": cls.hr_dept_id,
+                        "d": cls.unowned_it_dept_id, "e": cls.draft_finance_dept_id})
             db.commit()
         except Exception:
             db.rollback()
@@ -156,6 +165,41 @@ class ResolveTargetAgentTest(unittest.TestCase):
         finally:
             db.close()
 
+    def test_draft_department_agent_is_not_matched_even_if_usable(self):
+        # finance 部门 Agent 存在、owner 用得了它，但还是草稿状态——路由只认已发布的
+        # 部门 Agent，应该退回中央 Agent 自己回答，不是"没找到部门 Agent"那种日志，
+        # 是"找到了但没发布"。
+        db = SessionLocal()
+        try:
+            target = central_router.resolve_target_agent(
+                db, self.owner["id"], self.central_id, "这笔预算超了吗", None,
+            )
+            self.assertEqual(target, self.central_id)
+        finally:
+            db.close()
+
+    def test_draft_central_agent_does_not_route_at_all(self):
+        # 中央 Agent 自己还是草稿状态——不应该触发任何路由逻辑，原样返回，即使
+        # 消息命中了关键词、对应部门 Agent 也已经发布。
+        db = SessionLocal()
+        try:
+            draft_central = Agent(user_id=self.owner["id"], name="router-central-draft",
+                                   agent_type="central", lifecycle_status="draft")
+            db.add(draft_central)
+            db.commit()
+            draft_central_id = draft_central.id
+            try:
+                target = central_router.resolve_target_agent(
+                    db, self.owner["id"], draft_central_id, "我想请假两天", None,
+                )
+                self.assertEqual(target, draft_central_id)
+            finally:
+                from sqlalchemy import text
+                db.execute(text("DELETE FROM agent WHERE id=:i"), {"i": draft_central_id})
+                db.commit()
+        finally:
+            db.close()
+
     # ---------------- 异步 ----------------
 
     def test_async_central_agent_routes_to_owned_department_agent(self):
@@ -166,6 +210,16 @@ class ResolveTargetAgentTest(unittest.TestCase):
                     db, self.owner["id"], self.central_id, "我想请假两天", None,
                 )
                 self.assertEqual(target, self.hr_dept_id)
+        _run(_do())
+
+    def test_async_draft_department_agent_is_not_matched(self):
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                target = await central_router.resolve_target_agent_async(
+                    db, self.owner["id"], self.central_id, "这笔预算超了吗", None,
+                )
+                self.assertEqual(target, self.central_id)
         _run(_do())
 
     def test_async_non_central_agent_is_untouched(self):

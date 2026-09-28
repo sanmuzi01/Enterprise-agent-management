@@ -120,3 +120,54 @@ export async function removeOrgMember(userId: number) {
   const { data } = await request.delete(`/admin/org/members/${userId}`)
   return data
 }
+
+export type ManagedAgentType = 'central' | 'department'
+export type LifecycleStatus = 'draft' | 'reviewing' | 'published' | 'retired'
+
+export interface ManagedAgent {
+  id: number
+  name: string
+  agent_type: ManagedAgentType
+  department_code: string | null
+  team_id: number | null
+  team_name: string | null
+  model_name: string
+  lifecycle_status: LifecycleStatus
+  row_version: number
+}
+
+export async function listManagedAgents(): Promise<ManagedAgent[]> {
+  const { data } = await request.get('/admin/org/agents')
+  return data as ManagedAgent[]
+}
+
+export async function createManagedAgent(payload: {
+  name: string
+  agent_type: ManagedAgentType
+  department_code?: string
+  team_id?: number
+  model_name?: string
+  role?: string
+  task?: string
+  constraints?: string
+  output?: string
+}): Promise<ManagedAgent> {
+  const { data } = await request.post('/admin/org/agents', payload)
+  return data as ManagedAgent
+}
+
+export async function updateManagedAgent(agentId: number, patch: {
+  name?: string
+  department_code?: string
+  team_id?: number
+  model_name?: string
+  lifecycle_status?: LifecycleStatus
+  expected_row_version?: number
+  role?: string
+  task?: string
+  constraints?: string
+  output?: string
+}): Promise<ManagedAgent> {
+  const { data } = await request.patch(`/admin/org/agents/${agentId}`, patch)
+  return data as ManagedAgent
+}
