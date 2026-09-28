@@ -25,7 +25,11 @@ REQUIRED_FILES = [
     "alembic.ini",
     "migrations/env.py",
     "migrations/script.py.mako",
-    "migrations/versions/20260830_0001_baseline.py",
+    # 迁移历史在 2026-09-24 重新定过基线（旧的 0001~0008 挪到
+    # migrations/archive_pre_baseline/，只留历史记录，不再参与 alembic upgrade，
+    # 见 docs/db-migration-plan.md）——这里只检查当前生效的基线文件，不追踪
+    # 每一条迁移，那是 tests/test_db_migrations.py 的静态检查在做的事。
+    "migrations/versions/20260924_0001_trusted_baseline.py",
     "docs/deployment.md",
     "docs/release-checklist.md",
     "docs/load-testing.md",
@@ -50,7 +54,6 @@ REQUIRED_FILES = [
     "FasdtApi/rag_debug.py",
     "service/rag/debug_service.py",
     "models/rag_debug_dao.py",
-    "migrations/versions/20260910_0005_rag_debug_samples.py",
     "frontend/src/api/ragDebug.ts",
     "frontend/src/views/knowledge/RagDebugConsole.vue",
     "frontend/src/components/knowledge/RagTracePanel.vue",
@@ -61,7 +64,6 @@ REQUIRED_FILES = [
     # 知识库空间（阶段6）：企业权限 —— 成员/角色 + 审计 + 管理员视角
     "models/space_member_dao.py",
     "models/kb_audit_dao.py",
-    "migrations/versions/20260911_0006_space_permissions.py",
     "frontend/src/components/knowledge/SpaceMembersPanel.vue",
     "frontend/src/views/admin/AdminKnowledgeSpaces.vue",
     # 前端信息架构整合：助手空间标签导航 + 分区标签
@@ -95,7 +97,6 @@ WIDGET_FILES = [
     "service/widgets/connectors/knowledge_base.py",
     "service/rag/search_entry.py",
     "models/user_widget_async_dao.py",
-    "migrations/versions/20260909_0003_user_widgets.py",
     "frontend/src/views/WidgetStudio.vue",
     "frontend/src/components/widgets/registry.ts",
     "docs/widget-platform.md",

@@ -110,7 +110,12 @@
   真实路由级测试（`tests/test_routes_isolation.py`：TestClient + 真实 JWT + 真实 DB）覆盖登录鉴权、
   widgets / knowledge / agent / skill / conversation 的跨用户 404 隔离、后台任务管理员 403。
 - 发布自检：`npm run release:check` 检查上线关键文件、组件平台核心模块、`deploy/` 监控配置可解析、
-  `deploy/` 无残留容器主机名、组件调度已接入 Worker，再跑编译 + 单元测试 + 前端构建。
+  `deploy/` 无残留容器主机名、组件调度已接入 Worker，再跑编译 + 单元测试 + 前端构建。2026-09-28
+  修了几个引用已归档旧迁移文件（`migrations/versions/20260830_0001_baseline.py` 等 4 个，2026-09-24
+  重新定基线后挪到了 `migrations/archive_pre_baseline/`）的过期文件路径，实际跑一遍完整
+  `scripts/release_check.py`（含全量测试 + 前端构建）确认真的能走完，不再是失败状态。CI
+  （`.github/workflows/ci.yml`）新增 `java` job：真实 MySQL 服务容器 + `mvn test` 跑
+  `enterprise-business-hub` 的 35 个测试，之前 Java 权限逻辑改坏了没有任何自动化能拦截。
 - 备份恢复：部署文档给出本地 MySQL `mysqldump` 导出 / 恢复命令与应用文件目录清单。
 - 数据库迁移：已加入 Alembic 迁移骨架、基线版本和迁移文档，当前处于兼容过渡期。
 - 部署基础：阿里云 ECS 上走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，

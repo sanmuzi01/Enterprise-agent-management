@@ -1025,3 +1025,29 @@ enterprise-business-hub-plan.md）需要同样处理。这是一次独立的基�
 风险和验证成本都比这次的应用层改动高（要在真实分权限的 MySQL 账号下跑通整条
 审计写入链路才能算验证过，不是单元测试能完全覆盖的），值得单独一次会话做，
 不在这次顺手带上。
+
+## 22. 发布自检修好 + Java 测试接入 CI（2026-09-28）
+
+两个纯工程问题，跟企业 RBAC 本身没关系，顺手一起做掉：
+
+**`scripts/release_check.py` 失败**：`REQUIRED_FILES` 里还引用着 4 个已经不存在
+的旧迁移文件路径（`migrations/versions/20260830_0001_baseline.py`/
+`20260909_0003_user_widgets.py`/`20260910_0005_rag_debug_samples.py`/
+`20260911_0006_space_permissions.py`）——2026-09-24 迁移历史重新定过基线（见
+`docs/db-migration-plan.md`），这几个文件挪到了 `migrations/archive_pre_baseline/`
+只留历史记录，`release_check.py` 没跟着更新。修成引用当前生效的基线文件
+（`migrations/versions/20260924_0001_trusted_baseline.py`），另外 3 个纯粹删掉
+（它们对应的功能代码文件已经在同一个列表里单独检查过，检查一个早就不参与
+`alembic upgrade` 的归档文件本身没有意义）。实际跑了一遍完整脚本（含
+`compileall` + 全量 860 个测试 + `npm run frontend:build`）确认真的能跑完，不是
+只改路径就当作修好了。
+
+**Java 测试没接入 CI**：`.github/workflows/ci.yml` 新增 `java` job，跟 `backend`/
+`e2e` 两个 job 同一个模式——真实 MySQL 服务容器（这次是 `enterprise_business`
+库）+ `mvn test`，跑 `enterprise-business-hub` 的全部 35 个测试（28 个真实
+HTTP+MySQL 集成测试 + 7 个纯逻辑单测）。之前这些测试只在本机手动跑过，Java
+权限逻辑（比如这次这几节加的 `TeamAccessGuard`）如果被后续改坏，没有任何自动化
+能拦截。用跟这次 CI 配置完全一致的参数（`ENTERPRISE_DB_HOST=127.0.0.1`，
+throwaway MySQL 容器）在本机验证过一遍，35 个测试全部通过，YAML 语法也过了
+`yaml.safe_load` 校验。测试结果用 `actions/upload-artifact` 存 Surefire 报告，
+跟 `backend` job 存 coverage.xml 是同一个思路。

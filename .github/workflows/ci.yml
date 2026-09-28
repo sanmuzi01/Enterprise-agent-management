@@ -141,6 +141,66 @@ jobs:
       - name: Type-check and build
         run: npm run build
 
+  java:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: enterprise-business-hub
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+          MYSQL_DATABASE: enterprise_business
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      ENTERPRISE_DB_HOST: 127.0.0.1
+      ENTERPRISE_DB_PORT: "3306"
+      ENTERPRISE_DB_NAME: enterprise_business
+      ENTERPRISE_DB_USER: root
+      ENTERPRISE_DB_PASSWORD: ci-root-password
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+          cache-dependency-path: enterprise-business-hub/pom.xml
+
+      - name: Wait for MySQL
+        run: |
+          for i in $(seq 1 30); do
+            if mysqladmin ping -h 127.0.0.1 -uroot -pci-root-password --silent; then
+              echo "MySQL is up"; break
+            fi
+            echo "waiting for mysql... ($i)"; sleep 2
+          done
+
+      - name: Run tests (real HTTP + real MySQL, not mocks)
+        # 跟 docs/enterprise-business-hub-plan.md 里手动验证的方式一样：SignedRequestContextFilter
+        # → Controller → Service → 真实 MySQL 全链路，Flyway 在这个全新库上先建表。之前这些测试
+        # 只在本机手动跑过（Java 权限逻辑改坏了 CI 拦不住），这一步接上之后每次提交都会自动跑。
+        run: mvn -B test
+
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: java-surefire-reports
+          path: enterprise-business-hub/target/surefire-reports/
+          retention-days: 14
+
   e2e:
     runs-on: ubuntu-latest
     services:
