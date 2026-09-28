@@ -685,3 +685,67 @@ docs/enterprise-business-hub-plan.md 第16节）当成跨部门拒掉；创建�
 新增 `tests/test_enterprise_hub_client.py`（4个，真实 DB）：造一个同时管两个部门的
 用户，验证"通过 team_b 的部门 Agent 操作拿到 team_b"、"没有 Agent 上下文/个人
 Agent/不存在的 agent_id 都退回 team_a（旧兜底行为不变）"。
+
+## 17. 企业组织管理后台（2026-09-28）
+
+数据库早就有 `Organization`/`Team`/`EnterpriseRole`/`OrganizationMember`/`TeamMember`
+（Phase 3B/3D），但从来没有对应的管理入口——建部门、分配员工、设负责人、调企业角色
+只能靠迁移脚本或直接改库。复查指出这是"中央 Agent 管理部门 Agent"这个目标当前最大
+的产品缺口，这次补上。
+
+### 加了什么
+
+**后端**：新增 `service/organization_admin_service.py`（纯 service 层，全部
+AsyncSession）+ `FasdtApi/organization_admin.py`（路由，`/admin/org/*`）：
+
+- 部门：`GET/POST /admin/org/teams`（列表/新建）、`PATCH /admin/org/teams/{id}`
+  （改名/启停）、`GET /admin/org/teams/{id}/permissions`（部门权限关系总览：
+  成员+角色、绑定的知识库空间、绑定的部门 Agent）。
+- 部门成员：`GET/POST /admin/org/teams/{id}/members`（列表/分配，`role_code=admin`
+  即设为部门负责人）、`PATCH`/`DELETE .../members/{user_id}`（改角色/移出）。
+- 企业成员（组织维度，独立于具体部门）：`GET/POST /admin/org/members`、
+  `PATCH`/`DELETE /admin/org/members/{user_id}`（调整企业角色、启停、移出）。
+- `GET /admin/org/roles`：企业角色目录（organization/team 两个 scope），给前端
+  角色选择器用，不在前端硬编码角色列表。
+
+给部门分配成员时会顺带自动补一条 `organization_members`（默认 `member` 档，已有
+更高角色不动）——单企业部署下"在某个部门里"本来就该隐含"是企业成员"，不用管理员
+先手动加一遍企业成员再加部门成员。移出企业时反过来级联清掉这个人在所有部门里的
+身份，避免"不是企业成员但还挂在某个部门"的悬空状态（这个悬空状态会跟
+`service/enterprise_access.py::require_team_role` "先查企业成员再查部门角色"的
+既有假设冲突）。
+
+**权限网关**：跟 `FasdtApi/admin.py` 其它所有端点一样走平台超级管理员
+（`get_current_admin_user_async`），不是企业内部的 `require_org_role("admin")`——
+单企业私有部署下操作这个后台的就是平台管理员本人，没必要引入第二套权限入口。
+`is_org_admin`/`is_team_admin`（P0 修复引入）仍然是聊天/审批链路判断"企业管理员"/
+"部门负责人"的唯一依据，这里只是给这两个角色**赋值**的地方。
+
+**前端**：新增 `frontend/src/views/admin/AdminOrganization.vue`（路由
+`/admin/organization`，侧栏"组织架构"），两个 tab：
+- 部门管理：左侧部门列表（新建/改名/启停），右侧选中部门的成员表格（分配成员/改
+  角色/移出）+ 权限关系（绑定的知识库空间、部门 Agent）。
+- 企业成员：扁平列表，添加/改企业角色/启停/移出。
+两个"添加成员"弹窗共用同一个按用户名搜索 `/admin/users` 的选人逻辑。
+
+### 测试
+
+`tests/test_organization_admin_service.py`（14个，真实 DB，直接调 service 函数，
+跟 `test_admin_plan_crud.py` 同一套写法）：部门增删改、重名冲突、成员分配/改角色/
+移出、"分配成员自动补企业成员身份"、"移出企业级联清团队身份"、权限关系视图、角色
+目录形状、各类非法输入/不存在资源的错误分支。`tests/test_routes_isolation.py`
+新增 2 个路由级烟雾测试（非管理员 403、管理员走完整个 HTTP 流程）。全量 808 个
+Python 测试全绿。
+
+前端：`npm run build`（含 vue-tsc 类型检查）通过；真实起 FastAPI + Vite dev server，
+用真实浏览器登录已有的 `admin` 账号，走完整个"新建部门 → 搜索用户 → 设为部门
+负责人 → 部门列表/详情实时反映 → 企业成员列表同步出现"的流程，网络请求全部
+200（`read_network_requests` 确认），不是只看 UI 截图。验证用的测试部门已经清理。
+
+### 还没做
+
+删部门（只做了启停，物理删除留给真有需求再加，防止误删连带的知识库/Agent 绑定
+失去归属）；企业角色的"至少要有一个 owner"这类不变量校验（现在允许把最后一个
+owner 降级，单企业部署下这是管理员自己的操作，先不加这层保护）；给这个后台单独
+接一套企业内部权限（`require_org_role`），如果以后要支持"委托非平台超级管理员的
+人管部门"，需要重新设计这一层。

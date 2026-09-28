@@ -666,6 +666,54 @@ class RouteIsolationTest(unittest.TestCase):
         r = self.client.get("/admin/users", headers=self.admin["headers"])
         self.assertEqual(r.status_code, 200, r.text)
 
+    # ---- 企业组织管理后台（/admin/org/*）：路由级烟雾测试，业务逻辑在
+    # tests/test_organization_admin_service.py 里已经测过，这里只确认路由本身接对了
+    # （路径、Depends 网关），跟其它 /admin/* 端点同一个权限模型。----
+
+    def test_org_admin_routes_reject_regular_user(self):
+        self.assertEqual(self.client.get("/admin/org/teams", headers=self.alice["headers"]).status_code, 403)
+        self.assertEqual(
+            self.client.post("/admin/org/teams", json={"name": "x"}, headers=self.bob["headers"]).status_code, 403
+        )
+
+    def test_org_admin_full_flow_via_http(self):
+        h = self.admin["headers"]
+        team_name = f"rt-org-team-{self.alice['id']}"
+
+        created = self.client.post("/admin/org/teams", json={"name": team_name}, headers=h)
+        self.assertEqual(created.status_code, 200, created.text)
+        team_id = created.json()["id"]
+        try:
+            listed = self.client.get("/admin/org/teams", headers=h)
+            self.assertIn(team_id, [t["id"] for t in listed.json()])
+
+            add_member = self.client.post(
+                f"/admin/org/teams/{team_id}/members",
+                json={"user_id": self.alice["id"], "role_code": "admin"},
+                headers=h,
+            )
+            self.assertEqual(add_member.status_code, 200, add_member.text)
+
+            members = self.client.get(f"/admin/org/teams/{team_id}/members", headers=h).json()
+            self.assertEqual(members[0]["role_code"], "admin")
+
+            perms = self.client.get(f"/admin/org/teams/{team_id}/permissions", headers=h)
+            self.assertEqual(perms.status_code, 200, perms.text)
+            self.assertEqual(perms.json()["team"]["id"], team_id)
+
+            removed = self.client.delete(f"/admin/org/teams/{team_id}/members/{self.alice['id']}", headers=h)
+            self.assertEqual(removed.status_code, 200, removed.text)
+        finally:
+            from sqlalchemy import text as _sql
+            from models.init_db import SessionLocal
+            db = SessionLocal()
+            try:
+                db.execute(_sql("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
+                db.execute(_sql("DELETE FROM teams WHERE id=:t"), {"t": team_id})
+                db.commit()
+            finally:
+                db.close()
+
 
 if __name__ == "__main__":
     unittest.main()
