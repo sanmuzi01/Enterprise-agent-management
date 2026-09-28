@@ -631,3 +631,57 @@ OA 请假工具）——路由规则本身是完整的（`_ROUTING_RULES` 五个
 `hr` 之外命中了也找不到可用的部门 Agent，会退回中央 Agent 自己回答，这是设计内的
 优雅降级，不是 bug。等 Phase 5 的采购/CRM 模块做出来，对应部门就自动能被路由到，
 不需要再改 `central_router.py`。
+
+## 15. 决策修正：`POST /agent` 不再接受 `agent_type`/`department_code`（2026-09-28）
+
+第14节当时的决定是"给创建入口，不然路由逻辑没法被真实验证"——这个判断本身没错，
+但给的方式错了：直接把这两个字段挂在**普通用户**的创建接口（`AgentCreate`）上，
+没有做任何权限校验。复查发现：任何登录用户都能在自己创建 Agent 时传
+`agent_type="central"` 或 `agent_type="department", department_code="procurement"`，
+把一个个人 Agent 伪装成中央/部门 Agent。当时能验证路由逻辑是因为测试直接用 ORM
+构造 `Agent(...)`（见 `tests/test_central_router.py`），根本不需要开放这个公开接口——
+这个入口从一开始就是不必要的攻击面，不是"先给着，以后再收紧"的权衡。
+
+现状（`get_usable_agent` 只按 owner/部门成员/企业成员判可见性）下，自己伪造的
+"部门 Agent"因为没有配套的 `team_id`/`organization_id`/`scope_type`（这三个字段
+"由后端按当前用户/目标 team 计算写入，不接受前端传值"，`models/init_db.py` 里
+`Agent.organization_id` 那行注释写的就是这个意思，`agent_type`/`department_code`
+应该跟它们同等对待，之前漏了），`scope_type` 还是默认的 `personal`，所以中央路由
+只会把这个人自己路由到自己伪造的 Agent，没有跨用户访问——但语义上完全不该允许，
+不能靠"目前恰好没危害"当长期设计。
+
+**修复**：`FasdtApi/agent.py::AgentCreate` 去掉这两个字段，`create_agent`路由不再
+转发它们。真正需要建中央/部门 Agent 时，走企业管理员专用的组织管理后台（见第16节
+起，`FasdtApi/organization_admin.py`），后端一次性把 `agent_type`/`department_code`
+连同 `organization_id`/`team_id`/`scope_type` 一起算好、一起写，不接受任何字段
+单独由前端指定。`service/agent_service.py::create`/`models/agent_dao.py::create_agent`
+的函数签名不变（组织管理后台的创建逻辑要复用），只收紧了普通用户能摸到的那个入口。
+新增回归测试 `tests/test_routes_isolation.py::
+test_create_agent_ignores_client_supplied_agent_type_and_department_code`：传了这两
+个字段，建出来的 Agent 仍然是 `agent_type="personal"`/`department_code=None`。
+
+## 16. 修复：多部门用户的 team_id 取错部门（2026-09-28）
+
+`service/enterprise_hub_client.py::resolve_caller_context`（第0节 P0 修复引入）原来
+直接 `SELECT team_id FROM team_members ... ORDER BY id LIMIT 1`——一个人如果同时是
+两个部门的负责人，永远只能拿到"最先加入的那个"，跟当前到底在处理哪个部门的事务
+完全无关。后果：部门负责人管两个部门时，通过其中一个部门的 Agent 操作，可能被
+签成另一个部门的 `team_id`，审批会被 Java 侧新加的 `TeamAccessGuard`（见
+docs/enterprise-business-hub-plan.md 第16节）当成跨部门拒掉；创建采购单/请假单也
+可能被记成错的部门。
+
+**修复**：`resolve_caller_context(user_id, agent_id=None)` 新增 `agent_id` 参数，
+`team_id` 推导顺序变成——1. 当前 Agent 自己的 `team_id`（仅当
+`agent.agent_type=='department'`，这种 Agent 本来就只服务一个部门，用它的
+`team_id` 比猜用户"在职的第一个部门"准确得多，通过对应部门 Agent 操作时这条就够）；
+2. 没有部门 Agent 上下文（中央/个人 Agent 直接调用）才退回旧的"第一个在职部门"
+兜底。`service/tools/oa_leave.py`/`procurement.py` 全部改成把 `ctx.agent_id` 传进去。
+
+这不是"支持用户显式选工作部门"那个更大的功能（还没做，仍然是已知限制：完全脱离
+部门 Agent、直接跟中央/个人 Agent 对话处理第二个部门的事务，仍然会退回第一个部门）——
+只解决"通过正确的部门 Agent 操作"这条主路径，跟 CRM/OA/采购现在的实际使用方式
+（用户找对应部门的 Agent 聊）一致。
+
+新增 `tests/test_enterprise_hub_client.py`（4个，真实 DB）：造一个同时管两个部门的
+用户，验证"通过 team_b 的部门 Agent 操作拿到 team_b"、"没有 Agent 上下文/个人
+Agent/不存在的 agent_id 都退回 team_a（旧兜底行为不变）"。

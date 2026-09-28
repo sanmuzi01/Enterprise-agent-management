@@ -98,6 +98,32 @@ class RouteIsolationTest(unittest.TestCase):
             self.client.get(f"/knowledge/{agent_id}/diagnostics", headers=self.alice["headers"]).status_code, 200
         )
 
+    def test_create_agent_ignores_client_supplied_agent_type_and_department_code(self):
+        # 中央/部门 Agent 只能由企业管理员通过组织管理后台创建（同时设置
+        # organization_id/team_id/scope_type）——普通用户这个创建接口不再接受
+        # agent_type/department_code，就算传了也该被忽略，不能建出一个自称
+        # "central"/"department" 的 Agent。
+        r = self.client.post(
+            "/agent",
+            json={
+                "name": f"rt-fake-dept-agent-{self.alice['id']}",
+                "agent_type": "department",
+                "department_code": "procurement",
+            },
+            headers=self.alice["headers"],
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        agent_id = r.json()["agent_id"]
+
+        from models.init_db import Agent, SessionLocal
+        db = SessionLocal()
+        try:
+            agent = db.get(Agent, agent_id)
+            self.assertEqual(agent.agent_type, "personal")
+            self.assertIsNone(agent.department_code)
+        finally:
+            db.close()
+
         # 纯读接口（已全量 async）：本人 200、别人 404
         self.assertEqual(self.client.get(f"/knowledge/{agent_id}/list", headers=self.alice["headers"]).status_code, 200)
         self.assertEqual(self.client.get(f"/knowledge/{agent_id}/list", headers=self.bob["headers"]).status_code, 404)

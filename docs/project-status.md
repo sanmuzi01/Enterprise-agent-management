@@ -149,7 +149,7 @@
 - `python -m compileall` 通过。
 - 前端 `npm run build`（含 vue-tsc 类型检查）通过。
 - FastAPI 应用导入与路由生成通过。
-- `python -m unittest`：787 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
+- `python -m unittest`：792 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
   quick_connect、chunk_size、RAG 节省统计、web_query 联网检索、工作台模板、计费配额、
   配额阈值提醒、告警推送、新增 Agent 工具、报表导出、知识库 OCR/Excel、LLM 客户端 SSRF
   防护、Agent 流水线、LangChain base_url 拼接测试、Phase 3D 企业 RBAC/审批/审计/中央路由
@@ -158,6 +158,11 @@
   阶段1-6 全部完成——资源归属与密级字段、统一授权层覆盖聊天/检索/Skill绑定、高风险操作
   审批（知识库空间删除已接入）、乐观锁/发布生命周期字段、通用审计表、中央 Agent 受控路由
   （关键词规则匹配到用户可用的部门 Agent，HR/采购/销售部门现在都有真实 Agent 可路由）。
+  2026-09-28 修了两个 P1：`POST /agent` 不再接受客户端传的 `agent_type`/
+  `department_code`（之前任何用户都能自称"部门 Agent"，现状下无跨用户危害但语义
+  不该允许）；多部门用户的 `team_id` 推导改成优先用当前部门 Agent 自己的
+  `team_id`，不再是"在职的第一个部门"，见 [enterprise-rbac-plan.md](enterprise-rbac-plan.md)
+  第15/16节。
 - Phase 5（Spring Boot 企业业务中心，见
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名

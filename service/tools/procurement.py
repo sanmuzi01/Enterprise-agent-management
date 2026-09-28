@@ -19,7 +19,7 @@ def _require_user_and_auth(ctx) -> tuple:
     if not ctx or not ctx.user_id:
         raise ValueError("缺少用户上下文，无法调用企业业务中心")
     user_id = ctx.user_id
-    auth = hub.resolve_caller_context(user_id)
+    auth = hub.resolve_caller_context(user_id, ctx.agent_id)
     if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行采购操作（采购按部门查库存和预算）")
     return user_id, auth

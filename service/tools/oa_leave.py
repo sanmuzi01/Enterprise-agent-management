@@ -43,7 +43,7 @@ class GetLeaveBalanceTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         year = kwargs.get("year")
         path = "/oa/leave/balance" + (f"?year={int(year)}" if year else "")
         try:
@@ -80,7 +80,7 @@ class CreateLeaveDraftTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         body = {
             "leaveTypeCode": kwargs.get("leave_type_code"),
             "startDate": kwargs.get("start_date"),
@@ -119,7 +119,7 @@ class SubmitLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
@@ -155,7 +155,7 @@ class ApproveLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         if not (auth["is_org_admin"] or auth["is_team_admin"]):
             return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权审批请假单"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
@@ -193,7 +193,7 @@ class RejectLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         if not (auth["is_org_admin"] or auth["is_team_admin"]):
             return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权处理请假单"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
@@ -230,7 +230,7 @@ class GetLeaveStatusTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        auth = hub.resolve_caller_context(user_id)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(

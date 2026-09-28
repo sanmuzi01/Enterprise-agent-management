@@ -73,21 +73,41 @@ def sign_context(
     return {"X-Context": context_b64, "X-Signature": signature}
 
 
-def resolve_caller_context(user_id: int) -> Dict[str, Any]:
-    """算一次当前用户的 team_id + is_org_admin + is_team_admin，OA/采购工具共用这一个
+def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict[str, Any]:
+    """算一次当前调用要签的 team_id + is_org_admin + is_team_admin，OA/采购工具共用这一个
     实现，不允许每个工具模块各自重复算一遍权限判断——重复实现是"工具能自行断言权限"
-    这个漏洞的根源，只能有一处算法。"""
+    这个漏洞的根源，只能有一处算法。
+
+    team_id 的推导顺序（修复"一人属于多个部门时被当成第一个部门"这个问题，
+    docs/enterprise-rbac-plan.md 相关记录）：
+    1. 当前 Agent 自己的部门（`agent.team_id`，仅当 `agent_type='department'`）——
+       这种 Agent 只服务一个部门，用它的 team_id 比瞎猜用户"在职的第一个部门"准得多：
+       部门负责人管两个部门时，通过"采购部门Agent"操作就该用采购的 team_id，通过
+       "HR部门Agent"操作就该用 HR 的，不会互相踩。
+    2. 没有部门 Agent 上下文（比如通过中央/个人 Agent 直接调用）才退回"用户自己在职的
+       部门"，且只在这种退回场景下才可能出现"一人多部门只能拿到其中一个"的旧问题——
+       主路径（通过对应部门 Agent 操作）已经不受这个限制。
+    """
     from models.init_db import SessionLocal
     from sqlalchemy import text
     from service import enterprise_access
 
     db = SessionLocal()
     try:
-        row = db.execute(
-            text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
-            {"u": user_id},
-        ).first()
-        team_id = row[0] if row else None
+        team_id = None
+        if agent_id is not None:
+            row = db.execute(
+                text("SELECT team_id FROM agent WHERE id=:aid AND agent_type='department'"),
+                {"aid": agent_id},
+            ).first()
+            if row and row[0] is not None:
+                team_id = row[0]
+        if team_id is None:
+            row = db.execute(
+                text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
+                {"u": user_id},
+            ).first()
+            team_id = row[0] if row else None
         return {
             "team_id": team_id,
             "is_org_admin": enterprise_access.is_org_admin(db, user_id),
