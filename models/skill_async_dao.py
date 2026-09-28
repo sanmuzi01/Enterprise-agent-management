@@ -25,7 +25,11 @@ async def list_all_skills_async(db: AsyncSession, limit: int = 1000) -> List[Ski
 
 
 async def list_public_skills_async(db: AsyncSession) -> List[Skill]:
-    result = await db.execute(select(Skill).where(Skill.is_public == 1).order_by(Skill.id.desc()))
+    # 只给已发布的——跟同步版 models/skill_dao.py::list_public_skills 保持一致的过滤。
+    result = await db.execute(
+        select(Skill).where(Skill.is_public == 1, Skill.lifecycle_status == "published")
+        .order_by(Skill.id.desc())
+    )
     return list(result.unique().scalars().all())
 
 

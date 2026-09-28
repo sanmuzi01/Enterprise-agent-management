@@ -801,3 +801,72 @@ owner 降级，单企业部署下这是管理员自己的操作，先不加这�
 同一条审批单，断言恰好一个成功一个返回 None——不是顺序调用两次，是真的并发）。
 
 全量 820 个 Python 测试全绿，ruff 干净。
+
+## 19. Skill 发布生命周期 + row_version 乐观锁落地（2026-09-28）
+
+`lifecycle_status`/`row_version` 从阶段5（第13节）加字段以来一直是"只加字段，
+零强制逻辑"——草稿 Skill 照样能被任何人绑定和运行，并发编辑也不会互相覆盖检测。
+这次把 Skill 那一半接上（Agent 那一半留到第20节，跟"中央/部门 Agent 管理后台"
+一起做，因为 Agent 的发布状态本来就是给那个后台的路由门禁用的）。
+
+### 发布状态管的是什么
+
+新增 `service/lifecycle.py` 定义共用常量（`VALID_LIFECYCLE_STATUSES`、
+`BINDABLE_BY_OTHERS_STATUSES={"published"}`、`RETIRED_STATUS`），Agent 和 Skill
+共用同一份，不各自定义一遍。规则很简单：
+
+- **作者自己**：任何状态的 Skill 都能绑到自己的 Agent 上试跑（草稿存在的意义就是
+  给作者自己验证），退役的除外——退役是彻底停用，连作者自己都不再加载。
+- **除作者外的任何人**（哪怕是公开/部门/企业共享范围内）：只有 `published` 状态
+  才能绑定。这条通过新增 `service.access_control.can_bind_skill()` 实现，是跟
+  `can_read_skill`（判断"看不看得到"）平行的一层判断（"绑不绑得了"），不混在一起。
+- **运行时**（`service/skills_core/binding.py::get_agent_skills_merged_config`，
+  ToolExecutor 的唯一 Skill 加载入口）：跳过所有 `lifecycle_status == "retired"`
+  的已绑定 Skill，不管是谁的 Agent。已绑定关系不用跟着解绑（后台随时能重新发布），
+  只是运行时不加载。
+- `GET /skill/public`（普通用户浏览公开 Skill 的唯一入口，同步+异步两版 DAO）
+  改成只返回 `is_public=1 AND lifecycle_status='published'`——列出来一个绑不了
+  的选项没有意义。管理员的 `GET /skill/`（`list_all_skills`）不受影响，仍然看
+  全部，含草稿。
+
+### 乐观锁怎么做的
+
+`models/skill_dao.py::update_skill` 新增可选参数 `expected_row_version`：不传
+就是旧行为（不比对版本，兼容 import/translate/reanalyze 这些还不知道版本号概念
+的既有调用方）；传了就是一条 `UPDATE ... WHERE id=:id AND row_version=:expected`，
+受影响行数为 0 就抛 `Conflict`——原子的"比对+写入"，不是先 SELECT 版本号再在
+Python 里比较再 UPDATE（那样两个并发请求可能都读到同一个旧版本，都以为自己没
+冲突，跟 `service/approval_service.py::try_consume_approved`（第18节）是同一个
+模式）。`FasdtApi/skill_route.py::SkillUpdate` 新增 `expected_row_version`/
+`lifecycle_status` 两个可选字段，`_skill_to_dict` 现在把这两个字段一起吐给前端
+（之前完全没有任何响应体暴露过它们）。前端 Skill 管理页面还没有对应的版本冲突
+提示 UI（提交时传 `expected_row_version` 才会触发乐观锁，不传就还是旧行为），
+留作后续——后端保证已经生效，不依赖前端配合。
+
+### 测试
+
+新增 `tests/test_skill_lifecycle.py`（18个）：`can_bind_skill` 纯逻辑单测
+（作者/非作者 × 四种状态的矩阵）；真实 DB 的绑定门禁集成测试（非作者绑草稿被拒、
+绑已发布通过）；真实 DB + 临时 SKILLS_ROOT 的运行时测试（已退役 Skill 被排除在
+`get_agent_skills_merged_config` 的结果外，即便是作者自己的 Agent）；乐观锁
+集成测试（版本匹配成功并自增、版本过期抛 `Conflict`、不传版本号维持旧行为、
+非法 `lifecycle_status` 值被拒）。
+
+`_skill_to_dict` 新增两个字段暴露了一批既有测试用 `SimpleNamespace` 模拟 Skill
+ORM 对象的盲点——`test_skill_package_import.py`/`test_skill_script_policy.py`/
+`test_skill_script_report.py`/`test_skill_sandbox.py`/`test_skill_versions.py`/
+`test_skill_import_export.py` 里手搭的假 Skill 对象都缺这两个字段，补上后全部
+恢复通过（补的时候顺手发现 `git stash` 在这台 Windows 机器上因为 CRLF/LF 换行符
+差异，对几个跟这次改动完全无关、老早就脏着的文件报"合并冲突"——用
+`git checkout stash@{0} -- <具体文件>` 精确取回自己改的 7 个文件，绕开了那些
+无关文件，没有丢东西也没碰它们）。
+
+全量 838 个 Python 测试全绿，ruff 干净。
+
+### 还没做
+
+Agent 那一半的生命周期强制逻辑（`central_router.py` 路由到部门 Agent 时应该只
+认 `lifecycle_status='published'`，草稿状态的部门 Agent 不该被路由过去）、中央/
+部门 Agent 的管理后台（创建/绑部门/发布/停用，目前还是要直接改数据库）——这两个
+放一起做，见下一节。前端 Skill 管理页面暂时还没有发布状态的切换 UI 和乐观锁冲突
+提示，后端已经就绪，接口已经支持。

@@ -3,7 +3,8 @@ from typing import Any, Dict, List
 
 from sqlalchemy.orm import Session
 
-from service.access_control import can_read_skill, get_owned_agent, get_usable_agent
+from service.access_control import can_bind_skill, can_read_skill, get_owned_agent, get_usable_agent
+from service.lifecycle import RETIRED_STATUS
 from models.skill_dao import (
     bind_skill_to_agent as dao_bind,
     unbind_skill_from_agent as dao_unbind,
@@ -52,6 +53,11 @@ def bind_skill(db: Session, agent_id: int, skill_id: int, user_id: int) -> bool:
     if not can_read_skill(skill, user_id, db):
         logger.warning(f"权限拒绝：用户{user_id}无权绑定Skill {skill_id}")
         return False
+    # 发布状态：别人的 Skill 必须已发布才能绑定，草稿/待审核/已退役的只有作者自己能绑
+    # （给自己的测试 Agent 用）。
+    if not can_bind_skill(skill, user_id):
+        logger.warning(f"绑定拒绝：Skill {skill_id} 还未发布（{skill.lifecycle_status}），用户{user_id}不是作者")
+        return False
     success = dao_bind(db, agent_id, skill_id)
     if success:
         db.commit()
@@ -93,6 +99,9 @@ def update_agent_skills(db: Session, agent_id: int, skill_ids: List[int], user_i
             skill = dao_get(db, skill_id)
             if not can_read_skill(skill, user_id, db):
                 logger.warning(f"权限拒绝：用户{user_id}无权绑定Skill {skill_id}")
+                return False
+            if not can_bind_skill(skill, user_id):
+                logger.warning(f"绑定拒绝：Skill {skill_id} 还未发布，用户{user_id}不是作者")
                 return False
     dao_unbind_all(db, agent_id)
     for skill_id in skill_ids:
@@ -141,6 +150,14 @@ def get_agent_skills_merged_config(db: Session, agent_id: int) -> Dict[str, Any]
     skill_bundles: Dict[str, Dict[str, Any]] = {}
     sandbox_on = sandbox.is_enabled()
     for skill in skills:
+        if skill.lifecycle_status == RETIRED_STATUS:
+            # 退役即彻底停用：哪怕是作者自己的 Agent 也不再加载——跟"草稿能被作者
+            # 自己拿来测试"不是一回事，退役是"不管是谁都不该再用"。已经绑定的关系
+            # 不用跟着解绑（后台随时能重新发布，解绑了还要重新配一遍），只是运行时
+            # 跳过。已发布/待审核/草稿正常加载——绑定时的 can_bind_skill 已经保证
+            # 了别人绑到的一定是已发布状态，这里不重复判断"是不是作者"，只挡退役。
+            logger.info(f"跳过已退役Skill: agent={agent_id}, skill={skill.name}")
+            continue
         try:
             cfg = load_skill_config(skill.config_file)
         except Exception as e:

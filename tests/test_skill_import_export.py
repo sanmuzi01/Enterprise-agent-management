@@ -69,6 +69,7 @@ class ImportYamlSkillTest(SkillImportExportTestBase):
         fake_skill = SimpleNamespace(
             id=1, user_id=1, name="字数统计助手", description="统计文本字数",
             config_file="imported/placeholder.yml", is_public=0, created_at=None,
+            lifecycle_status="draft", row_version=0,
         )
         db = SimpleNamespace(commit=lambda: None)
         content = yaml.safe_dump(VALID_SKILL_YAML, allow_unicode=True).encode("utf-8")
@@ -118,6 +119,7 @@ class ImportZipSkillTest(SkillImportExportTestBase):
         fake_skill = SimpleNamespace(
             id=2, user_id=1, name="论文写作助手", description="",
             config_file="imported/placeholder.yml", is_public=0, created_at=None,
+            lifecycle_status="draft", row_version=0,
         )
         db = SimpleNamespace(commit=lambda: None)
         manifest = {
@@ -190,6 +192,7 @@ class ExportSkillPackageTest(SkillImportExportTestBase):
         fake_skill = SimpleNamespace(
             id=3, user_id=1, name="导出测试", description="用于导出测试",
             config_file=config_file, is_public=0, created_at=None,
+            lifecycle_status="draft", row_version=0,
         )
         db = SimpleNamespace()
         # fake_skill.user_id == user_id，can_read_skill 走真实逻辑即可返回 True，不需要 mock

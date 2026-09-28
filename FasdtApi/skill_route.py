@@ -65,6 +65,11 @@ class SkillUpdate(BaseModel):
     system_prompt: Optional[str] = None
     tool_names: Optional[List[str]] = None
     permissions: Optional[Dict[str, Any]] = None
+    # 发布生命周期：draft/reviewing/published/retired（service/lifecycle.py）。
+    lifecycle_status: Optional[str] = None
+    # 乐观锁：传了就必须跟数据库当前 row_version 一致才允许更新，不传就是旧行为
+    # （不做版本比对），兼容还不知道这个概念的调用方。
+    expected_row_version: Optional[int] = None
 
 
 class SkillTemplateSave(BaseModel):
@@ -367,6 +372,7 @@ def api_update_skill(
     current_user: User = Depends(get_current_admin_user),
 ):
     payload = data.model_dump(exclude_none=True)
+    expected_row_version = payload.pop("expected_row_version", None)
     config_payload = {}
     for key in ("system_prompt", "tool_names", "permissions"):
         if key in payload:
@@ -378,6 +384,7 @@ def api_update_skill(
         fields=payload,
         config_fields=config_payload,
         allow_admin=True,
+        expected_row_version=expected_row_version,
     )
     if not skill:
         raise InvalidInput("更新失败，Skill不存在、模板文件名错误或配置不可用")

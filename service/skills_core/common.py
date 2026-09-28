@@ -18,6 +18,8 @@ def _skill_to_dict(skill) -> Dict:
         "config_file": skill.config_file,
         "is_public": skill.is_public,
         "created_at": skill.created_at.isoformat() if skill.created_at else None,
+        "lifecycle_status": skill.lifecycle_status,
+        "row_version": skill.row_version,
     }
 
 

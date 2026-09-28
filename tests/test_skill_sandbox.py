@@ -247,7 +247,8 @@ class BindingMergeTest(unittest.TestCase):
             patch.object(skill_loader, "SKILLS_ROOT", self.root),
             patch.object(package_import, "SKILLS_ROOT", self.root),
             patch.object(package_import, "dao_create", side_effect=lambda **kw: SimpleNamespace(
-                id=1, created_at=None, **{k: v for k, v in kw.items() if k != "db"})),
+                id=1, created_at=None, lifecycle_status="draft", row_version=0,
+                **{k: v for k, v in kw.items() if k != "db"})),
         ]
         for p in self._patches:
             p.start()

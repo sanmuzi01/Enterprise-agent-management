@@ -66,6 +66,7 @@ class VersioningTestBase(unittest.TestCase):
         self.skill = SimpleNamespace(
             id=1, user_id=self.OWNER, name="演示技能", description="演示说明",
             config_file=self.config_file, is_public=1, created_at=None,
+            lifecycle_status="draft", row_version=0,
         )
         self.dao = FakeVersionDao()
         self.updates = []

@@ -4,6 +4,8 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from service.access_control import can_manage_skill, can_read_skill
+from service.exceptions import InvalidInput
+from service.lifecycle import VALID_LIFECYCLE_STATUSES
 from models.skill_dao import (
     create_skill as dao_create,
     get_skill_by_id as dao_get,
@@ -244,7 +246,7 @@ def list_all_skills(db: Session) -> List[Dict]:
 
 def update_skill(
     db: Session, skill_id: int, user_id: int, commit: bool = True,
-    allow_admin: bool = False, snapshot: bool = True, **kwargs,
+    allow_admin: bool = False, snapshot: bool = True, expected_row_version: Optional[int] = None, **kwargs,
 ) -> Optional[Dict]:
     # 先查Skill是否存在
     skill = dao_get(db, skill_id)
@@ -255,6 +257,8 @@ def update_skill(
     if not can_manage_skill(skill, user_id, allow_admin):
         logger.warning(f"权限拒绝：用户{user_id}尝试更新别人的Skill {skill_id}")
         return None
+    if "lifecycle_status" in kwargs and kwargs["lifecycle_status"] not in VALID_LIFECYCLE_STATUSES:
+        raise InvalidInput(f"lifecycle_status 只能是 {sorted(VALID_LIFECYCLE_STATUSES)} 之一")
     if snapshot:
         snapshot_before_edit(db, skill_id, user_id, allow_admin)
     # 如果更新了模板文件，校验是否存在
@@ -267,7 +271,7 @@ def update_skill(
                 return None
             kwargs["config_file"] = get_template_path(template)
 
-    updated_skill = dao_update(db, skill_id, **kwargs)
+    updated_skill = dao_update(db, skill_id, expected_row_version=expected_row_version, **kwargs)
     if updated_skill and commit:
         db.commit()
     return _skill_to_dict(updated_skill) if updated_skill else None
@@ -280,6 +284,7 @@ def update_skill_with_config(
         fields: Dict[str, Any],
         config_fields: Dict[str, Any],
         allow_admin: bool = False,
+        expected_row_version: Optional[int] = None,
 ) -> Optional[Dict]:
     """统一更新 Skill 基础信息和运行配置。
 
@@ -294,7 +299,7 @@ def update_skill_with_config(
     if fields:
         skill = update_skill(
             db, skill_id, user_id=user_id, commit=False,
-            allow_admin=allow_admin, snapshot=False, **fields,
+            allow_admin=allow_admin, snapshot=False, expected_row_version=expected_row_version, **fields,
         )
         if not skill:
             return None

@@ -105,6 +105,21 @@ def can_write_skill(skill: Skill, user_id: int) -> bool:
     return bool(skill and skill.user_id == user_id)
 
 
+def can_bind_skill(skill: Skill, user_id: int) -> bool:
+    """能不能把这个 Skill 绑到某个 Agent 上——`can_read_skill` 只判断"看不看得到"，
+    这里判断"绑不绑得了"，是两件事：作者自己永远能绑自己的 Skill（哪怕还是草稿，
+    这就是草稿存在的意义：绑到自己的测试 Agent 上试跑），其他人只能绑
+    `lifecycle_status == 'published'` 的 Skill——草稿/待审核/已退役的 Skill 对
+    别人来说，就算是公开或部门/企业共享范围内，也还不到能用的阶段。"""
+    from service.lifecycle import BINDABLE_BY_OTHERS_STATUSES
+
+    if not skill:
+        return False
+    if skill.user_id == user_id:
+        return True
+    return skill.lifecycle_status in BINDABLE_BY_OTHERS_STATUSES
+
+
 def can_manage_skill(skill: Skill, user_id: int, allow_admin: bool = False) -> bool:
     """Owners manage their records; admin-only callers may manage every Skill."""
     return bool(skill and (allow_admin or skill.user_id == user_id))

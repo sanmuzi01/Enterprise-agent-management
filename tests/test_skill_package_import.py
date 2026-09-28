@@ -49,7 +49,8 @@ class BundleTestBase(unittest.TestCase):
 
         def fake_create(db, user_id, name, description, config_file, is_public=0):
             s = SimpleNamespace(id=next(ids), user_id=user_id, name=name, description=description,
-                                config_file=config_file, is_public=is_public, created_at=None)
+                                config_file=config_file, is_public=is_public, created_at=None,
+                                lifecycle_status="draft", row_version=0)
             self.created.append(s)
             return s
 
