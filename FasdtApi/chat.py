@@ -19,7 +19,7 @@ from typing import List, Optional
 from models.async_db import get_async_db
 from models.init_db import User
 from service.dependencies import get_current_user_async
-from service import attachment_service, chat_async_service, chat_service, quota_service
+from service import attachment_service, chat_async_service, chat_service, quota_service, tool_confirmation_service
 from service.runtime import central_router
 from fastapi.responses import StreamingResponse
 from service.runtime.sse_events import SSE_HEADERS
@@ -197,3 +197,23 @@ async def get_history(
     GET /conversation/{conversation_id}/messages → 消息历史
     """
     return await chat_async_service.list_legacy_history(async_db, current_user.id, agent_id, limit=20)
+
+
+@router.post("/tool-confirmations/{token}/confirm", summary="确认并执行一次高风险 Agent 工具调用")
+async def confirm_tool_call(token: str, current_user: User = Depends(get_current_user_async)):
+    """第五轮审计 P0-2：submit/approve/reject 这类高风险工具在 ReAct 循环里只会生成一条
+    待确认单（见 service/tool_confirmation_service.py），必须用户在这里主动确认才会
+    真正执行——ReAct 循环本身没有任何路径能触达这个接口。"""
+    try:
+        return await tool_confirmation_service.confirm_and_execute_async(token, current_user.id)
+    except tool_confirmation_service.ConfirmationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+
+
+@router.post("/tool-confirmations/{token}/reject", summary="取消一次待确认的高风险 Agent 工具调用")
+async def reject_tool_call(token: str, current_user: User = Depends(get_current_user_async)):
+    try:
+        await tool_confirmation_service.reject_async(token, current_user.id)
+    except tool_confirmation_service.ConfirmationError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.message)
+    return {"status": "rejected"}

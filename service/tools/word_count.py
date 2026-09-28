@@ -3,6 +3,8 @@ import json                              # 新增
 from service.tools.base import BaseTool, ToolRegistry
 @ToolRegistry.register
 class WordCountTool(BaseTool):
+    risk_level = "read"  # 纯计算，不产生任何状态变更
+
     def get_name(self) -> str:
         return "word_count"
     def get_description(self) -> str:

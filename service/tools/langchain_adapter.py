@@ -7,6 +7,7 @@ LangGraph 期望的工具是 langchain_core.tools.BaseTool
 2. 在执行时，如果工具 requires_context=True，自动注入 ToolContext
 3. 保留我们所有的用户隔离/Key隔离/prompt覆盖机制
 """
+import json
 from typing import List,Optional,Type
 from pydantic import BaseModel, create_model
 from langchain_core.tools import BaseTool as LCBaseTool, StructuredTool
@@ -72,6 +73,34 @@ def adapt_tool(custom_tool: BaseTool, ctx: Optional[ToolContext] = None) -> LCBa
         except ToolPermissionError as e:
             logger.warning(f"[LangChain适配] 工具权限拒绝: {tool_name}, error={e}")
             return f"工具权限不足: {e}"
+        # 第五轮审计 P0-2：high_risk 工具不能在 ReAct 循环里被模型直接执行
+        # （不管是模型自己决定的，还是被 RAG 文档/对话历史里注入的指令诱导的）。
+        # 这里只建一条待确认记录、把 token 当工具结果还给模型——真正执行只有
+        # service/tool_confirmation_service.py::confirm_and_execute_async 这一个
+        # 入口，只能由用户在前端点确认按钮时经独立的 API 请求触发，模型自己
+        # 永远走不到这一步，哪怕在同一轮里反复调用这个工具也只是反复生成新的
+        # 待确认单，不会有任何一次真的把请求发到企业业务中心。
+        if custom_tool.risk_level == "high_risk":
+            if ctx is None or not ctx.user_id:
+                return json.dumps({"error": "缺少用户上下文，无法发起高风险操作确认"}, ensure_ascii=False)
+            from service.tool_confirmation_service import create_pending
+            pending = create_pending(
+                user_id=ctx.user_id, agent_id=ctx.agent_id,
+                tool_name=tool_name, tool_args=kwargs,
+            )
+            logger.info(f"[LangChain适配] 高风险工具需要用户确认，本轮不执行: {tool_name}, token={pending['token']}")
+            return json.dumps({
+                "status": "confirmation_required",
+                "confirmation_token": pending["token"],
+                "tool_name": tool_name,
+                "tool_args": kwargs,
+                "expires_at": pending["expires_at"],
+                "message": (
+                    f"「{tool_name}」是高风险操作，还没有真正执行。"
+                    "请把这次操作的意图明确告诉用户，并说明需要用户在界面上点击确认后才会真正生效；"
+                    "不要认为这个操作已经完成，也不要在没有用户确认的情况下重复尝试。"
+                ),
+            }, ensure_ascii=False)
         logger.info(f"[LangChain适配] 执行工具: {tool_name}, 参数: {kwargs}")
         return custom_tool.execute(**kwargs)
     # 用 Tool 类包装(最简单的 LangChain BaseTool 子类)

@@ -9,6 +9,7 @@ class ChartGeneratorTool(BaseTool):
     """数据图表生成工具
         纯绘图工具，不需要 LLM（requires_context=False）
         支持：柱状图(bar)、折线图(line)、饼图(pie)"""
+    risk_level = "read"  # 只生成图片文件，不产生业务状态变更
     # 图表保存目录 = 项目根/static/charts/（相对前端可访问）
     CHART_DIR = Path(__file__).resolve().parent.parent.parent / "static" / "charts"
     SUPPORTED_TYPES = ("bar", "line", "pie")

@@ -32,6 +32,7 @@ def _error_json(exc: hub.EnterpriseHubError) -> str:
 @ToolRegistry.register
 class GetInventoryStatusTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_inventory_status"
@@ -66,6 +67,7 @@ class GetInventoryStatusTool(BaseTool):
 @ToolRegistry.register
 class GetDepartmentBudgetTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_department_budget"
@@ -99,6 +101,7 @@ class GetDepartmentBudgetTool(BaseTool):
 @ToolRegistry.register
 class CreatePurchaseDraftTool(BaseTool):
     requires_context = True
+    risk_level = "write"  # 建的是草稿，还没提交，用户确认前可以反复改
 
     def get_name(self) -> str:
         return "create_purchase_draft"
@@ -147,6 +150,7 @@ class CreatePurchaseDraftTool(BaseTool):
 @ToolRegistry.register
 class SubmitPurchaseRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 提交后进入审批流程，不能由模型自动触发
 
     def get_name(self) -> str:
         return "submit_purchase_request"
@@ -182,6 +186,7 @@ class SubmitPurchaseRequestTool(BaseTool):
 @ToolRegistry.register
 class ApprovePurchaseRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 批准会真的花预算，不能由模型自动触发
 
     def get_name(self) -> str:
         return "approve_purchase_request"
@@ -222,6 +227,7 @@ class ApprovePurchaseRequestTool(BaseTool):
 @ToolRegistry.register
 class RejectPurchaseRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 拒绝同样是真实的采购决定，不能由模型自动触发
 
     def get_name(self) -> str:
         return "reject_purchase_request"
@@ -262,6 +268,7 @@ class RejectPurchaseRequestTool(BaseTool):
 @ToolRegistry.register
 class GetPurchaseStatusTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_purchase_status"

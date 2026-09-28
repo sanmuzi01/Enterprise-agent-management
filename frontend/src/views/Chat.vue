@@ -240,7 +240,33 @@
 
         <!-- 思考/工具调用事件展示 -->
         <div v-for="(evt, i) in eventTraces" :key="'evt-'+i" class="mx-auto flex w-full max-w-3xl justify-start">
-          <div class="max-w-2xl w-full px-4 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-gray-500 font-mono space-y-1">
+          <div
+            v-if="evt.type === 'confirmation_required'"
+            class="max-w-2xl w-full px-4 py-3 rounded-lg border border-amber-300 bg-amber-50 text-xs text-amber-900 space-y-2"
+          >
+            <div class="flex items-center gap-1.5 font-sans font-semibold">
+              <AlertTriangle :size="14" class="shrink-0" />
+              高风险操作待确认：{{ evt.name }}
+            </div>
+            <pre class="font-mono text-[11px] text-amber-800 whitespace-pre-wrap">{{ JSON.stringify(evt.args, null, 2) }}</pre>
+            <div v-if="!evt.decision" class="flex gap-2 font-sans">
+              <button
+                :disabled="evt.deciding"
+                @click="decideToolConfirmation(evt, true)"
+                class="rounded-full bg-amber-600 px-3 py-1 text-white text-xs font-medium disabled:opacity-50"
+              >确认执行</button>
+              <button
+                :disabled="evt.deciding"
+                @click="decideToolConfirmation(evt, false)"
+                class="rounded-full bg-white border border-amber-300 px-3 py-1 text-amber-800 text-xs font-medium disabled:opacity-50"
+              >取消</button>
+            </div>
+            <div v-else-if="evt.decision === 'confirmed'" class="font-sans text-emerald-700">
+              已确认执行<span v-if="evt.resultText">：{{ short(evt.resultText, 200) }}</span>
+            </div>
+            <div v-else class="font-sans text-gray-500">已取消，未执行</div>
+          </div>
+          <div v-else class="max-w-2xl w-full px-4 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-gray-500 font-mono space-y-1">
             <div v-if="evt.type === 'thinking'">
               <span class="text-purple-500 font-semibold">🤔 思考</span>
               <div class="whitespace-pre-wrap mt-1">{{ short(evt.content, 200) }}</div>
@@ -766,6 +792,28 @@ const short = (s: string, n: number) => {
   return s2.length > n ? s2.slice(0, n) + '...' : s2
 }
 
+/** 高风险工具确认卡片的确认/取消按钮（第五轮审计 P0-2）。
+ * evt 是 eventTraces 数组里那个具体的 confirmation_required 对象引用，
+ * 直接改它的字段能触发响应式更新（不需要另外去数组里查 index）。 */
+async function decideToolConfirmation(evt: any, approve: boolean) {
+  if (evt.deciding || evt.decision) return
+  evt.deciding = true
+  try {
+    if (approve) {
+      const res = await chatApi.confirmToolCall(evt.token)
+      evt.decision = 'confirmed'
+      evt.resultText = res.result || ''
+    } else {
+      await chatApi.rejectToolCall(evt.token)
+      evt.decision = 'rejected'
+    }
+  } catch (e: any) {
+    evt.resultText = '处理失败：' + getErrorMessage(e, '请重试')
+  } finally {
+    evt.deciding = false
+  }
+}
+
 const scrollToBottom = async () => {
   await nextTick()
   if (messageListRef.value) {
@@ -996,7 +1044,20 @@ const sendMessage = async () => {
         } else if (evt.type === 'tool_call') {
           eventTraces.value.push({ type: 'tool_call', name: evt.name, args: evt.args || {} })
         } else if (evt.type === 'tool_result') {
-          eventTraces.value.push({ type: 'tool_result', name: evt.name, result: evt.result || '' })
+          const pending = chatApi.parseConfirmationRequired(evt.result)
+          if (pending) {
+            eventTraces.value.push({
+              type: 'confirmation_required',
+              name: evt.name,
+              token: pending.confirmation_token,
+              args: pending.tool_args,
+              decision: null as 'confirmed' | 'rejected' | null,
+              resultText: '',
+              deciding: false,
+            })
+          } else {
+            eventTraces.value.push({ type: 'tool_result', name: evt.name, result: evt.result || '' })
+          }
         } else if (evt.type === 'answer_delta') {
           messages.value[placeholderIdx].content += evt.content || ''
         } else if (evt.type === 'answer') {

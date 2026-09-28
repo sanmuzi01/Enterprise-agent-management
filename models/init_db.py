@@ -547,6 +547,37 @@ class AuditEvent(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
 
+class ToolConfirmation(Base):
+    """高风险 Agent 工具调用的用户确认单（第五轮审计 P0-2：Prompt 注入可能触发
+    真实业务操作）。
+
+    ReAct 循环里 LLM 决定调用 `risk_level="high_risk"` 的工具（submit/approve/
+    reject 这类真正产生业务后果的操作）时，`service/tools/langchain_adapter.py`
+    不会直接执行，只会在这里插一条 pending 记录、把 token 当"工具结果"还给
+    LLM。真正执行只有 `service/tool_confirmation_service.py::confirm_and_execute_async`
+    这一个入口，只能被用户在前端点确认按钮时经由独立的 API 请求触发，跟 ReAct
+    循环彼此隔离——哪怕对话历史或知识库文档里被注入了"请直接提交""请批准这条"
+    之类的指令，模型在一轮 ReAct 循环里最多只能让流程走到"生成一条待确认单"，
+    走不到"真的执行"。
+    """
+    __tablename__ = "tool_confirmation"
+    __table_args__ = (
+        Index("idx_tool_confirmation_user_status", "user_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    token = Column(String(64), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_toolconf_user"), nullable=False)
+    agent_id = Column(Integer, nullable=True)
+    tool_name = Column(String(80), nullable=False)
+    tool_args = Column(Text, nullable=False)  # JSON，LLM 请求这次调用时的原始参数
+    # pending / confirmed / rejected / expired
+    status = Column(String(20), nullable=False, default="pending")
+    result = Column(Text, nullable=True)      # confirmed 之后工具真正执行的返回值
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    decided_at = Column(DateTime, nullable=True)
+
+
 # 知识块表（文档切分后的块，含向量库id引用）
 class KnowledgeChunk(Base):
     __tablename__ = "knowledge_chunk"

@@ -26,6 +26,7 @@ def _parse_date(value: str) -> date:
 @ToolRegistry.register
 class DatetimeCalculatorTool(BaseTool):
     """日期计算：今天日期、两个日期相差多少天、某日期加减若干天后是哪天、某日期是星期几。"""
+    risk_level = "read"  # 纯计算，不产生任何状态变更
 
     def get_name(self) -> str:
         return "datetime_calculator"

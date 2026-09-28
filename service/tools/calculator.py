@@ -85,6 +85,7 @@ def safe_eval(expression: str) -> float:
 @ToolRegistry.register
 class CalculatorTool(BaseTool):
     """安全数学计算器：四则运算、乘方、取模，以及 sqrt/log/sin/cos 等常用函数。"""
+    risk_level = "read"  # 纯计算，不产生任何状态变更
 
     def get_name(self) -> str:
         return "calculator"

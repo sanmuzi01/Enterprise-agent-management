@@ -1,3 +1,5 @@
+import request from '../utils/request'
+
 // SSE 事件类型（与 react_engine.py 中 sse_events.make_* 生成的一致）
 export type SseEventType =
   | 'ready'      // { run_id }
@@ -172,4 +174,36 @@ export async function sendStream(opts: SendStreamOptions): Promise<void> {
   if (dataPayloads.length > 0 || currentEventName) {
     flushEvent()
   }
+}
+
+/** 高风险工具（submit/approve/reject 等）的 tool_result.result 是这个 JSON 形状
+ *  （见 service/tools/langchain_adapter.py 的 high_risk 拦截逻辑），不是真的执行结果。 */
+export interface ToolConfirmationRequired {
+  status: 'confirmation_required'
+  confirmation_token: string
+  tool_name: string
+  tool_args: Record<string, any>
+  expires_at: string
+  message: string
+}
+
+export function parseConfirmationRequired(result: string | undefined): ToolConfirmationRequired | null {
+  if (!result) return null
+  try {
+    const parsed = JSON.parse(result)
+    return parsed?.status === 'confirmation_required' ? (parsed as ToolConfirmationRequired) : null
+  } catch {
+    return null
+  }
+}
+
+/** 用户点击确认：真正执行这次高风险工具调用（第五轮审计 P0-2） */
+export async function confirmToolCall(token: string): Promise<{ tool_name: string; result: string }> {
+  const { data } = await request.post(`/chat/tool-confirmations/${token}/confirm`)
+  return data
+}
+
+/** 用户点击取消：这次高风险工具调用不会被执行 */
+export async function rejectToolCall(token: string): Promise<void> {
+  await request.post(`/chat/tool-confirmations/${token}/reject`)
 }

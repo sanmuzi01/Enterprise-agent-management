@@ -43,6 +43,11 @@ def _collect_bundle(root: str) -> Tuple[Dict[str, bytes], str]:
 @ToolRegistry.register
 class RunSkillScriptTool(BaseTool):
     requires_context = True
+    # 不用 high_risk 的确认流程：脚本执行已经有自己独立的一套控制——只能跑
+    # 管理员/Agent 作者预先绑定好的 Skill 自带脚本（不是 LLM 随意指定的代码）、
+    # 沙箱隔离、无网络、按用户限频、sandbox_audit 全程审计，风险模型跟"直接
+    # 调用外部业务系统 API"不是一回事，套用同一个"用户点确认"流程反而是重复建设。
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "run_skill_script"

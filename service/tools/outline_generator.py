@@ -8,6 +8,7 @@ class OutlineGeneratorTool(BaseTool):
     #大纲生成工具
     # 显式声明：本工具需要上下文（要拿用户的API Key和model_name调LLM）
     requires_context = True
+    risk_level = "read"  # 只生成文本给用户看，不产生任何状态变更
     default_system_prompt = (
         "你是一位学术论文结构设计专家。"
         "根据用户给定的主题，生成结构清晰、逻辑严谨的论文大纲。"

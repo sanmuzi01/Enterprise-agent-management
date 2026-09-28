@@ -26,6 +26,7 @@ def _error_json(exc: hub.EnterpriseHubError) -> str:
 @ToolRegistry.register
 class GetLeaveBalanceTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_leave_balance"
@@ -59,6 +60,7 @@ class GetLeaveBalanceTool(BaseTool):
 @ToolRegistry.register
 class CreateLeaveDraftTool(BaseTool):
     requires_context = True
+    risk_level = "write"  # 建的是草稿，还没提交，用户确认前可以反复改
 
     def get_name(self) -> str:
         return "create_leave_draft"
@@ -101,6 +103,7 @@ class CreateLeaveDraftTool(BaseTool):
 @ToolRegistry.register
 class SubmitLeaveRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 提交后进入审批流程，不能由模型自动触发
 
     def get_name(self) -> str:
         return "submit_leave_request"
@@ -136,6 +139,7 @@ class SubmitLeaveRequestTool(BaseTool):
 @ToolRegistry.register
 class ApproveLeaveRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 批准是真实的人事决定，不能由模型自动触发
 
     def get_name(self) -> str:
         return "approve_leave_request"
@@ -174,6 +178,7 @@ class ApproveLeaveRequestTool(BaseTool):
 @ToolRegistry.register
 class RejectLeaveRequestTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 拒绝同样是真实的人事决定，不能由模型自动触发
 
     def get_name(self) -> str:
         return "reject_leave_request"
@@ -212,6 +217,7 @@ class RejectLeaveRequestTool(BaseTool):
 @ToolRegistry.register
 class GetLeaveStatusTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_leave_status"

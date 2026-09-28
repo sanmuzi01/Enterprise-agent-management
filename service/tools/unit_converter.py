@@ -62,6 +62,7 @@ def _convert_temperature(value: float, from_unit: str, to_unit: str) -> float:
 @ToolRegistry.register
 class UnitConverterTool(BaseTool):
     """长度/重量/面积/体积/温度换算。"""
+    risk_level = "read"  # 纯计算，不产生任何状态变更
 
     def get_name(self) -> str:
         return "unit_converter"

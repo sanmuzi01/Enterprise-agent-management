@@ -32,6 +32,7 @@ def _error_json(exc: hub.EnterpriseHubError) -> str:
 @ToolRegistry.register
 class GetCustomerSummaryTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_customer_summary"
@@ -66,6 +67,7 @@ class GetCustomerSummaryTool(BaseTool):
 @ToolRegistry.register
 class CreateFollowupDraftTool(BaseTool):
     requires_context = True
+    risk_level = "write"  # 建的是草稿，还没确认，用户确认前可以反复改
 
     def get_name(self) -> str:
         return "create_followup_draft"
@@ -104,6 +106,7 @@ class CreateFollowupDraftTool(BaseTool):
 @ToolRegistry.register
 class SubmitCustomerFollowupTool(BaseTool):
     requires_context = True
+    risk_level = "high_risk"  # 确认后正式落库，不能由模型自动触发
 
     def get_name(self) -> str:
         return "submit_customer_followup"
@@ -139,6 +142,9 @@ class SubmitCustomerFollowupTool(BaseTool):
 @ToolRegistry.register
 class CreateOrUpdateOpportunityTool(BaseTool):
     requires_context = True
+    # 跟请假/采购不一样，这个工具没有"草稿→提交"两步，一次调用就直接落库
+    # （新建商机或改阶段/金额），效果等同于别的域里的"submit"，同样不能由模型自动触发。
+    risk_level = "high_risk"
 
     def get_name(self) -> str:
         return "create_or_update_opportunity"
@@ -183,6 +189,7 @@ class CreateOrUpdateOpportunityTool(BaseTool):
 @ToolRegistry.register
 class GetOpportunitiesTool(BaseTool):
     requires_context = True
+    risk_level = "read"
 
     def get_name(self) -> str:
         return "get_opportunities"

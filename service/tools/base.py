@@ -93,6 +93,15 @@ class BaseTool(ABC):
         "file_read": False,
         "exec": False,
     }
+    # 第五轮审计 P0-2：工具风险等级，决定 ReAct 循环里能不能被自动执行。
+    #   read       —— 纯查询，无状态变更，随时可以自动执行
+    #   write      —— 会变更状态，但只是草稿/可反复修改，不是最终动作，可以自动执行
+    #   high_risk  —— submit/approve/reject/delete 这类真正产生业务后果、难以撤销
+    #                  的操作，不能由模型在同一轮里自动执行，必须走
+    #                  service/tool_confirmation_service.py 的用户确认流程
+    # 默认取最严的 high_risk（安全默认值）：新工具如果忘了显式标注等级，宁可多一次
+    # 不必要的确认，也不能让一个真正高危的操作被漏掉、悄悄允许自动执行。
+    risk_level: str = "high_risk"
 
     def set_context(self, ctx: ToolContext):
         """注入执行上下文（由 ToolExecutor 在执行前调用）"""
