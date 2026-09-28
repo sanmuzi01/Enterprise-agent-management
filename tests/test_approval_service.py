@@ -16,7 +16,7 @@ from sqlalchemy import text
 from models.init_db import EnterpriseRole, KnowledgeSpace, Organization, OrganizationMember, SessionLocal
 from service import approval_service
 from service.enterprise_access import require_org_role_async
-from service.exceptions import InvalidInput, NotFound
+from service.exceptions import Conflict, InvalidInput, NotFound
 from tests import _route_client as rc
 from tests._async_helpers import run_async as _run
 
@@ -155,6 +155,77 @@ class ApprovalServiceTest(unittest.TestCase):
             self.assertEqual(len(winners), 1)
             self.assertEqual(len(losers), 1)
             self.assertEqual(winners[0], pending["id"])
+        _run(_do())
+
+    def test_concurrent_request_only_creates_one_row(self):
+        """P1 并发修复：两个并发请求同时给同一个 (action, resource_type, resource_id)
+        申请审批，用真正的 asyncio.gather，不是顺序调两次——之前"先查一遍没有活跃单
+        才插入"两个都能通过检查，都会各自插一条，堆出重复审批单。现在数据库唯一约束
+        （active_dedupe_key）兜底：一个真的插入成功，另一个撞唯一键后回滚重查，两边
+        拿到的必须是同一条记录，且数据库里最终只有一行。"""
+        async def _do():
+            import asyncio
+            from models.async_db import AsyncSessionLocal
+            from sqlalchemy import select as sa_select
+            from models.init_db import ApprovalRequest
+
+            async def _request():
+                async with AsyncSessionLocal() as db:
+                    return await approval_service.request_or_get_pending(
+                        db, self.applicant["id"], "test_resource.delete", "test_resource", 9009,
+                    )
+
+            results = await asyncio.gather(_request(), _request())
+            self.assertEqual(results[0]["id"], results[1]["id"], "两边必须拿到同一条审批单")
+
+            async with AsyncSessionLocal() as db:
+                rows = (await db.execute(
+                    sa_select(ApprovalRequest).where(
+                        ApprovalRequest.action == "test_resource.delete",
+                        ApprovalRequest.resource_type == "test_resource",
+                        ApprovalRequest.resource_id == 9009,
+                    )
+                )).scalars().all()
+            self.assertEqual(len(rows), 1, "数据库里必须只有一条，不能是两条重复审批单")
+        _run(_do())
+
+    def test_concurrent_decide_only_one_wins(self):
+        """P1 并发修复：两个管理员同时对同一条 pending 单一个批准一个拒绝，用真正的
+        asyncio.gather——之前"读一次、判断、逐字段赋值、再 commit"不是原子的，两边都
+        能读到 pending，最后提交的会悄悄覆盖先提交的。现在改成条件 UPDATE，只能有
+        一个成功，另一个必须报 Conflict，不能出现"两个都成功但状态互相矛盾"的情况。
+        """
+        async def _do():
+            import asyncio
+            from models.async_db import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as setup_db:
+                pending = await approval_service.request_or_get_pending(
+                    setup_db, self.applicant["id"], "test_resource.delete", "test_resource", 9010,
+                )
+
+            async def _decide(approve):
+                async with AsyncSessionLocal() as db:
+                    try:
+                        return await approval_service.decide(db, pending["id"], self.approver["id"], approve=approve)
+                    except (Conflict, InvalidInput):
+                        # 具体报哪个取决于两边真实的执行时序：输家的初始 SELECT 如果
+                        # 发生在赢家提交之后，会在最前面的 `status != "pending"` 检查
+                        # 就直接被拒（InvalidInput）；如果发生在赢家提交之前、只是
+                        # 写的时候慢了一步，会在条件 UPDATE 那里报 Conflict。两种都是
+                        # "正确识别出自己没抢到、没有覆盖对方"的安全结果，不区分。
+                        return None
+
+            results = await asyncio.gather(_decide(True), _decide(False))
+            winners = [r for r in results if r is not None]
+            losers = [r for r in results if r is None]
+            self.assertEqual(len(winners), 1, "两个人同时决定同一条单，必须只有一个成功")
+            self.assertEqual(len(losers), 1, "另一个必须报 Conflict，不能悄悄把前一个的结果覆盖掉")
+
+            async with AsyncSessionLocal() as db:
+                from models.init_db import ApprovalRequest
+                row = await db.get(ApprovalRequest, pending["id"])
+                self.assertEqual(row.status, winners[0]["status"], "数据库最终状态必须跟胜出者返回的状态一致")
         _run(_do())
 
     def test_decide_unknown_id_raises_not_found(self):

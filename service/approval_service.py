@@ -11,10 +11,11 @@ from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from models.init_db import ApprovalRequest
 from service import audit_service
-from service.exceptions import InvalidInput, NotFound, PermissionDenied
+from service.exceptions import Conflict, InvalidInput, NotFound, PermissionDenied
 from utils.timeutil import utcnow
 
 _ACTIVE_STATUSES = ("pending", "approved")
@@ -42,12 +43,25 @@ def _is_expired(row: ApprovalRequest) -> bool:
     return bool(row.expires_at and row.expires_at < utcnow())
 
 
+def _dedupe_key(action: str, resource_type: str, resource_id: int) -> str:
+    return f"{action}:{resource_type}:{resource_id}"
+
+
 async def request_or_get_pending(
         db, applicant_id: int, action: str, resource_type: str, resource_id: int,
         reason: Optional[str] = None, ttl_hours: int = _DEFAULT_TTL_HOURS,
 ) -> Dict[str, Any]:
     """幂等：同一个 (action, resource_type, resource_id) 已经有未过期的 pending/approved
     审批单就直接返回那一条，不重复建单——避免用户连点几次删除按钮堆出一堆重复审批单。
+
+    P1 并发修复：下面这段"先查一遍没有才插入"本身在两个并发请求同时打进来时不是
+    原子的——都读到"没有活跃单"，都会各自往下建一条，谁都不知道对方也建了一条。
+    真正兜底的是 `ApprovalRequest.active_dedupe_key` 上的数据库唯一约束
+    （`models/init_db.py`）：insert 时把它设成这个 (action, resource_type,
+    resource_id) 的固定字符串，两个并发 insert 里数据库只会让一个成功，另一个会
+    因为唯一键冲突报 `IntegrityError`——这时不是把错误抛给用户，而是当成"对方已经
+    帮我建好了"，回滚后重新查一遍，把那一条返回给调用方，跟单纯拿到它的语义完全
+    一样，调用方无感知。
     """
     existing = (await db.execute(
         select(ApprovalRequest).where(
@@ -59,14 +73,41 @@ async def request_or_get_pending(
     )).scalars().first()
     if existing is not None and not _is_expired(existing):
         return _to_dict(existing)
+    if existing is not None:
+        # 之前只是在 Python 里判断"过期了所以不用它"，从没真的把这条旧单标成
+        # expired、也没释放它占着的 dedupe key——旧单一直挂着 pending/approved
+        # 状态，加了唯一约束之后会挡住下面新单的 insert。这里顺手把它结清。
+        await db.execute(
+            update(ApprovalRequest)
+            .where(ApprovalRequest.id == existing.id, ApprovalRequest.status.in_(_ACTIVE_STATUSES))
+            .values(status="expired", active_dedupe_key=None)
+        )
+        await db.commit()
 
     row = ApprovalRequest(
         applicant_id=applicant_id, action=action, resource_type=resource_type,
         resource_id=resource_id, reason=reason, status="pending",
         expires_at=utcnow() + timedelta(hours=ttl_hours),
+        active_dedupe_key=_dedupe_key(action, resource_type, resource_id),
     )
     db.add(row)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        winner = (await db.execute(
+            select(ApprovalRequest).where(
+                ApprovalRequest.action == action,
+                ApprovalRequest.resource_type == resource_type,
+                ApprovalRequest.resource_id == resource_id,
+                ApprovalRequest.status.in_(_ACTIVE_STATUSES),
+            ).order_by(ApprovalRequest.id.desc())
+        )).scalars().first()
+        if winner is None:
+            # 理论上不该发生（唯一键冲突说明一定有一条活跃单存在）；真出现说明
+            # 有更复杂的并发时序，直接把原始冲突抛出去，不要装作成功了。
+            raise
+        return _to_dict(winner)
     await audit_service.record_async(
         applicant_id, f"{action}.approval_requested",
         resource_type=resource_type, resource_id=resource_id, detail={"approval_id": row.id},
@@ -83,6 +124,15 @@ async def list_pending(db, limit: int = 50) -> List[Dict[str, Any]]:
 
 
 async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[str, Any]:
+    """P1 并发修复：之前是"读一次 row、在 Python 里判断、再逐个字段赋值、最后
+    commit"，两个管理员并发点"批准"/"拒绝"同一条单子，都能读到 status=pending，
+    都会走到底下的写入，最后提交的那个会把先提交的那个悄悄覆盖掉——数据库里
+    最终状态取决于谁的事务后提交，不是谁先点的，而且两条 `approval_{status}`
+    审计记录都会被写下来，看起来像是"先批准又被拒绝"，其实是两个人互相不知道
+    对方也点了。改成条件 UPDATE（`WHERE id=:id AND status='pending'`），受影响
+    行数为 0 就说明在我们读到 pending 之后、真正写之前，已经被别的并发请求抢先
+    决定过了——直接报冲突，不覆盖，前端提示管理员刷新页面看真实结果。
+    """
     row = (await db.execute(
         select(ApprovalRequest).where(ApprovalRequest.id == approval_id)
     )).scalars().first()
@@ -95,14 +145,30 @@ async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[
     if row.status != "pending":
         raise InvalidInput(f"审批单已经是 {row.status} 状态，不能重复决定")
     if _is_expired(row):
-        row.status = "expired"
+        await db.execute(
+            update(ApprovalRequest)
+            .where(ApprovalRequest.id == approval_id, ApprovalRequest.status == "pending")
+            .values(status="expired", active_dedupe_key=None)
+        )
         await db.commit()
         raise InvalidInput("审批单已过期，请重新提交")
 
-    row.approver_id = approver_id
-    row.status = "approved" if approve else "rejected"
-    row.decided_at = utcnow()
+    new_status = "approved" if approve else "rejected"
+    values: Dict[str, Any] = {"approver_id": approver_id, "status": new_status, "decided_at": utcnow()}
+    if new_status == "rejected":
+        # approved 之后仍然算"活跃"（还没被 try_consume_approved 消费），继续占着
+        # dedupe key，跟 request_or_get_pending 判断"要不要复用"的 _ACTIVE_STATUSES
+        # 语义一致；rejected 是终态，释放掉让同一个资源可以重新发起申请。
+        values["active_dedupe_key"] = None
+    result = await db.execute(
+        update(ApprovalRequest)
+        .where(ApprovalRequest.id == approval_id, ApprovalRequest.status == "pending")
+        .values(**values)
+    )
     await db.commit()
+    if result.rowcount == 0:
+        raise Conflict("审批单已被其他人抢先决定，请刷新后重试")
+    await db.refresh(row)
     await audit_service.record_async(
         approver_id, f"{row.action}.approval_{row.status}",
         resource_type=row.resource_type, resource_id=row.resource_id,

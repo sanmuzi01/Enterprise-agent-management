@@ -1200,3 +1200,56 @@ mock 新增的 `get_agent_by_id` 查询，补上匹配的假 Agent owner（跟�
 `user_id` 一致，还原"自己绑自己"场景，不影响这些测试原本要测的沙箱/脚本逻辑）
 后恢复正常。全量 867 个测试（867 = 860 基线 + 本轮新增 27 个，减掉个别合并）
 全部通过。
+
+## 25. 第四轮审计 P1：审批流程的两个并发缺口（2026-09-28）
+
+### P1-6：重复审批单 + 审批决定可被并发覆盖
+
+**问题1（`request_or_get_pending`）**：之前是"先查一遍有没有活跃单，没有才插
+一条"，这两步不是原子的——两个并发请求（比如用户手抖连点两次删除确认）可能都
+读到"没有活跃单"，都各自插入一条，堆出重复审批单。
+
+修复：`models/init_db.py::ApprovalRequest` 新增 `active_dedupe_key` 列 +
+唯一约束（`migrations/versions/20260928_0001_approval_active_dedupe.py`）。
+MySQL 的唯一索引允许多个 NULL 共存，只在非 NULL 值之间强制唯一，天然适合
+"只对活跃的那一条做唯一约束"——不需要 MySQL 不支持的条件唯一索引，也不用
+生成列（生成列没法引用 `NOW()` 判断过期）。这一列完全由 `service/
+approval_service.py` 维护：建 pending 单时写成
+`f"{action}:{resource_type}:{resource_id}"`；决定为 rejected 或发现已过期时
+清空成 NULL（approved 之后仍然占着，直到过期才释放，跟原有 `_ACTIVE_STATUSES`
+的语义一致）。并发 insert 时数据库只会让一个成功，另一个撞 `IntegrityError`
+后回滚重查，把赢家那一条返回给调用方，调用方无感知，语义上等价于"复用了
+一条已有的"。
+
+顺带修了一个跟这个约束直接相关的旧缺口：`request_or_get_pending` 判断"存量单
+已过期就不用它"之前只是 Python 里的判断，从没真的把那一行的 `status` 改成
+`expired`、也没释放它的 dedupe key——旧单一直悬空占着 pending/approved 状态。
+接了唯一约束之后这会直接挡住新单插入，所以这次把它一起结清：判断为过期时
+先显式 `UPDATE ... SET status='expired', active_dedupe_key=NULL`，再插入新单。
+
+**问题2（`decide`）**：之前是"读一次审批单、在 Python 里判断、逐个字段赋值、
+最后 commit"，两个管理员并发点"批准"/"拒绝"同一条单子都可能读到
+`status=pending`，都会走到写入，最后提交的那个悄悄覆盖先提交的那个——数据库
+最终状态取决于谁的事务后提交，不是谁先点的，而且两条 `approval_{status}`
+审计记录都会被写下来。
+
+修复：改成条件 `UPDATE ... WHERE id=:id AND status='pending'`，受影响行数为
+0 说明在读到 pending 之后、真正写之前已经被别的并发请求抢先决定过了，直接
+抛 `Conflict`（HTTP 409），不覆盖。
+
+**真实并发验证**（`tests/test_approval_service.py`，均用真正的
+`asyncio.gather` 并发调用，不是顺序调两次）：
+- `test_concurrent_request_only_creates_one_row`：两个并发请求申请同一个
+  `(action, resource_type, resource_id)`，两边拿到的必须是同一条记录，数据库
+  里最终只有一行——不是靠代码看着像对就假设它对。
+- `test_concurrent_decide_only_one_wins`：两个人同时一个批准一个拒绝，只有
+  一个成功，另一个必须被拒绝（具体报 `Conflict` 还是更早的 `InvalidInput`
+  取决于两边真实的执行时序，两种都是"正确识别出自己没抢到、没有覆盖对方"的
+  安全结果，测试不区分）；数据库最终状态必须跟胜出者返回的状态完全一致。
+
+新迁移文件跑完之后用 `scripts/check_no_migration_drift.py` 确认 ORM 模型
+（`Base.metadata`）和迁移链完全一致，没有漂移（脚本另外报了一批跟这次改动
+无关的既有漂移——`_run_migrations()` 那份冻结列表里几个字段的 MySQL 列注释
+没有同步进 ORM 模型的 `comment=`，是这台本机开发库历史遗留的，不影响这次
+改动本身干净）。全量 873 个测试通过，`scripts/release_check.py` 全量跑通
+（含 compileall + 全量测试 + 前端构建）。

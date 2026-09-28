@@ -1,7 +1,7 @@
 from utils.timeutil import utcnow
 from typing import List
 from typing import Generator
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Table, Index, Float
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Table, Index, Float, UniqueConstraint
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, relationship
 from dotenv import load_dotenv
@@ -483,6 +483,7 @@ class ApprovalRequest(Base):
     __table_args__ = (
         Index("idx_approval_resource", "resource_type", "resource_id", "action", "status"),
         Index("idx_approval_applicant", "applicant_id"),
+        UniqueConstraint("active_dedupe_key", name="uq_approval_active_dedupe"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     applicant_id = Column(Integer, ForeignKey("user.id", name="fk_approval_applicant"), nullable=False)
@@ -497,6 +498,17 @@ class ApprovalRequest(Base):
     expires_at = Column(DateTime, nullable=True)
     decided_at = Column(DateTime, nullable=True)
     executed_at = Column(DateTime, nullable=True)
+    # P1 并发修复（docs/enterprise-rbac-plan.md 相关记录）：同一个
+    # (action, resource_type, resource_id) 同时只能有一条"活跃"（pending，或
+    # approved 且未过期）审批单——应用层原来"先查一遍没有才插入"防不住两个并发
+    # 请求同时通过检查、都插入一条，这里用真正的数据库唯一约束兜底，不靠应用层
+    # 自己判断。这一列完全由 service/approval_service.py 维护：新建 pending 单时
+    # 写成 f"{action}:{resource_type}:{resource_id}"，决定为 rejected 或发现已过期
+    # 时清空成 NULL（approved 之后仍然算"活跃"，直到过期才清空，跟原有
+    # `_ACTIVE_STATUSES` 的语义保持一致）。MySQL 的唯一索引允许多个 NULL 共存，
+    # 只在非 NULL 值之间强制唯一，天然适合"只对活跃的那一条做唯一约束"这个需求，
+    # 不需要 MySQL 不支持的"条件唯一索引"或生成列（生成列也没法引用 NOW()）。
+    active_dedupe_key = Column(String(150), nullable=True)
 
 
 class AuditEvent(Base):
