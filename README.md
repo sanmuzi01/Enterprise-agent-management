@@ -29,7 +29,7 @@ OpenAI 兼容 API。
 
 - **后端**：FastAPI · SQLAlchemy 2.0（异步 `asyncmy`）· MySQL · Redis（可选，缺省回退进程内）· ChromaDB
 - **前端**：Vue 3 · Vite · TypeScript · Tailwind · ECharts（按需懒加载）
-- **测试**：`unittest`，334 条，含**真实路由级测试**（TestClient + 真 JWT + 真 DB + 跨用户隔离校验）
+- **测试**：`unittest`，880 条，含**真实路由级测试**（TestClient + 真 JWT + 真 DB + 跨用户隔离校验）
 - **迁移**：Alembic + 启动幂等建表
 - **可观测**：Prometheus `/metrics`、请求耗时/状态码、连接池/缓存指标
 
@@ -101,7 +101,7 @@ npm run seed:demo        # 建 demo/demo12345 + 示例助手 + 一份已入库�
 ## 测试
 
 ```bash
-npm run test:unit          # 334 条；路由级测试需本机 MySQL
+npm run test:unit          # 880 条；路由级测试需本机 MySQL
 npm run release:check      # 上线自检：关键文件 + 编译 + 单测 + 前端构建
 ```
 

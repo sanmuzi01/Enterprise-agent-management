@@ -103,9 +103,10 @@ jobs:
           coverage run -m unittest discover -s tests -p "test_*.py" -v
           # 先出报告文件，再判是否达标——判定失败时也要能下载到 coverage.xml 看是哪里掉的
           coverage xml
-          # 起点先设 64%（当前真实基线约 64.6%，没有靠排除业务代码硬凑到 65%），
-          # 后续随测试补齐逐步调高，目标 75%——调整方法见 docs/testing.md。
-          coverage report --fail-under=64
+          # 之前起点是 64%（基线约 64.6%）；这轮新增的并发/签名安全回归测试把真实基线
+          # 推到了约 67%，按 docs/testing.md 的既定方法把门槛调高一档到 65（留出安全边际，
+          # 不直接顶到当前真实值），后续随测试补齐继续调高，目标 75%。
+          coverage report --fail-under=65
 
       - name: Upload coverage report
         if: always()

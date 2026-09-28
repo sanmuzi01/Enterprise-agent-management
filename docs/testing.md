@@ -1,6 +1,10 @@
 # Testing
 
-项目当前使用 Python `unittest` 做基础单元测试，不依赖真实 MySQL、Redis、短信服务或大模型。
+项目当前使用 Python `unittest`，880 条（2026-09-28 更新）。纯逻辑单测（TTL 缓存、重试熔断、
+短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
+（`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
+这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
+的联调测试是独立的 Java/JUnit 套件，见该目录下的说明，不在这个 Python `unittest` 范围内。
 
 ## 运行单元测试
 
@@ -8,12 +12,14 @@
 npm run test:unit
 ```
 
-当前覆盖：
+当前覆盖（举例，非全列，完整清单见 `tests/` 目录和各功能设计文档）：
 
-- TTL 缓存过期和深拷贝保护。
-- 注册短信验证码发送、校验、一次性消费和手机号格式拦截。
-- HTTP 外部调用重试和熔断。
-- 模型厂商识别和默认 API URL 自动适配。
+- 用户/团队/知识库的多租户数据隔离，跨用户越权访问全部拦截。
+- Agent 对话、RAG 检索、知识库权限治理的真实路由级用例。
+- 审批流程、部门 Agent 发布、owner 保护等并发安全场景（重复提交、竞态覆盖）。
+- 企业业务中心（OA/采购/CRM）Java 集成的 HMAC 签名绑定、幂等去重（Python 侧签名 + Java 侧
+  JUnit 集成测试）。
+- TTL 缓存过期和深拷贝保护、短信验证码流程、HTTP 外部调用重试熔断、模型厂商识别与适配。
 - 生产环境配置校验，防止占位密钥、无 Redis、短信误配置上线。
 
 ## 上线前建议测试顺序
@@ -40,13 +46,34 @@ npm run test:coverage
 配置在 `pyproject.toml` 的 `[tool.coverage.*]`：只统计 `FasdtApi/service/models/utils`（业务代码），
 排除 `migrations/` 和 `utils/log_to_csv.py`（没有任何路由/服务调用的一次性运维脚本，放业务代码目录纯属历史遗留）。
 
-当前真实基线约 **64.6%**，门槛先设 **64%**（如实反映现状，没有靠扩大排除范围硬凑到 65%）。按下面顺序调高：
+当前真实基线约 **67%**（2026-09-28 更新：第四轮安全审计的一批并发/签名回归测试把基线从
+64.6% 推高了；`coverage report --sort=-miss` 能重新核对），门槛调到 **65%**（留安全边际，
+不直接顶到真实值，避免个别环境跑不到某几个用例就红）。按下面顺序继续调高：
 
 1. 新增功能必须带测试，不能让覆盖率因为新代码被拉低。
-2. 挑覆盖率低但**活跃使用**的模块（`coverage report` 按 Miss 列排序能看出来，比如目前的
-   `service/agent_service.py`、`FasdtApi/knowledge.py`）逐个补测试，覆盖率过 65% 后把
-   `--fail-under` 提到 65，之后同样的方法继续提到 75。
+2. 挑覆盖率低但**活跃使用**的模块（`coverage report --sort=-miss` 能看出来，目前排在最前的
+   是 `service/agent_service.py`（37%）、`service/llm/llm_config_service.py`（30%）、
+   `FasdtApi/knowledge.py`（36%）、`service/background_task_service.py`（34%））逐个补测试，
+   覆盖率过 70% 后把 `--fail-under` 提到 70，之后同样的方法继续提到 75。
 3. 不要为了凑数字给不常用的代码加空测试，也不要为了让数字好看把活跃代码加进 `omit`。
+
+## 已知的无害噪音：Windows 下的 asyncmy teardown ResourceWarning
+
+本机（Windows + ProactorEventLoop）跑全量测试，进程退出前偶尔会打印几行
+`ResourceWarning: unclosed transport` / `unclosed socket`。已经确认过不是真的连接泄漏
+（`tests/_async_helpers.py` 顶部注释记录过根因和第一版修复：`asyncio.run()` 每次新建/
+关闭事件循环，但 `models/async_db.py` 的 `async_engine` 连接池是进程级单例，个别连接的
+关闭动作会落到已经关闭的事件循环之外——真正的 bug 是这会报 `AttributeError`，那部分已经
+用 `run_async`/`run_async_factory` helper 修好了）。这几行 `ResourceWarning` 是
+Windows 专属的、GC 时机相关的诊断噪音，不代表测试结果不可信：
+- 全量测试结果始终是 `OK`（880 个测试全绿），这几行出现在测试统计之后，不影响任何用例的
+  成功/失败判定。
+- CI（`.github/workflows/ci.yml`）跑在 `ubuntu-latest` 上，Linux 用的是 epoll 事件循环，
+  没有 `ProactorEventLoop`，这个噪音在 CI 里根本不会出现。
+- 评估过用 `atexit` 在进程退出前统一 `dispose()` 一次连接池，但那时候原来创建这些连接的
+  事件循环已经关闭，再 dispose 一次只是把同样的告警挪到另一个时间点，不能真正消除，还多
+  引入一个"进程退出阶段跑异步代码"的新脆弱点——收益不确定、风险不低，评估后决定不做，
+  留档说明原因，而不是硬塞一个治标不治本的修复。
 
 ### Lint（ruff）
 

@@ -16,7 +16,7 @@
     "crawl:check": ".venv\\Scripts\\python.exe scripts\\crawl_check.py",
     "load:test": ".venv\\Scripts\\python.exe scripts\\load_test.py",
     "test:unit": ".venv\\Scripts\\python.exe -m unittest discover -s tests -p \"test_*.py\"",
-    "test:coverage": ".venv\\Scripts\\python.exe -m coverage run -m unittest discover -s tests -p \"test_*.py\" && .venv\\Scripts\\python.exe -m coverage report --fail-under=64 && .venv\\Scripts\\python.exe -m coverage xml",
+    "test:coverage": ".venv\\Scripts\\python.exe -m coverage run -m unittest discover -s tests -p \"test_*.py\" && .venv\\Scripts\\python.exe -m coverage report --fail-under=65 && .venv\\Scripts\\python.exe -m coverage xml",
     "lint:py": ".venv\\Scripts\\python.exe -m ruff check FasdtApi service models utils scripts tests",
     "audit:py": ".venv\\Scripts\\python.exe -m pip_audit -r requirements.txt",
     "audit:npm": "npm --prefix frontend audit --omit=dev --audit-level=high",
