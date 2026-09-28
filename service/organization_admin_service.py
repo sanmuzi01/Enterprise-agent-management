@@ -15,7 +15,7 @@ TeamMember（Phase 3B/3D，见 docs/enterprise-rbac-plan.md），但一直没有
 只支持单企业部署：所有函数都对"当前唯一的 Organization"操作，多企业不是这次要解决的
 范围（跟 Team.organization_id 的字段设计一致，留着字段但不做多企业管理 UI）。
 """
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, select
 
@@ -29,6 +29,7 @@ from models.init_db import (
     TeamMember,
     User,
 )
+from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 
 
@@ -125,21 +126,35 @@ async def create_team(db, name: str, owner_user_id: int) -> Dict:
     db.add(team)
     await db.flush()
     await db.commit()
+    await audit_service.record_async(
+        db, owner_user_id, "org.team_created", resource_type="team", resource_id=team.id,
+        detail={"name": team.name},
+    )
     return {"id": team.id, "name": team.name, "status": team.status, "member_count": 0, "leads": []}
 
 
-async def update_team(db, team_id: int, name: Optional[str] = None, status: Optional[str] = None) -> Dict:
+async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = None,
+                       status: Optional[str] = None) -> Dict:
     team = await _get_team_or_404(db, team_id)
+    changes: Dict[str, Any] = {}
     if name is not None:
         name = name.strip()
         if not name:
             raise InvalidInput("部门名称不能为空")
+        if name != team.name:
+            changes["name"] = {"from": team.name, "to": name}
         team.name = name
     if status is not None:
         if status not in ("active", "disabled"):
             raise InvalidInput("status 只能是 active/disabled")
+        if status != team.status:
+            changes["status"] = {"from": team.status, "to": status}
         team.status = status
     await db.commit()
+    if changes:
+        await audit_service.record_async(
+            db, operator_id, "org.team_updated", resource_type="team", resource_id=team.id, detail=changes,
+        )
     return {"id": team.id, "name": team.name, "status": team.status}
 
 
@@ -202,7 +217,7 @@ async def list_team_members(db, team_id: int) -> List[Dict]:
     ]
 
 
-async def add_team_member(db, team_id: int, user_id: int, role_code: str = "member") -> Dict:
+async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role_code: str = "member") -> Dict:
     await _get_team_or_404(db, team_id)
     user_result = await db.execute(select(User.id).where(User.id == user_id))
     if user_result.scalar_one_or_none() is None:
@@ -223,10 +238,14 @@ async def add_team_member(db, team_id: int, user_id: int, role_code: str = "memb
     # （默认最低的 member 档），没有的话才补，已经有企业角色（哪怈是更高的）不动它。
     await _ensure_org_member(db, user_id)
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.team_member_added", resource_type="team", resource_id=team_id,
+        detail={"user_id": user_id, "role_code": role_code},
+    )
     return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
 
 
-async def update_team_member_role(db, team_id: int, user_id: int, role_code: str) -> Dict:
+async def update_team_member_role(db, team_id: int, operator_id: int, user_id: int, role_code: str) -> Dict:
     await _get_team_or_404(db, team_id)
     result = await db.execute(
         select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
@@ -236,10 +255,14 @@ async def update_team_member_role(db, team_id: int, user_id: int, role_code: str
         raise NotFound("该用户不在这个部门里")
     member.role_id = await _role_id(db, "team", role_code)
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.team_member_role_changed", resource_type="team", resource_id=team_id,
+        detail={"user_id": user_id, "role_code": role_code},
+    )
     return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
 
 
-async def remove_team_member(db, team_id: int, user_id: int) -> Dict:
+async def remove_team_member(db, team_id: int, operator_id: int, user_id: int) -> Dict:
     await _get_team_or_404(db, team_id)
     result = await db.execute(
         select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
@@ -249,6 +272,10 @@ async def remove_team_member(db, team_id: int, user_id: int) -> Dict:
         raise NotFound("该用户不在这个部门里")
     await db.delete(member)
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.team_member_removed", resource_type="team", resource_id=team_id,
+        detail={"user_id": user_id},
+    )
     return {"message": "已移出部门"}
 
 
@@ -289,7 +316,19 @@ async def list_org_members(db) -> List[Dict]:
     ]
 
 
-async def add_org_member(db, user_id: int, role_code: str = "member") -> Dict:
+async def _count_active_owners(db, organization_id: int, exclude_user_id: Optional[int] = None) -> int:
+    owner_role_id = await _role_id(db, "organization", "owner")
+    query = select(func.count(OrganizationMember.id)).where(
+        OrganizationMember.organization_id == organization_id,
+        OrganizationMember.role_id == owner_role_id,
+        OrganizationMember.status == "active",
+    )
+    if exclude_user_id is not None:
+        query = query.where(OrganizationMember.user_id != exclude_user_id)
+    return (await db.execute(query)).scalar() or 0
+
+
+async def add_org_member(db, operator_id: int, user_id: int, role_code: str = "member") -> Dict:
     org = await _get_default_organization(db)
     user_result = await db.execute(select(User.id).where(User.id == user_id))
     if user_result.scalar_one_or_none() is None:
@@ -308,10 +347,14 @@ async def add_org_member(db, user_id: int, role_code: str = "member") -> Dict:
     else:
         db.add(OrganizationMember(organization_id=org.id, user_id=user_id, role_id=role_id, status="active"))
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.member_added", resource_type="organization", resource_id=org.id,
+        detail={"user_id": user_id, "role_code": role_code},
+    )
     return {"user_id": user_id, "role_code": role_code}
 
 
-async def update_org_member(db, user_id: int, role_code: Optional[str] = None,
+async def update_org_member(db, operator_id: int, user_id: int, role_code: Optional[str] = None,
                              status: Optional[str] = None) -> Dict:
     org = await _get_default_organization(db)
     result = await db.execute(
@@ -322,17 +365,33 @@ async def update_org_member(db, user_id: int, role_code: Optional[str] = None,
     member = result.scalar_one_or_none()
     if member is None:
         raise NotFound("该用户不是企业成员")
+
+    owner_role_id = await _role_id(db, "organization", "owner")
+    was_active_owner = member.role_id == owner_role_id and member.status == "active"
+    new_role_id = member.role_id if role_code is None else await _role_id(db, "organization", role_code)
+    new_status = member.status if status is None else status
+    if status is not None and status not in ("active", "disabled"):
+        raise InvalidInput("status 只能是 active/disabled")
+    will_be_active_owner = new_role_id == owner_role_id and new_status == "active"
+
+    if was_active_owner and not will_be_active_owner:
+        remaining = await _count_active_owners(db, org.id, exclude_user_id=user_id)
+        if remaining == 0:
+            raise InvalidInput("不能降级/停用企业最后一个 owner，请先把 owner 角色转给另一个人")
+
     if role_code is not None:
-        member.role_id = await _role_id(db, "organization", role_code)
+        member.role_id = new_role_id
     if status is not None:
-        if status not in ("active", "disabled"):
-            raise InvalidInput("status 只能是 active/disabled")
-        member.status = status
+        member.status = new_status
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.member_updated", resource_type="organization", resource_id=org.id,
+        detail={"user_id": user_id, "role_code": role_code, "status": status},
+    )
     return {"user_id": user_id}
 
 
-async def remove_org_member(db, user_id: int) -> Dict:
+async def remove_org_member(db, operator_id: int, user_id: int) -> Dict:
     org = await _get_default_organization(db)
     result = await db.execute(
         select(OrganizationMember).where(
@@ -342,6 +401,13 @@ async def remove_org_member(db, user_id: int) -> Dict:
     member = result.scalar_one_or_none()
     if member is None:
         raise NotFound("该用户不是企业成员")
+
+    owner_role_id = await _role_id(db, "organization", "owner")
+    if member.role_id == owner_role_id and member.status == "active":
+        remaining = await _count_active_owners(db, org.id, exclude_user_id=user_id)
+        if remaining == 0:
+            raise InvalidInput("不能移除企业最后一个 owner，请先把 owner 角色转给另一个人")
+
     # 企业成员被移除时，顺带把这个人在所有部门里的身份也清掉——不然会留下"不是企业成员
     # 但还挂在某个部门"的悬空状态，跟 require_team_role 的"先查企业成员再查部门角色"
     # 这个既有假设不一致。
@@ -355,4 +421,8 @@ async def remove_org_member(db, user_id: int) -> Dict:
             await db.delete(tm)
     await db.delete(member)
     await db.commit()
+    await audit_service.record_async(
+        db, operator_id, "org.member_removed", resource_type="organization", resource_id=org.id,
+        detail={"user_id": user_id},
+    )
     return {"message": "已移出企业"}

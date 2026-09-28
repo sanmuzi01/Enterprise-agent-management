@@ -25,6 +25,7 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 
 from models.init_db import Agent, Team
+from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 from service.lifecycle import VALID_LIFECYCLE_STATUSES
 from service.runtime.central_router import VALID_DEPARTMENT_CODES
@@ -118,11 +119,15 @@ async def create_managed_agent(
     agent.prompt_file = create_prompt_file(agent.id, role, task, constraints, output)
 
     await db.commit()
+    await audit_service.record_async(
+        db, creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,
+        detail={"name": agent.name, "agent_type": agent_type, "department_code": department_code, "team_id": team_id},
+    )
     return _agent_to_dict(agent, team_name)
 
 
 async def update_managed_agent(
-        db, agent_id: int, name: Optional[str] = None, department_code: Optional[str] = None,
+        db, agent_id: int, operator_id: int, name: Optional[str] = None, department_code: Optional[str] = None,
         team_id: Optional[int] = None, model_name: Optional[str] = None,
         lifecycle_status: Optional[str] = None, expected_row_version: Optional[int] = None,
         role: Optional[str] = None, task: Optional[str] = None,
@@ -181,4 +186,11 @@ async def update_managed_agent(
     team_name = None
     if agent.team_id:
         team_name = (await db.execute(select(Team.name).where(Team.id == agent.team_id))).scalar_one_or_none()
+
+    if values or any(v is not None for v in (role, task, constraints, output)):
+        action = f"org.managed_agent_{lifecycle_status}" if lifecycle_status else "org.managed_agent_updated"
+        await audit_service.record_async(
+            db, operator_id, action, resource_type="agent", resource_id=agent.id,
+            detail={k: v for k, v in values.items() if k != "row_version"},
+        )
     return _agent_to_dict(agent, team_name)

@@ -104,7 +104,7 @@ async def update_team(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.update_team(async_db, team_id, name=data.name, status=data.status)
+    return await svc.update_team(async_db, team_id, current_user.id, name=data.name, status=data.status)
 
 
 @router.get("/teams/{team_id}/permissions", summary="部门权限关系总览：成员+角色/绑定知识库空间/绑定部门Agent")
@@ -132,7 +132,7 @@ async def add_team_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.add_team_member(async_db, team_id, data.user_id, data.role_code)
+    return await svc.add_team_member(async_db, team_id, current_user.id, data.user_id, data.role_code)
 
 
 @router.patch("/teams/{team_id}/members/{user_id}", summary="调整部门成员角色（含设置/取消部门负责人）")
@@ -143,7 +143,7 @@ async def update_team_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.update_team_member_role(async_db, team_id, user_id, data.role_code)
+    return await svc.update_team_member_role(async_db, team_id, current_user.id, user_id, data.role_code)
 
 
 @router.delete("/teams/{team_id}/members/{user_id}", summary="将成员移出部门")
@@ -153,7 +153,7 @@ async def remove_team_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.remove_team_member(async_db, team_id, user_id)
+    return await svc.remove_team_member(async_db, team_id, current_user.id, user_id)
 
 
 @router.get("/members", summary="企业成员列表（组织维度，独立于具体部门）")
@@ -170,7 +170,7 @@ async def add_org_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.add_org_member(async_db, data.user_id, data.role_code)
+    return await svc.add_org_member(async_db, current_user.id, data.user_id, data.role_code)
 
 
 @router.patch("/members/{user_id}", summary="调整企业角色或启停企业成员身份")
@@ -180,7 +180,7 @@ async def update_org_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.update_org_member(async_db, user_id, role_code=data.role_code, status=data.status)
+    return await svc.update_org_member(async_db, current_user.id, user_id, role_code=data.role_code, status=data.status)
 
 
 @router.delete("/members/{user_id}", summary="移出企业（连带清除该用户在所有部门里的身份）")
@@ -189,7 +189,7 @@ async def remove_org_member(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.remove_org_member(async_db, user_id)
+    return await svc.remove_org_member(async_db, current_user.id, user_id)
 
 
 @router.get("/agents", summary="中央/部门 Agent 列表")
@@ -221,8 +221,8 @@ async def update_managed_agent(
         current_user: User = Depends(get_current_admin_user_async),
 ):
     return await agent_admin_service.update_managed_agent(
-        async_db, agent_id, name=data.name, department_code=data.department_code, team_id=data.team_id,
-        model_name=data.model_name, lifecycle_status=data.lifecycle_status,
+        async_db, agent_id, current_user.id, name=data.name, department_code=data.department_code,
+        team_id=data.team_id, model_name=data.model_name, lifecycle_status=data.lifecycle_status,
         expected_row_version=data.expected_row_version,
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
     )

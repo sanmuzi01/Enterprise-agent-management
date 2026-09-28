@@ -119,7 +119,8 @@ class ManagedAgentCrudTest(unittest.TestCase):
         self.assertIn(agent_id, [a["id"] for a in listed])
 
         published = _run_db(lambda db: svc.update_managed_agent(
-            db, agent_id, lifecycle_status="published",
+                db, agent_id, self.admin["id"],
+                lifecycle_status="published",
         ))
         self.assertEqual(published["lifecycle_status"], "published")
         self.assertEqual(published["row_version"], 1)
@@ -130,7 +131,9 @@ class ManagedAgentCrudTest(unittest.TestCase):
 
         # 只改 task，不该把 role 冲掉（update_prompt_file 是整份覆盖写，
         # service 层必须先读旧值再合并）。
-        _run_db(lambda db: svc.update_managed_agent(db, agent_id, task="处理请假审批"))
+        _run_db(lambda db: svc.update_managed_agent(
+                db, agent_id, self.admin["id"],
+                task="处理请假审批"))
         prompt_data2 = read_prompt_file(agent_id)
         self.assertEqual(prompt_data2["role"], "HR助手")
         self.assertEqual(prompt_data2["task"], "处理请假审批")
@@ -139,7 +142,9 @@ class ManagedAgentCrudTest(unittest.TestCase):
         import service.agent_admin_service as svc
 
         with self.assertRaises(NotFound):
-            _run_db(lambda db: svc.update_managed_agent(db, 999_999_999, name="x"))
+            _run_db(lambda db: svc.update_managed_agent(
+                db, 999_999_999, self.admin["id"],
+                name="x"))
 
     def test_optimistic_lock_stale_version_raises_conflict(self):
         import service.agent_admin_service as svc
@@ -147,10 +152,13 @@ class ManagedAgentCrudTest(unittest.TestCase):
         created = _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-lock", "central"))
         agent_id = created["id"]
 
-        _run_db(lambda db: svc.update_managed_agent(db, agent_id, expected_row_version=0, name="aa-test-lock-2"))
+        _run_db(lambda db: svc.update_managed_agent(
+                db, agent_id, self.admin["id"],
+                expected_row_version=0, name="aa-test-lock-2"))
         with self.assertRaises(Conflict):
             _run_db(lambda db: svc.update_managed_agent(
-                db, agent_id, expected_row_version=0, name="aa-test-lock-stale",
+                db, agent_id, self.admin["id"],
+                expected_row_version=0, name="aa-test-lock-stale",
             ))
 
     def test_invalid_lifecycle_status_raises_invalid_input(self):
@@ -158,7 +166,32 @@ class ManagedAgentCrudTest(unittest.TestCase):
 
         created = _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-badstatus", "central"))
         with self.assertRaises(InvalidInput):
-            _run_db(lambda db: svc.update_managed_agent(db, created["id"], lifecycle_status="not_a_real_status"))
+            _run_db(lambda db: svc.update_managed_agent(
+                db, created["id"], self.admin["id"],
+                lifecycle_status="not_a_real_status"))
+
+    def test_create_writes_audit_event(self):
+        import service.agent_admin_service as svc
+        from models import audit_dao
+
+        created = _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-audit-create", "central"))
+        events = _run_db(lambda db: audit_dao.list_by_resource_async(db, "agent", created["id"]))
+        self.assertIn("org.managed_agent_created", [e.action for e in events])
+
+    def test_publish_writes_audit_event_with_specific_action_name(self):
+        import service.agent_admin_service as svc
+        from models import audit_dao
+
+        created = _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-audit-publish", "central"))
+        _run_db(lambda db: svc.update_managed_agent(
+            db, created["id"], self.admin["id"], lifecycle_status="published",
+        ))
+        events = _run_db(lambda db: audit_dao.list_by_resource_async(db, "agent", created["id"]))
+        actions = [e.action for e in events]
+        # 发布这个动作专门用带状态名的 action（org.managed_agent_published），
+        # 不是笼统的 org.managed_agent_updated——审计记录里一眼能看出"谁在什么时候
+        # 发布了这个 Agent"，不用再去 detail 字段里找。
+        self.assertIn("org.managed_agent_published", actions)
 
 
 if __name__ == "__main__":

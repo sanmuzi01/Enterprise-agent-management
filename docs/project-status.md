@@ -149,7 +149,7 @@
 - `python -m compileall` 通过。
 - 前端 `npm run build`（含 vue-tsc 类型检查）通过。
 - FastAPI 应用导入与路由生成通过。
-- `python -m unittest`：850 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
+- `python -m unittest`：860 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
   quick_connect、chunk_size、RAG 节省统计、web_query 联网检索、工作台模板、计费配额、
   配额阈值提醒、告警推送、新增 Agent 工具、报表导出、知识库 OCR/Excel、LLM 客户端 SSRF
   防护、Agent 流水线、LangChain base_url 拼接测试、Phase 3D 企业 RBAC/审批/审计/中央路由
@@ -178,7 +178,10 @@
   `lifecycle_status='published'` 的央/部门 Agent；新增 `/admin/org/agents` +
   `AdminOrganization.vue` 第三个 tab，中央/部门 Agent 的创建/绑部门/发布/停用
   终于有了管理入口，不用再直接改数据库——"中央 Agent 管理部门 Agent"这个目标
-  的最后一块缺口补上了。见第20节。
+  的最后一块缺口补上了。见第20节。组织后台的写操作（建部门、分配成员、改角色、
+  建/发布 Agent）现在都写审计了，之前完全没有留痕；企业最后一个 owner 不能被
+  降级/停用/移除。审计表账号最小权限（独立 DB 账号，只给 INSERT/SELECT）还没
+  做，目前审计写入跟主业务共用同一个数据库账号，见第21节"还没做"部分。
 - Phase 5（Spring Boot 企业业务中心，见
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名

@@ -952,3 +952,76 @@ Agent 生命周期没有做"至少要有一个 published 的中央 Agent"之类�
 硬编码在 `central_router.VALID_DEPARTMENT_CODES` 里（hr/procurement/sales/
 finance/it 五个），新增部门类型需要改代码，不是数据库配置驱动的，跟
 `_ROUTING_RULES` 关键词表是同一个"先用得上，不为假设的扩展性买单"的判断。
+
+## 21. 组织变更审计 + 最后一个 owner 保护（2026-09-28）
+
+组织后台（第17/20节）上线后复查发现：建部门、分配成员、改角色、建/发布 Agent
+这些变更操作完全没有留痕，通用审计表（`AuditEvent`，Phase 3D 阶段6）一直只有
+`approval_service.py` 一个调用方；而且可以把企业唯一一个 `owner` 降级、停用或
+移除，误操作后可能没人能继续管理系统。
+
+### 审计
+
+`service/organization_admin_service.py`/`service/agent_admin_service.py` 的每个
+写操作（`create_team`/`update_team`/`add_team_member`/`update_team_member_role`/
+`remove_team_member`/`add_org_member`/`update_org_member`/`remove_org_member`/
+`create_managed_agent`/`update_managed_agent`）都在自己的 `db.commit()` **之后**
+调 `audit_service.record_async`——跟 `approval_service.py` 的既有约定一致：审计
+写入失败不该拖垮已经成功的主操作，所以必须在主提交之后才调，不是同一个事务里
+先审计后提交。为此给这些函数都加了 `operator_id`（执行操作的管理员 user_id，
+之前完全没有这个参数——是谁改的之前根本没留下来），路由层从 `current_user.id`
+传入。`update_team`/`update_org_member` 只在真的有字段变化时才写审计（把
+"改了但值没变"过滤掉，不然点一次保存按钮不管有没有真改都留一条空审计）。
+Agent 发布/退役用专门的 action 名（`org.managed_agent_published`/
+`org.managed_agent_retired`），不是笼统的 `updated`——审计列表里一眼能看出
+"谁在什么时候发布/停用了哪个 Agent"，不用点进 detail 字段找。
+
+### 最后一个 owner 保护
+
+`organization_admin_service.py` 新增 `_count_active_owners()`，`update_org_member`
+（降级角色或停用）和 `remove_org_member` 在"这个人当前是活跃的 owner"且"操作后
+就不再是"时，检查企业里是否还剩至少一个别的活跃 owner，没有就拒绝
+（`InvalidInput`，提示先把 owner 转给另一个人）。只保护 `owner` 这一个角色——
+`admin`/`auditor`/`member` 没有这层限制，降到 0 个 admin 只是少了一些管理能力，
+不是"没人能管系统"那种不可恢复的状态。
+
+平台超级管理员（`ADMIN_USER_NAMES` 环境变量配的用户名列表）没有对应的"最后一个"
+保护——它是部署配置，不是数据库里的可变记录，这里保护不了，也不属于这个组织
+后台的职责范围。
+
+### 测试
+
+新增 `tests/test_organization_admin_service.py::AuditTrailTest`（4个）：建部门/
+加成员写审计、停用部门的审计详情里能看到 `{"from": "active", "to": "disabled"}`
+这样的前后对比、没有真改动不写审计。`LastOwnerProtectionTest`（4个）：建一个
+只有一个 owner 的专属测试企业，测降级/停用/移除唯一 owner 都被拒绝、企业有
+第二个 owner 时可以正常操作——这几个测试只有在测试建的企业恰好是这台机器的
+默认企业时才会真的跑断言（`_get_default_organization` 取 id 最小的那个
+`Organization`，测试库和这台开发机不是同一行），不是就 skip，跟
+`test_agent_admin_service.py` 的部门 Agent 场景同一个限制。为了在这台机器上
+真正验证过这条保护逻辑本身（不只是"没跑"），另外用一次性脚本 monkeypatch
+`_get_default_organization` 指向一个临时建的测试企业，跑通了"降级/移除唯一
+owner 都被拒绝"两个断言，验证完立刻清理，没有留任何数据。
+
+`tests/test_agent_admin_service.py` 新增 2 个审计测试。顺手修了
+`OrgMemberCrudTest`/`LastOwnerProtectionTest` 用的测试用户名前缀太长
+（`rt_{prefix}_{随机后缀}` truncate 到 20 字符时，前缀本身就快用满甚至用满
+20 字符，随机后缀被截没了，等于每次跑用的都是同一个用户名——cleanup 一旦失败
+就会永久卡住后续所有测试运行）的隐患，缩短成更安全的前缀。
+
+全量 860 个 Python 测试全绿（6 个环境相关的条件跳过），ruff 干净。
+
+### 还没做
+
+审计表账号最小权限（"独立数据库账号，只给 INSERT/SELECT，不给 UPDATE/DELETE"）
+没有做——目前审计写入用的还是应用主账号（`docker-compose.prod.yml` 里配的
+`DB_USER`/`DB_PASSWORD`，生产环境目前是 `root`），能写审计的账号理论上也能改/删
+审计记录，不是真正的"防篡改"。要做对需要：审计写入换一个独立的 SQLAlchemy
+engine/session（不能复用调用方传进来的 `db` 会话，那个会话的账号权限跟主业务
+一致），新的 MySQL 账号只授予 `audit_event` 表的 `INSERT`/`SELECT`，
+`docker-compose.prod.yml`/`deploy/mysql-init/` 加上建这个账号的脚本，
+Java 那边（`enterprise-business-hub` 自己的 `audit_event` 表，docs/
+enterprise-business-hub-plan.md）需要同样处理。这是一次独立的基础设施改动，
+风险和验证成本都比这次的应用层改动高（要在真实分权限的 MySQL 账号下跑通整条
+审计写入链路才能算验证过，不是单元测试能完全覆盖的），值得单独一次会话做，
+不在这次顺手带上。
