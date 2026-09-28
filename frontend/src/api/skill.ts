@@ -1,5 +1,18 @@
 import request from '../utils/request'
 
+/** 发布生命周期：draft(草稿) -> reviewing(待审核) -> published(已发布) -> retired(已退役)，
+ * 跟后端 service/lifecycle.py 共用同一份值。只有 published 才会出现在公开能力商店里
+ * （models/skill_dao.py::list_public_skills），draft/reviewing/retired 即便 is_public=1
+ * 别人也看不到、也绑不了（service/access_control.py::can_bind_skill）。 */
+export type SkillLifecycleStatus = 'draft' | 'reviewing' | 'published' | 'retired'
+
+export const SKILL_LIFECYCLE_STATUSES: { value: SkillLifecycleStatus; label: string }[] = [
+  { value: 'draft', label: '草稿' },
+  { value: 'reviewing', label: '待审核' },
+  { value: 'published', label: '已发布' },
+  { value: 'retired', label: '已退役' },
+]
+
 export interface Skill {
   id: number
   user_id: number
@@ -11,6 +24,9 @@ export interface Skill {
   config?: SkillConfig | null
   /** 能力商店里：发布者是管理员（= 经管理员审核上架） */
   is_official?: boolean
+  lifecycle_status?: SkillLifecycleStatus
+  /** 乐观锁版本号，改状态/内容时回传 expected_row_version 防止并发覆盖 */
+  row_version?: number
 }
 
 export interface SkillTemplate {
@@ -178,6 +194,9 @@ export async function updateSkill(skillId: number, payload: {
   system_prompt?: string
   tool_names?: string[]
   permissions?: Partial<SkillPermissions>
+  lifecycle_status?: SkillLifecycleStatus
+  /** 乐观锁：传了就必须跟数据库当前 row_version 一致，否则后端返回 409 */
+  expected_row_version?: number
 }): Promise<Skill> {
   const { data } = await request.put<SkillResponse<Skill>>(`/skill/${skillId}`, payload)
   return data.data

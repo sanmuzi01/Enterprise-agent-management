@@ -155,6 +155,14 @@
               <span v-else :class="skill.is_public === 1 ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'" class="shrink-0 rounded px-2 py-1 text-xs">
                 {{ skill.is_public === 1 ? '公开' : '私有' }}
               </span>
+              <span
+                v-if="isAdmin && (activeTab === 'mine' || isMySkill(skill))"
+                :class="lifecycleBadgeClass(skill.lifecycle_status)"
+                class="shrink-0 rounded px-2 py-1 text-xs"
+                :title="skill.is_public === 1 && skill.lifecycle_status !== 'published' ? '只有「已发布」的公开能力才会出现在能力商店里' : ''"
+              >
+                {{ lifecycleLabel(skill.lifecycle_status) }}
+              </span>
             </div>
 
             <p class="mt-4 min-h-10 text-sm leading-relaxed text-slate-600">{{ skill.description || '暂无描述' }}</p>
@@ -553,6 +561,28 @@
             </span>
             <input type="checkbox" v-model="isPublicBool" class="h-4 w-4" />
           </label>
+
+          <div v-if="isAdmin && editing" class="rounded border border-slate-200 px-3 py-2">
+            <div class="flex items-center justify-between gap-3">
+              <span>
+                <span class="block text-sm font-medium text-slate-800">发布状态</span>
+                <span class="block text-xs text-slate-500">
+                  只有「已发布」才会出现在能力商店里；作者自己任何状态都能绑到自己的助手上测试
+                </span>
+              </span>
+              <select
+                v-model="form.lifecycle_status"
+                class="h-9 shrink-0 rounded border border-slate-300 px-2 text-sm outline-none focus:border-violet-500"
+              >
+                <option v-for="opt in skillApi.SKILL_LIFECYCLE_STATUSES" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+            </div>
+            <p v-if="isPublicBool && form.lifecycle_status !== 'published'" class="mt-2 text-xs text-amber-600">
+              提示：「公开给其他用户使用」已勾选，但状态不是「已发布」，其他用户暂时还看不到它。
+            </p>
+          </div>
         </main>
 
         <footer class="flex items-center justify-between gap-3 border-t border-slate-200 px-5 py-4">
@@ -752,7 +782,7 @@ import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Download, History, Penc
 import * as skillApi from '../api/skill'
 import * as attachmentApi from '../api/attachment'
 import { useUserStore } from '../stores/user'
-import type { Skill, SkillImportResult, SkillTemplate, SkillTool, SkillValidation, SkillVersion } from '../api/skill'
+import type { Skill, SkillImportResult, SkillLifecycleStatus, SkillTemplate, SkillTool, SkillValidation, SkillVersion } from '../api/skill'
 import { toastError, toastSuccess } from '../utils/toast'
 import { getErrorMessage } from '../utils/request'
 
@@ -802,7 +832,18 @@ const form = ref({
   permission_network: false,
   permission_file_read: '',
   resources: [] as skillApi.SkillResource[],
+  lifecycle_status: 'draft' as SkillLifecycleStatus,
 })
+
+const lifecycleLabel = (status?: SkillLifecycleStatus) =>
+  skillApi.SKILL_LIFECYCLE_STATUSES.find((opt) => opt.value === status)?.label || '草稿'
+
+const lifecycleBadgeClass = (status?: SkillLifecycleStatus) => {
+  if (status === 'published') return 'bg-emerald-50 text-emerald-700'
+  if (status === 'reviewing') return 'bg-amber-50 text-amber-700'
+  if (status === 'retired') return 'bg-slate-200 text-slate-500'
+  return 'bg-slate-100 text-slate-500' // draft
+}
 
 const templateForm = ref({
   name: '',
@@ -931,6 +972,7 @@ const createFromTemplate = (template: SkillTemplate) => {
     permission_network: false,
     permission_file_read: '',
     resources: [],
+    lifecycle_status: 'draft',
   }
   errorMsg.value = ''
   showDialog.value = true
@@ -977,6 +1019,7 @@ const openCreate = () => {
     permission_network: false,
     permission_file_read: '',
     resources: [],
+    lifecycle_status: 'draft',
   }
   if (templates.value.length > 0) {
     const firstTemplate = templates.value[0]
@@ -994,6 +1037,9 @@ const openEdit = async (skill: Skill) => {
   let detail = skill
   try {
     detail = await skillApi.getSkill(skill.id)
+    // 用刚读到的最新数据（含 row_version）替换列表里可能已经过时的快照，
+    // 乐观锁比对的是这一份，不是打开弹窗那一刻列表里的旧值。
+    editing.value = detail
   } catch (e: any) {
     errorMsg.value = getErrorMessage(e, '读取能力配置失败')
   }
@@ -1007,6 +1053,7 @@ const openEdit = async (skill: Skill) => {
     permission_network: Boolean(detail.config?.permissions?.network),
     permission_file_read: (detail.config?.permissions?.file_read || []).join('\n'),
     resources: [...(detail.config?.resources || [])],
+    lifecycle_status: detail.lifecycle_status || 'draft',
   }
 }
 
@@ -1109,6 +1156,8 @@ const submit = async () => {
         system_prompt: form.value.system_prompt,
         tool_names: form.value.tool_names,
         permissions: buildPermissionsPayload(),
+        lifecycle_status: form.value.lifecycle_status,
+        expected_row_version: editing.value.row_version,
       })
     } else {
       await skillApi.createSkill({
@@ -1124,7 +1173,14 @@ const submit = async () => {
     await reload()
     closeDialog()
   } catch (e: any) {
-    errorMsg.value = getErrorMessage(e, '保存失败')
+    const message = getErrorMessage(e, '保存失败')
+    // 版本冲突：把这个能力最新的内容（含最新 row_version）重新读回来，
+    // 让用户能直接看着最新版本再改一次，不用自己关掉弹窗重开。
+    // openEdit 会先清空 errorMsg，所以冲突提示要在它跑完之后再设置。
+    if (e?.response?.status === 409 && editing.value) {
+      await openEdit(editing.value)
+    }
+    errorMsg.value = message
   } finally {
     submitting.value = false
   }
