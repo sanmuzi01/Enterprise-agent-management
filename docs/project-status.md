@@ -149,7 +149,7 @@
 - `python -m compileall` 通过。
 - 前端 `npm run build`（含 vue-tsc 类型检查）通过。
 - FastAPI 应用导入与路由生成通过。
-- `python -m unittest`：774 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
+- `python -m unittest`：787 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
   quick_connect、chunk_size、RAG 节省统计、web_query 联网检索、工作台模板、计费配额、
   配额阈值提醒、告警推送、新增 Agent 工具、报表导出、知识库 OCR/Excel、LLM 客户端 SSRF
   防护、Agent 流水线、LangChain base_url 拼接测试、Phase 3D 企业 RBAC/审批/审计/中央路由
@@ -161,11 +161,20 @@
 - Phase 5（Spring Boot 企业业务中心，见
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名
-  请求上下文、幂等、审计），15 个 JUnit 集成测试 + 17 个 FastAPI Agent 工具全绿。
+  请求上下文、幂等、审计），35 个 Java 测试（28 个真实 HTTP+MySQL 集成测试 +
+  7 个纯逻辑单测）+ 17 个 FastAPI Agent 工具全绿。
   Docker Compose 生产部署集成已完成并用真实 Docker daemon 验证过（构建镜像 →
   启动容器 → `mysql-init` 自动建库 → Flyway 迁移 → healthcheck 通过 → 宿主机
   `curl` 探活成功，见 [enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)
-  第15节）。还没做：`RealSapConnector`（等真实企业提供接口）。
+  第15节）。2026-09-28 修复了两个 P0 级权限漏洞：Agent 工具之前能直接把
+  `oa.leave.approve`/`procurement.approve` 这类 scope 硬编码签进请求，从没有
+  查过调用者是否真的是部门负责人；OA/采购的 `getStatus`/`approve`/`reject`
+  也没有资源级隔离（能看/批别人部门的申请）。修复后权限判断收口到
+  `service/enterprise_access.py::is_org_admin`/`is_team_admin`（按真实
+  `enterprise_role` 算，工具不能自行断言），Java 侧新增
+  `security.TeamAccessGuard` 做资源级校验 + 禁止自审批，详见
+  [enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)第16节。
+  还没做：`RealSapConnector`（等真实企业提供接口）。
 - `npm run release:check` 静态检查通过。
 
 ## 当前主要风险

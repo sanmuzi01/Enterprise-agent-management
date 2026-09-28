@@ -8,26 +8,9 @@
 """
 import json
 import uuid
-from typing import Optional
 
 from service import enterprise_hub_client as hub
 from service.tools.base import BaseTool, ToolRegistry
-
-
-def _resolve_team_id(user_id: int) -> Optional[int]:
-    """当前用户在职的部门 id（没有就 None——请假单本身允许 team_id 为空）。"""
-    from models.init_db import SessionLocal
-    from sqlalchemy import text
-
-    db = SessionLocal()
-    try:
-        row = db.execute(
-            text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
-            {"u": user_id},
-        ).first()
-        return row[0] if row else None
-    finally:
-        db.close()
 
 
 def _current_user_id(ctx) -> int:
@@ -60,11 +43,14 @@ class GetLeaveBalanceTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
         year = kwargs.get("year")
         path = "/oa/leave/balance" + (f"?year={int(year)}" if year else "")
         try:
-            result = hub.call("GET", path, user_id, team_id, ["oa.leave.read"], "get_leave_balance")
+            result = hub.call(
+                "GET", path, user_id, auth["team_id"], ["oa.leave.read"], "get_leave_balance",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
         return json.dumps(result, ensure_ascii=False)
@@ -94,7 +80,7 @@ class CreateLeaveDraftTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
         body = {
             "leaveTypeCode": kwargs.get("leave_type_code"),
             "startDate": kwargs.get("start_date"),
@@ -103,7 +89,8 @@ class CreateLeaveDraftTool(BaseTool):
         }
         try:
             result = hub.call(
-                "POST", "/oa/leave/requests", user_id, team_id, ["oa.leave.write"], "create_leave_draft",
+                "POST", "/oa/leave/requests", user_id, auth["team_id"], ["oa.leave.write"], "create_leave_draft",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body=body, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -132,12 +119,14 @@ class SubmitLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/oa/leave/requests/{int(request_id)}/submit", user_id, team_id,
-                ["oa.leave.write"], "submit_leave_request", idempotency_key=str(uuid.uuid4()),
+                "POST", f"/oa/leave/requests/{int(request_id)}/submit", user_id, auth["team_id"],
+                ["oa.leave.write"], "submit_leave_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+                idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -166,12 +155,15 @@ class ApproveLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权审批请假单"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/oa/leave/requests/{int(request_id)}/approve", user_id, team_id,
+                "POST", f"/oa/leave/requests/{int(request_id)}/approve", user_id, auth["team_id"],
                 ["oa.leave.approve"], "approve_leave_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"note": kwargs.get("note")}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -201,12 +193,15 @@ class RejectLeaveRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权处理请假单"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/oa/leave/requests/{int(request_id)}/reject", user_id, team_id,
+                "POST", f"/oa/leave/requests/{int(request_id)}/reject", user_id, auth["team_id"],
                 ["oa.leave.approve"], "reject_leave_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"note": kwargs.get("note")}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -235,12 +230,13 @@ class GetLeaveStatusTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         user_id = _current_user_id(self._ctx)
-        team_id = _resolve_team_id(user_id)
+        auth = hub.resolve_caller_context(user_id)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "GET", f"/oa/leave/requests/{int(request_id)}", user_id, team_id,
+                "GET", f"/oa/leave/requests/{int(request_id)}", user_id, auth["team_id"],
                 ["oa.leave.read"], "get_leave_status",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)

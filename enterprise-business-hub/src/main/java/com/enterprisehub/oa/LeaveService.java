@@ -3,6 +3,7 @@ package com.enterprisehub.oa;
 import com.enterprisehub.audit.AuditService;
 import com.enterprisehub.oa.dto.LeaveBalanceDto;
 import com.enterprisehub.oa.dto.LeaveRequestDto;
+import com.enterprisehub.security.TeamAccessGuard;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -79,8 +80,13 @@ public class LeaveService {
     }
 
     @Transactional
-    public LeaveRequestDto approve(long requestId, long approverUserId, String note, String traceId) {
+    public LeaveRequestDto approve(long requestId, long approverUserId, String note, String traceId,
+                                    Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
         LeaveRequest request = getSubmitted(requestId);
+        TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, request.getTeamId());
+        if (request.getApplicantUserId() == approverUserId) {
+            throw badRequest("不能审批自己提交的申请，需要由部门负责人或企业管理员处理");
+        }
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
 
         LeaveBalance balance = leaveBalanceRepository
@@ -97,17 +103,25 @@ public class LeaveService {
     }
 
     @Transactional
-    public LeaveRequestDto reject(long requestId, long approverUserId, String note, String traceId) {
+    public LeaveRequestDto reject(long requestId, long approverUserId, String note, String traceId,
+                                   Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
         LeaveRequest request = getSubmitted(requestId);
+        TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, request.getTeamId());
+        if (request.getApplicantUserId() == approverUserId) {
+            throw badRequest("不能处理自己提交的申请，需要由部门负责人或企业管理员处理");
+        }
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
         request.reject(approverUserId, note);
         auditService.record(approverUserId, "oa.leave.rejected", "leave_request", request.getId(), note, traceId);
         return LeaveRequestDto.from(request, type);
     }
 
-    public LeaveRequestDto getStatus(long requestId) {
+    public LeaveRequestDto getStatus(long requestId, long requesterUserId, Long requesterTeamId,
+                                      boolean isOrgAdmin, boolean isTeamAdmin) {
         LeaveRequest request = leaveRequestRepository.findById(requestId)
                 .orElseThrow(() -> notFound("请假单不存在"));
+        TeamAccessGuard.requireOwnerOrTeamAccess(request.getApplicantUserId(), requesterUserId, requesterTeamId,
+                isOrgAdmin, isTeamAdmin, request.getTeamId());
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
         return LeaveRequestDto.from(request, type);
     }

@@ -73,7 +73,8 @@ public class ProcurementController {
         RequestContext ctx = RequestContextHolder.current();
         String note = body != null ? body.note() : null;
         return idempotencyService.execute(idempotencyKey, () -> {
-            var dto = procurementService.approve(id, ctx.userId(), note, ctx.traceId());
+            var dto = procurementService.approve(id, ctx.userId(), note, ctx.traceId(),
+                    ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
             return ResponseEntity.<Object>ok(dto);
         });
     }
@@ -86,7 +87,8 @@ public class ProcurementController {
         RequestContext ctx = RequestContextHolder.current();
         String note = body != null ? body.note() : null;
         return idempotencyService.execute(idempotencyKey, () -> {
-            var dto = procurementService.reject(id, ctx.userId(), note, ctx.traceId());
+            var dto = procurementService.reject(id, ctx.userId(), note, ctx.traceId(),
+                    ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
             return ResponseEntity.<Object>ok(dto);
         });
     }
@@ -94,7 +96,8 @@ public class ProcurementController {
     @GetMapping("/requests/{id}")
     public Object getStatus(@PathVariable("id") long id) {
         ScopeGuard.require("procurement.read");
-        return procurementService.getStatus(id);
+        RequestContext ctx = RequestContextHolder.current();
+        return procurementService.getStatus(id, ctx.userId(), ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
     }
 
     private long requireTeamId(RequestContext ctx) {

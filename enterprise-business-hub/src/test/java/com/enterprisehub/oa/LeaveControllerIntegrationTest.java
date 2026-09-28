@@ -71,16 +71,22 @@ class LeaveControllerIntegrationTest {
     }
 
     private HttpHeaders signedHeaders(long uid, List<String> scopes, String operation) {
+        return signedHeaders(uid, teamId, scopes, operation, false, false);
+    }
+
+    private HttpHeaders signedHeaders(long uid, Long headerTeamId, List<String> scopes, String operation,
+                                       boolean isOrgAdmin, boolean isTeamAdmin) {
         try {
-            Map<String, Object> context = Map.of(
-                    "user_id", uid,
-                    "team_id", teamId,
-                    "scopes", scopes,
-                    "operation", operation,
-                    "trace_id", UUID.randomUUID().toString(),
-                    "timestamp", Instant.now().getEpochSecond(),
-                    "nonce", UUID.randomUUID().toString().replace("-", "")
-            );
+            Map<String, Object> context = new java.util.HashMap<>();
+            context.put("user_id", uid);
+            context.put("team_id", headerTeamId);
+            context.put("scopes", scopes);
+            context.put("operation", operation);
+            context.put("is_org_admin", isOrgAdmin);
+            context.put("is_team_admin", isTeamAdmin);
+            context.put("trace_id", UUID.randomUUID().toString());
+            context.put("timestamp", Instant.now().getEpochSecond());
+            context.put("nonce", UUID.randomUUID().toString().replace("-", ""));
             String json = MAPPER.writeValueAsString(context);
             String contextB64 = Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));
 
@@ -128,7 +134,8 @@ class LeaveControllerIntegrationTest {
                 HttpMethod.POST, new HttpEntity<>(submitHeaders), Map.class);
         assertThat(submitResp.getBody().get("status")).isEqualTo("SUBMITTED");
 
-        HttpHeaders approveHeaders = signedHeaders(approverId, List.of("oa.leave.approve"), "approve_leave_request");
+        HttpHeaders approveHeaders = signedHeaders(approverId, teamId, List.of("oa.leave.approve"),
+                "approve_leave_request", false, true);
         approveHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
         ResponseEntity<Map> approveResp = rest.exchange(url("/oa/leave/requests/" + requestId + "/approve"),
                 HttpMethod.POST, new HttpEntity<>(Map.of("note", "同意"), approveHeaders), Map.class);
@@ -215,7 +222,8 @@ class LeaveControllerIntegrationTest {
         rest.exchange(url("/oa/leave/requests/" + requestId + "/submit"), HttpMethod.POST,
                 new HttpEntity<>(submitHeaders), Map.class);
 
-        HttpHeaders rejectHeaders = signedHeaders(approverId, List.of("oa.leave.approve"), "reject_leave_request");
+        HttpHeaders rejectHeaders = signedHeaders(approverId, teamId, List.of("oa.leave.approve"),
+                "reject_leave_request", false, true);
         rejectHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
         ResponseEntity<Map> rejectResp = rest.exchange(url("/oa/leave/requests/" + requestId + "/reject"),
                 HttpMethod.POST, new HttpEntity<>(Map.of("note", "人手不够"), rejectHeaders), Map.class);
@@ -224,5 +232,101 @@ class LeaveControllerIntegrationTest {
         ResponseEntity<Map[]> afterBalance = rest.exchange(url("/oa/leave/balance"), HttpMethod.GET,
                 new HttpEntity<>(signedHeaders(userId, List.of("oa.leave.read"), "get_leave_balance")), Map[].class);
         assertThat(afterBalance.getBody()[0].get("remainingDays")).isEqualTo(10.0);
+    }
+
+    /** 建草稿 + 提交，返回请假单 id——下面几个越权测试都要先有一条已提交的申请。 */
+    private long createAndSubmit(long applicantUid) {
+        HttpHeaders writeHeaders = signedHeaders(applicantUid, List.of("oa.leave.write"), "create_leave_draft");
+        writeHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        Map<String, Object> draftBody = Map.of(
+                "leaveTypeCode", "annual", "startDate", "2026-11-01", "endDate", "2026-11-02", "reason", "越权测试"
+        );
+        ResponseEntity<Map> draftResp = rest.exchange(url("/oa/leave/requests"), HttpMethod.POST,
+                new HttpEntity<>(draftBody, writeHeaders), Map.class);
+        long requestId = ((Number) draftResp.getBody().get("id")).longValue();
+
+        HttpHeaders submitHeaders = signedHeaders(applicantUid, List.of("oa.leave.write"), "submit_leave_request");
+        submitHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        rest.exchange(url("/oa/leave/requests/" + requestId + "/submit"), HttpMethod.POST,
+                new HttpEntity<>(submitHeaders), Map.class);
+        return requestId;
+    }
+
+    @Test
+    void approvingOwnRequest_isRejected() {
+        // applicant 自己碰巧也持有部门负责人角色（is_team_admin=true），但审批的是自己提交的单——
+        // 双人审批要求这种情况也要拒绝，不能靠"角色够了"就放过。
+        long requestId = createAndSubmit(userId);
+        HttpHeaders selfApproveHeaders = signedHeaders(userId, teamId, List.of("oa.leave.approve"),
+                "approve_leave_request", false, true);
+        selfApproveHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/oa/leave/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "自己批自己"), selfApproveHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void regularMember_cannotApprove_returns404() {
+        // 有 scope（工具签了 oa.leave.approve），但既不是部门负责人也不是企业管理员——
+        // 这正是报告里说的"工具能直接签发审批权限"那个漏洞，修复后必须被拒绝。
+        long requestId = createAndSubmit(userId);
+        HttpHeaders regularMemberHeaders = signedHeaders(approverId, teamId, List.of("oa.leave.approve"),
+                "approve_leave_request", false, false);
+        regularMemberHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/oa/leave/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "我也想批"), regularMemberHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void teamAdminOfDifferentDepartment_cannotApprove_returns404() {
+        long requestId = createAndSubmit(userId); // 申请单的 teamId 是 teamId(=2)
+        long otherTeamId = teamId + 100;
+        HttpHeaders otherDeptHeaders = signedHeaders(approverId, otherTeamId, List.of("oa.leave.approve"),
+                "approve_leave_request", false, true); // 是别的部门的负责人
+        otherDeptHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/oa/leave/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "越权审批"), otherDeptHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void orgAdmin_canApproveAcrossDepartments() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders orgAdminHeaders = signedHeaders(approverId, null, List.of("oa.leave.approve"),
+                "approve_leave_request", true, false); // 企业管理员，不属于任何具体部门
+        orgAdminHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<Map> resp = rest.exchange(url("/oa/leave/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "企业管理员批准"), orgAdminHeaders), Map.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resp.getBody().get("status")).isEqualTo("APPROVED");
+    }
+
+    @Test
+    void getStatus_ownerCanViewOwnRequest() {
+        long requestId = createAndSubmit(userId);
+        ResponseEntity<Map> resp = rest.exchange(url("/oa/leave/requests/" + requestId), HttpMethod.GET,
+                new HttpEntity<>(signedHeaders(userId, List.of("oa.leave.read"), "get_leave_status")), Map.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void getStatus_strangerWithoutRole_returns404() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders strangerHeaders = signedHeaders(approverId, teamId, List.of("oa.leave.read"),
+                "get_leave_status", false, false);
+        ResponseEntity<String> resp = rest.exchange(url("/oa/leave/requests/" + requestId), HttpMethod.GET,
+                new HttpEntity<>(strangerHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void getStatus_teamAdminOfSameDepartment_canView() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders teamAdminHeaders = signedHeaders(approverId, teamId, List.of("oa.leave.read"),
+                "get_leave_status", false, true);
+        ResponseEntity<Map> resp = rest.exchange(url("/oa/leave/requests/" + requestId), HttpMethod.GET,
+                new HttpEntity<>(teamAdminHeaders), Map.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 }

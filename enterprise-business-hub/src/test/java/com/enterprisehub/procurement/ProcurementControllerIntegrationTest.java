@@ -75,12 +75,22 @@ class ProcurementControllerIntegrationTest {
     }
 
     private HttpHeaders signedHeaders(long uid, List<String> scopes, String operation) {
+        return signedHeaders(uid, teamId, scopes, operation, false, false);
+    }
+
+    private HttpHeaders signedHeaders(long uid, Long headerTeamId, List<String> scopes, String operation,
+                                       boolean isOrgAdmin, boolean isTeamAdmin) {
         try {
-            Map<String, Object> context = Map.of(
-                    "user_id", uid, "team_id", teamId, "scopes", scopes, "operation", operation,
-                    "trace_id", UUID.randomUUID().toString(), "timestamp", Instant.now().getEpochSecond(),
-                    "nonce", UUID.randomUUID().toString().replace("-", "")
-            );
+            Map<String, Object> context = new java.util.HashMap<>();
+            context.put("user_id", uid);
+            context.put("team_id", headerTeamId);
+            context.put("scopes", scopes);
+            context.put("operation", operation);
+            context.put("is_org_admin", isOrgAdmin);
+            context.put("is_team_admin", isTeamAdmin);
+            context.put("trace_id", UUID.randomUUID().toString());
+            context.put("timestamp", Instant.now().getEpochSecond());
+            context.put("nonce", UUID.randomUUID().toString().replace("-", ""));
             String json = MAPPER.writeValueAsString(context);
             String contextB64 = Base64.getEncoder().encodeToString(json.getBytes(StandardCharsets.UTF_8));
             javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
@@ -126,7 +136,8 @@ class ProcurementControllerIntegrationTest {
                 HttpMethod.POST, new HttpEntity<>(submitHeaders), Map.class);
         assertThat(submitted.getBody().get("status")).isEqualTo("SUBMITTED");
 
-        HttpHeaders approveHeaders = signedHeaders(approverId, List.of("procurement.approve"), "approve_purchase_request");
+        HttpHeaders approveHeaders = signedHeaders(approverId, teamId, List.of("procurement.approve"),
+                "approve_purchase_request", false, true);
         approveHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
         ResponseEntity<Map> approved = rest.exchange(url("/procurement/requests/" + requestId + "/approve"),
                 HttpMethod.POST, new HttpEntity<>(Map.of("note", "同意采购"), approveHeaders), Map.class);
@@ -178,7 +189,8 @@ class ProcurementControllerIntegrationTest {
         rest.exchange(url("/procurement/requests/" + requestId + "/submit"), HttpMethod.POST,
                 new HttpEntity<>(submitHeaders), Map.class);
 
-        HttpHeaders rejectHeaders = signedHeaders(approverId, List.of("procurement.approve"), "reject_purchase_request");
+        HttpHeaders rejectHeaders = signedHeaders(approverId, teamId, List.of("procurement.approve"),
+                "reject_purchase_request", false, true);
         rejectHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
         ResponseEntity<Map> rejected = rest.exchange(url("/procurement/requests/" + requestId + "/reject"),
                 HttpMethod.POST, new HttpEntity<>(Map.of("note", "预算紧张"), rejectHeaders), Map.class);
@@ -208,5 +220,87 @@ class ProcurementControllerIntegrationTest {
         Integer count = jdbc.queryForObject(
                 "SELECT COUNT(*) FROM purchase_request WHERE requester_user_id = ?", Integer.class, userId);
         assertThat(count).isEqualTo(1);
+    }
+
+    /** 建草稿 + 提交，返回采购申请 id——下面几个越权测试都要先有一条已提交的申请。 */
+    private long createAndSubmit(long requesterUid) {
+        HttpHeaders writeHeaders = signedHeaders(requesterUid, List.of("procurement.write"), "create_purchase_draft");
+        writeHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        Map<String, Object> draftBody = Map.of("lines", List.of(Map.of("sku", sku, "quantity", 1)));
+        ResponseEntity<Map> draft = rest.exchange(url("/procurement/requests"), HttpMethod.POST,
+                new HttpEntity<>(draftBody, writeHeaders), Map.class);
+        long requestId = ((Number) draft.getBody().get("id")).longValue();
+
+        HttpHeaders submitHeaders = signedHeaders(requesterUid, List.of("procurement.write"), "submit_purchase_request");
+        submitHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        rest.exchange(url("/procurement/requests/" + requestId + "/submit"), HttpMethod.POST,
+                new HttpEntity<>(submitHeaders), Map.class);
+        return requestId;
+    }
+
+    @Test
+    void approvingOwnRequest_isRejected() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders selfApproveHeaders = signedHeaders(userId, teamId, List.of("procurement.approve"),
+                "approve_purchase_request", false, true);
+        selfApproveHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/procurement/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "自己批自己"), selfApproveHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @Test
+    void regularMember_cannotApprove_returns404() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders regularMemberHeaders = signedHeaders(approverId, teamId, List.of("procurement.approve"),
+                "approve_purchase_request", false, false);
+        regularMemberHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/procurement/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "我也想批"), regularMemberHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void teamAdminOfDifferentDepartment_cannotApprove_returns404() {
+        long requestId = createAndSubmit(userId); // 申请单的 teamId 是本测试的 teamId
+        long otherTeamId = teamId + 100;
+        HttpHeaders otherDeptHeaders = signedHeaders(approverId, otherTeamId, List.of("procurement.approve"),
+                "approve_purchase_request", false, true);
+        otherDeptHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url("/procurement/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "越权审批"), otherDeptHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void orgAdmin_canApproveAcrossDepartments() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders orgAdminHeaders = signedHeaders(approverId, null, List.of("procurement.approve"),
+                "approve_purchase_request", true, false);
+        orgAdminHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<Map> resp = rest.exchange(url("/procurement/requests/" + requestId + "/approve"),
+                HttpMethod.POST, new HttpEntity<>(Map.of("note", "企业管理员批准"), orgAdminHeaders), Map.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resp.getBody().get("status")).isEqualTo("APPROVED");
+    }
+
+    @Test
+    void getStatus_strangerWithoutRole_returns404() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders strangerHeaders = signedHeaders(approverId, teamId, List.of("procurement.read"),
+                "get_purchase_status", false, false);
+        ResponseEntity<String> resp = rest.exchange(url("/procurement/requests/" + requestId), HttpMethod.GET,
+                new HttpEntity<>(strangerHeaders), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void getStatus_teamAdminOfSameDepartment_canView() {
+        long requestId = createAndSubmit(userId);
+        HttpHeaders teamAdminHeaders = signedHeaders(approverId, teamId, List.of("procurement.read"),
+                "get_purchase_status", false, true);
+        ResponseEntity<Map> resp = rest.exchange(url("/procurement/requests/" + requestId), HttpMethod.GET,
+                new HttpEntity<>(teamAdminHeaders), Map.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
     }
 }

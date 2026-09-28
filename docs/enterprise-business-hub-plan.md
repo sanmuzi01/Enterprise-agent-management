@@ -339,3 +339,56 @@ project `enthub-verify`，一次性密码/密钥，跑完整个 `down -v` 清干
 到这里 Docker Compose 这块从"语法验证过，容器级没验证过"变成"真实构建 +
 真实启动 + 真实健康检查全部跑通过"。剩下还没做的只有 `RealSapConnector`（等
 真实企业提供接口）和销售 Agent 的界面接入（后端工具已经好了，见第14节）。
+
+## 16. 修复：审批权限能被 Agent 工具自行签发 + OA/采购缺资源级隔离（2026-09-28）
+
+用户复查代码发现两个 P0 级问题，都属于"权限判断的数据来源不对"这一类：
+
+**问题1——工具能自行签发审批权限**：`service/tools/oa_leave.py`/`procurement.py`
+的 `ApproveXxxTool`/`RejectXxxTool` 之前是直接把 `["oa.leave.approve"]`/
+`["procurement.approve"]` 这样的字符串硬编码进 `hub.call()` 的 `scopes` 参数，
+从来没有查过"这个 user_id 到底是不是部门负责人"。Java 侧 `ScopeGuard.require()`
+只检查这个 scope 字符串存不存在于签名上下文里，不会（也没有数据源）反过来验证。
+结果是：只要能触发这几个工具（哪怕是被提示词注入哄骗调用的），任何用户都能拿到
+审批权限——权限来源名义上"只在 FastAPI 一处"，但那一处从来没真正算过权限，只是
+转发了调用方想要的字符串。
+
+**问题2——OA/采购没有资源级隔离**：`LeaveService.getStatus(requestId)`/
+`ProcurementService.getStatus(requestId)` 单纯按 id 查，不检查申请人/部门；
+`approve`/`reject` 也不检查审批人和申请单是不是同一个部门。CRM 那边一开始就有
+`getCustomerInTeam()` 做 team 匹配，OA/采购当时漏掉了同等的检查。
+
+**修复方案**（两个问题是同一类修复，一起做）：
+
+1. `service/enterprise_access.py` 新增 `is_org_admin(db, user_id)`/
+   `is_team_admin(db, user_id, team_id)`——按真实的 `enterprise_role` 表算，
+   不接受调用方自行断言，是"企业管理员"/"部门负责人"这两个判断在整个项目里
+   唯一的实现。
+2. `service/enterprise_hub_client.py` 新增 `resolve_caller_context(user_id)`：
+   一次性查好 `team_id` + 上面那两个布尔值，`sign_context()`/`call()` 把它们
+   签进 `X-Context`（`is_org_admin`/`is_team_admin` 两个新字段）。OA/采购的
+   工具层全部改成调这一个函数，删掉了各自手写的 `_resolve_team_id`；`Approve`/
+   `Reject` 工具额外加了本地预检查（两个布尔值都是 False 就直接返回错误 JSON，
+   不发网络请求）。
+3. Java 侧 `RequestContext` record 新增 `isOrgAdmin`/`isTeamAdmin` 字段（跟着
+   签名走，Java 自己没有 `organization_members`/`team_members` 的数据源，只信
+   FastAPI 签的值）。新增 `security.TeamAccessGuard`（纯函数，不读
+   `RequestContextHolder`，方便脱离 Spring 单测）：`requireTeamAccess`（企业
+   管理员或"部门负责人且部门匹配"才能过，否则 404）、
+   `requireOwnerOrTeamAccess`（申请人本人也能过，用于查看类接口）。
+   `LeaveService`/`ProcurementService` 的 `approve`/`reject`/`getStatus` 全部接入，
+   `approve`/`reject` 额外加了"不能审批自己提交的申请"的显式检查（双人审批的
+   最基本要求）。越权统一返回 404，不区分"资源不存在"和"资源存在但不归你管"。
+
+**测试**：Java 侧 `LeaveControllerIntegrationTest`（6→13个）、
+`ProcurementControllerIntegrationTest`（5→11个）新增自审批拒绝、普通成员越权
+403/404、跨部门负责人越权 404、企业管理员跨部门放行、查看类接口的 owner/
+陌生人/同部门负责人场景；新增 `TeamAccessGuardTest`（7个纯逻辑单测，不用
+Spring 上下文）。全部 35 个 Java 测试用真实 HTTP + 真实 MySQL（用真实 Docker
+daemon 起的临时容器）跑通，不是 mock。Python 侧 `test_oa_leave_tools.py`/
+`test_procurement_tools.py` 补了"审批工具在本地就拒绝无权限调用"、
+`test_enterprise_access.py` 补了 `is_org_admin`/`is_team_admin` 的单测（真实
+MySQL）。全量 787 个 Python 测试仍然全绿。
+
+CRM 这次没有改：它本来就没有审批环节，`getCustomerInTeam()` 的部门数据隔离
+从第一版就有，不在这两个问题的范围内。

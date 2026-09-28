@@ -14,7 +14,7 @@ import unittest
 from sqlalchemy import text
 
 from models.init_db import SessionLocal
-from service.enterprise_access import require_org_role, require_team_role
+from service.enterprise_access import is_org_admin, is_team_admin, require_org_role, require_team_role
 from service.exceptions import NotFound, PermissionDenied
 from tests import _route_client as rc
 
@@ -169,6 +169,60 @@ class RequireTeamRoleTest(unittest.TestCase):
         dep = require_team_role("member")
         with self.assertRaises(NotFound):
             dep(self.team_id, current_user=self._user_obj(self.other_org_user["id"]), db=self.db)
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class IsOrgAdminIsTeamAdminTest(unittest.TestCase):
+    """`is_org_admin`/`is_team_admin` 是企业业务中心（Java）判断"能不能跨部门审批/查看"
+    的唯一权限来源（service/enterprise_hub_client.py::resolve_caller_context），
+    修复"Agent 工具能自行签发审批权限"那个漏洞——工具不能自己断言角色，只能靠这两个
+    函数按真实的 enterprise_role 算。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.org_admin_user = rc.create_user("ea-isadmin-orgadmin")
+        cls.team_admin_user = rc.create_user("ea-isadmin-teamadmin")
+        cls.regular_user = rc.create_user("ea-isadmin-regular")
+        cls.outsider = rc.create_user("ea-isadmin-outsider")
+
+        cls.org_id = _create_org(cls.db, "ea-isadmin-org", cls.org_admin_user["id"])
+        _add_org_member(cls.db, cls.org_id, cls.org_admin_user["id"], "admin")
+        _add_org_member(cls.db, cls.org_id, cls.team_admin_user["id"], "member")
+        _add_org_member(cls.db, cls.org_id, cls.regular_user["id"], "member")
+
+        cls.team_id = _create_team(cls.db, cls.org_id, "ea-isadmin-team", cls.team_admin_user["id"])
+        _add_team_member(cls.db, cls.team_id, cls.team_admin_user["id"], "admin")
+        _add_team_member(cls.db, cls.team_id, cls.regular_user["id"], "member")
+
+    @classmethod
+    def tearDownClass(cls):
+        rc.cleanup()
+        cls.db.execute(text("DELETE FROM teams WHERE id=:i"), {"i": cls.team_id})
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
+        cls.db.commit()
+        cls.db.close()
+
+    def test_org_admin_is_org_admin(self):
+        self.assertTrue(is_org_admin(self.db, self.org_admin_user["id"]))
+
+    def test_team_admin_is_not_org_admin(self):
+        self.assertFalse(is_org_admin(self.db, self.team_admin_user["id"]))
+
+    def test_non_member_is_not_org_admin(self):
+        self.assertFalse(is_org_admin(self.db, self.outsider["id"]))
+
+    def test_team_admin_is_team_admin_for_own_team(self):
+        self.assertTrue(is_team_admin(self.db, self.team_admin_user["id"], self.team_id))
+
+    def test_regular_team_member_is_not_team_admin(self):
+        self.assertFalse(is_team_admin(self.db, self.regular_user["id"], self.team_id))
+
+    def test_outsider_is_not_team_admin(self):
+        self.assertFalse(is_team_admin(self.db, self.outsider["id"], self.team_id))
+
+    def test_is_team_admin_with_none_team_id_is_false(self):
+        self.assertFalse(is_team_admin(self.db, self.team_admin_user["id"], None))
 
 
 if __name__ == "__main__":

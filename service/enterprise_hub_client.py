@@ -43,12 +43,27 @@ def _secret() -> str:
     return os.getenv("ENTERPRISE_HUB_HMAC_SECRET", "dev-only-shared-secret-change-me")
 
 
-def sign_context(user_id: int, team_id: Optional[int], scopes: List[str], operation: str) -> Dict[str, str]:
+def sign_context(
+        user_id: int,
+        team_id: Optional[int],
+        scopes: List[str],
+        operation: str,
+        *,
+        is_org_admin: bool = False,
+        is_team_admin: bool = False,
+) -> Dict[str, str]:
+    """`is_org_admin`/`is_team_admin` 必须来自 `resolve_caller_context()`（服务端按
+    user_id 查 enterprise_role 算出来的），不能由调用方随便传 True——这两个布尔值是
+    企业业务中心判断"能不能跨部门审批/查看"的唯一依据，Java 那边自己没有
+    organization_members/team_members 的数据源，只信这里签的值（docs/
+    enterprise-business-hub-plan.md 第16节，修复"工具能直接签发审批权限"那个问题）。"""
     context = {
         "user_id": user_id,
         "team_id": team_id,
         "scopes": scopes,
         "operation": operation,
+        "is_org_admin": is_org_admin,
+        "is_team_admin": is_team_admin,
         "trace_id": str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "nonce": uuid.uuid4().hex,
@@ -56,6 +71,30 @@ def sign_context(user_id: int, team_id: Optional[int], scopes: List[str], operat
     context_b64 = base64.b64encode(json.dumps(context).encode("utf-8")).decode("ascii")
     signature = hmac.new(_secret().encode("utf-8"), context_b64.encode("utf-8"), hashlib.sha256).hexdigest()
     return {"X-Context": context_b64, "X-Signature": signature}
+
+
+def resolve_caller_context(user_id: int) -> Dict[str, Any]:
+    """算一次当前用户的 team_id + is_org_admin + is_team_admin，OA/采购工具共用这一个
+    实现，不允许每个工具模块各自重复算一遍权限判断——重复实现是"工具能自行断言权限"
+    这个漏洞的根源，只能有一处算法。"""
+    from models.init_db import SessionLocal
+    from sqlalchemy import text
+    from service import enterprise_access
+
+    db = SessionLocal()
+    try:
+        row = db.execute(
+            text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
+            {"u": user_id},
+        ).first()
+        team_id = row[0] if row else None
+        return {
+            "team_id": team_id,
+            "is_org_admin": enterprise_access.is_org_admin(db, user_id),
+            "is_team_admin": enterprise_access.is_team_admin(db, user_id, team_id),
+        }
+    finally:
+        db.close()
 
 
 def call(
@@ -66,13 +105,17 @@ def call(
         scopes: List[str],
         operation: str,
         *,
+        is_org_admin: bool = False,
+        is_team_admin: bool = False,
         json_body: Optional[Dict[str, Any]] = None,
         idempotency_key: Optional[str] = None,
         timeout_default: float = 10.0,
 ) -> Any:
     """签名 + 请求 + 韧性封装；4xx/5xx 统一翻成 EnterpriseHubError，调用方
     （Agent 工具）负责把它转成给用户看的自然语言，不要在这里假设调用场景。"""
-    headers = sign_context(user_id, team_id, scopes, operation)
+    headers = sign_context(
+        user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin,
+    )
     headers["Content-Type"] = "application/json"
     if idempotency_key:
         headers["Idempotency-Key"] = idempotency_key

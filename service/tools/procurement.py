@@ -8,35 +8,21 @@
 """
 import json
 import uuid
-from typing import Optional
 
 from service import enterprise_hub_client as hub
 from service.tools.base import BaseTool, ToolRegistry
 
 
-def _resolve_team_id(user_id: int) -> Optional[int]:
-    from models.init_db import SessionLocal
-    from sqlalchemy import text
-
-    db = SessionLocal()
-    try:
-        row = db.execute(
-            text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
-            {"u": user_id},
-        ).first()
-        return row[0] if row else None
-    finally:
-        db.close()
-
-
-def _require_user_and_team(ctx) -> tuple:
+def _require_user_and_auth(ctx) -> tuple:
+    """返回 (user_id, auth)，auth 是 `hub.resolve_caller_context()` 算出来的
+    team_id/is_org_admin/is_team_admin——权限判断只在那一处算，这里不重复实现。"""
     if not ctx or not ctx.user_id:
         raise ValueError("缺少用户上下文，无法调用企业业务中心")
     user_id = ctx.user_id
-    team_id = _resolve_team_id(user_id)
-    if team_id is None:
+    auth = hub.resolve_caller_context(user_id)
+    if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行采购操作（采购按部门查库存和预算）")
-    return user_id, team_id
+    return user_id, auth
 
 
 def _error_json(exc: hub.EnterpriseHubError) -> str:
@@ -62,14 +48,15 @@ class GetInventoryStatusTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         sku = kwargs.get("sku")
         try:
             result = hub.call(
-                "GET", f"/procurement/products/{sku}", user_id, team_id,
+                "GET", f"/procurement/products/{sku}", user_id, auth["team_id"],
                 ["procurement.read"], "get_inventory_status",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -94,13 +81,16 @@ class GetDepartmentBudgetTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         year = kwargs.get("year")
         path = "/procurement/budget" + (f"?year={int(year)}" if year else "")
         try:
-            result = hub.call("GET", path, user_id, team_id, ["procurement.read"], "get_department_budget")
+            result = hub.call(
+                "GET", path, user_id, auth["team_id"], ["procurement.read"], "get_department_budget",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
         return json.dumps(result, ensure_ascii=False)
@@ -138,13 +128,15 @@ class CreatePurchaseDraftTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         lines = kwargs.get("lines") or []
         try:
             result = hub.call(
-                "POST", "/procurement/requests", user_id, team_id, ["procurement.write"], "create_purchase_draft",
+                "POST", "/procurement/requests", user_id, auth["team_id"], ["procurement.write"],
+                "create_purchase_draft",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"lines": lines}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -171,14 +163,16 @@ class SubmitPurchaseRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/procurement/requests/{int(request_id)}/submit", user_id, team_id,
-                ["procurement.write"], "submit_purchase_request", idempotency_key=str(uuid.uuid4()),
+                "POST", f"/procurement/requests/{int(request_id)}/submit", user_id, auth["team_id"],
+                ["procurement.write"], "submit_purchase_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+                idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -207,14 +201,17 @@ class ApprovePurchaseRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权审批采购申请"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/procurement/requests/{int(request_id)}/approve", user_id, team_id,
+                "POST", f"/procurement/requests/{int(request_id)}/approve", user_id, auth["team_id"],
                 ["procurement.approve"], "approve_purchase_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"note": kwargs.get("note")}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -244,14 +241,17 @@ class RejectPurchaseRequestTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权处理采购申请"}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "POST", f"/procurement/requests/{int(request_id)}/reject", user_id, team_id,
+                "POST", f"/procurement/requests/{int(request_id)}/reject", user_id, auth["team_id"],
                 ["procurement.approve"], "reject_purchase_request",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"note": kwargs.get("note")}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -278,14 +278,15 @@ class GetPurchaseStatusTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         request_id = kwargs.get("request_id")
         try:
             result = hub.call(
-                "GET", f"/procurement/requests/{int(request_id)}", user_id, team_id,
+                "GET", f"/procurement/requests/{int(request_id)}", user_id, auth["team_id"],
                 ["procurement.read"], "get_purchase_status",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)

@@ -74,7 +74,8 @@ public class LeaveController {
         RequestContext ctx = RequestContextHolder.current();
         String note = body != null ? body.note() : null;
         return idempotencyService.execute(idempotencyKey, () -> {
-            LeaveRequestDto dto = leaveService.approve(id, ctx.userId(), note, ctx.traceId());
+            LeaveRequestDto dto = leaveService.approve(id, ctx.userId(), note, ctx.traceId(),
+                    ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
             return ResponseEntity.<Object>ok(dto);
         });
     }
@@ -87,7 +88,8 @@ public class LeaveController {
         RequestContext ctx = RequestContextHolder.current();
         String note = body != null ? body.note() : null;
         return idempotencyService.execute(idempotencyKey, () -> {
-            LeaveRequestDto dto = leaveService.reject(id, ctx.userId(), note, ctx.traceId());
+            LeaveRequestDto dto = leaveService.reject(id, ctx.userId(), note, ctx.traceId(),
+                    ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
             return ResponseEntity.<Object>ok(dto);
         });
     }
@@ -95,6 +97,7 @@ public class LeaveController {
     @GetMapping("/requests/{id}")
     public LeaveRequestDto getStatus(@PathVariable("id") long id) {
         ScopeGuard.require("oa.leave.read");
-        return leaveService.getStatus(id);
+        RequestContext ctx = RequestContextHolder.current();
+        return leaveService.getStatus(id, ctx.userId(), ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
     }
 }

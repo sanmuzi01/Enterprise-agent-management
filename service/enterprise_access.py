@@ -86,6 +86,28 @@ def _team_role_rank(db: Session, user_id: int, team_id: int) -> Optional[int]:
     ).scalar()
 
 
+def is_org_admin(db: Session, user_id: int) -> bool:
+    """当前用户是否有企业管理员及以上权限（admin/owner）。这是"能跨部门审批/查看"的唯一
+    权限来源——`service/tools/oa_leave.py`、`service/tools/procurement.py` 用它算好之后
+    签进企业业务中心的 RequestContext，Java 侧只信这个签好的布尔值，不会（也没有数据源）
+    自己再查一遍 enterprise_role，见 docs/enterprise-business-hub-plan.md 第16节。"""
+    rank = _org_role_rank(db, user_id)
+    if rank is None:
+        return False
+    return rank >= _min_required_rank(db, "organization", ["admin"])
+
+
+def is_team_admin(db: Session, user_id: int, team_id: Optional[int]) -> bool:
+    """当前用户是否是给定部门的负责人（team scope 的 admin 及以上）。部门内审批权限的
+    唯一来源，同上，不接受调用方自行断言。"""
+    if team_id is None:
+        return False
+    rank = _team_role_rank(db, user_id, team_id)
+    if rank is None:
+        return False
+    return rank >= _min_required_rank(db, "team", ["admin"])
+
+
 def require_org_role(*roles: str):
     """FastAPI 依赖工厂：当前用户必须是企业成员，且角色等级 >= 给定 roles 里最低的那个。
 

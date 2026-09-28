@@ -13,6 +13,8 @@ public record RequestContext(
         @JsonProperty("team_id") Long teamId,
         @JsonProperty("scopes") List<String> scopes,
         @JsonProperty("operation") String operation,
+        @JsonProperty("is_org_admin") boolean isOrgAdmin,
+        @JsonProperty("is_team_admin") boolean isTeamAdmin,
         @JsonProperty("trace_id") String traceId,
         @JsonProperty("timestamp") long timestamp,
         @JsonProperty("nonce") String nonce

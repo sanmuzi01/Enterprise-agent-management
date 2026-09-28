@@ -6,6 +6,7 @@ import com.enterprisehub.procurement.dto.CreatePurchaseDraftRequest;
 import com.enterprisehub.procurement.dto.ProductDto;
 import com.enterprisehub.procurement.dto.PurchaseRequestDto;
 import com.enterprisehub.sap.SapConnector;
+import com.enterprisehub.security.TeamAccessGuard;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -98,8 +99,13 @@ public class ProcurementService {
     }
 
     @Transactional
-    public PurchaseRequestDto approve(long requestId, long approverUserId, String note, String traceId) {
+    public PurchaseRequestDto approve(long requestId, long approverUserId, String note, String traceId,
+                                       Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
         PurchaseRequest request = getSubmitted(requestId);
+        TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, request.getTeamId());
+        if (request.getRequesterUserId() == approverUserId) {
+            throw badRequest("不能审批自己提交的申请，需要由部门负责人或企业管理员处理");
+        }
         DepartmentBudget budget = budgetRepository.findByTeamIdAndYear(request.getTeamId(), Year.now().getValue())
                 .orElseThrow(() -> badRequest("预算记录不存在，无法批准"));
         if (budget.getRemainingAmount().compareTo(request.getTotalAmount()) < 0) {
@@ -114,17 +120,25 @@ public class ProcurementService {
     }
 
     @Transactional
-    public PurchaseRequestDto reject(long requestId, long approverUserId, String note, String traceId) {
+    public PurchaseRequestDto reject(long requestId, long approverUserId, String note, String traceId,
+                                      Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
         PurchaseRequest request = getSubmitted(requestId);
+        TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, request.getTeamId());
+        if (request.getRequesterUserId() == approverUserId) {
+            throw badRequest("不能处理自己提交的申请，需要由部门负责人或企业管理员处理");
+        }
         request.reject(approverUserId, note);
         auditService.record(approverUserId, "procurement.rejected", "purchase_request", request.getId(),
                 note, traceId);
         return toDto(request);
     }
 
-    public PurchaseRequestDto getStatus(long requestId) {
+    public PurchaseRequestDto getStatus(long requestId, long requesterUserId, Long requesterTeamId,
+                                         boolean isOrgAdmin, boolean isTeamAdmin) {
         PurchaseRequest request = requestRepository.findById(requestId)
                 .orElseThrow(() -> notFound("采购申请不存在"));
+        TeamAccessGuard.requireOwnerOrTeamAccess(request.getRequesterUserId(), requesterUserId, requesterTeamId,
+                isOrgAdmin, isTeamAdmin, request.getTeamId());
         return toDto(request);
     }
 
