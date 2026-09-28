@@ -1253,3 +1253,56 @@ approval_service.py` 维护：建 pending 单时写成
 没有同步进 ORM 模型的 `comment=`，是这台本机开发库历史遗留的，不影响这次
 改动本身干净）。全量 873 个测试通过，`scripts/release_check.py` 全量跑通
 （含 compileall + 全量测试 + 前端构建）。
+
+## 26. 第四轮审计 P1：部门 Agent 路由结果不确定（2026-09-28）
+
+### P1-7：同一部门可以有多个已发布 Agent，路由选哪个是未定义行为
+
+系统之前没有任何东西阻止创建/发布多个 `department_code` 相同的部门 Agent。
+`central_router._find_department_agent` 按 `department_code` 查所有
+`lifecycle_status='published'` 的候选，SQL 里没有唯一约束、没有优先级字段、
+也没有稳定排序——如果真的存在多条，选中哪一条纯粹是运气（取决于查询计划/
+索引扫描顺序，不是数据库承诺的行为），可能出现"同一个部门有两个 Agent 抢着
+回答，今天选 A 明天选 B"的诡异现象。
+
+修复：`models/init_db.py::Agent` 新增 `department_publish_key` 列 + 唯一约束
+（`migrations/versions/20260928_0002_agent_department_publish_unique.py`），
+跟第25节的审批去重是同一个思路——MySQL 唯一索引允许多个 NULL 共存，只在
+非 NULL 值之间强制唯一。这一列由 `service/agent_admin_service.py::
+update_managed_agent` 维护：`agent_type='department'` 且最终状态是
+`lifecycle_status='published'` 时等于 `department_code` 本身，其余任何状态
+（draft/reviewing/retired）清空成 NULL；"最终状态"取的是这次请求改动后的
+值，没改的字段兜底用 Agent 当前值，不是简单看请求里传没传。发布第二个同
+`department_code` 的 Agent 时会撞唯一键，捕获 `IntegrityError` 转成清楚的
+`InvalidInput`（"部门「xxx」已经有一个已发布的 Agent 了，请先把旧的退役再
+发布这一个"），不是让用户看到一个数据库报错。约束生效后同一个部门永远最多
+只有一条 published 记录，`_find_department_agent` 不再需要纠结"选哪个"，
+因为根本不会存在多个候选。
+
+迁移文件里加了一步防御性数据清洗：如果加约束之前已经存在同一
+`department_code` 的多条 published 记录（本机开发库验证过当前是空的），
+先把除了 id 最小的那条之外全部打回 draft，再加约束，让迁移在真实存量数据
+上也能安全跑，不是纸面上假设"应该没事"。
+
+**修复过程中一个值得记录的坑**：第一版异常处理在 `except IntegrityError`
+里访问 `agent.department_code` 拼错误消息，实测直接从 `InvalidInput`（预期
+行为）变成了 `sqlalchemy.exc.MissingGreenlet`——`await db.rollback()` 之后
+这个 ORM 对象的属性被标记过期，再访问它的列属性会触发一次隐式懒加载查询，
+但 `AsyncSession` 里这种"裸属性访问"没法正确 `await`，直接报错，不是"检查
+失败"而是"访问本身就出错"。修复：在真正执行 UPDATE 之前，把报错要用到的
+值先存成本地变量，`except` 块里只读这个本地变量，不再碰 `agent` 的任何列
+属性。这是先跑测试撞见的真实报错，不是凭经验提前绕开的。
+
+真实 MySQL 测试（`tests/test_agent_admin_service.py::
+DepartmentPublishUniquenessTest`，同样不依赖"本机默认企业是不是这个测试
+建的那个"，直接 patch `_get_default_organization_id`）：发布第二个同
+department_code 的 Agent 报 `InvalidInput`；把第一个退役之后第二个能正常
+发布（不是"同一个部门永远只能有一个"，是"同时只能有一个"）；两个不同
+department_code 的 Agent 可以同时发布，互不影响。跑完之后用
+`scripts/check_no_migration_drift.py` 确认没有引入新的模型/迁移漂移。
+全量 875 个测试通过，`release_check.py` 全量跑通。
+
+至此，第四轮审计报告里的全部 2 个 P0 + 5 个 P1（Agent/Skill 生命周期强制、
+乐观锁完整化、最后一个 owner 并发保护、审批流程并发缺口、部门 Agent 路由
+确定性）全部完成。剩余 P1（#4 审计账号彻底去 root、#8 Java HMAC 完整签名）
+和全部 P2（测试资源清理、覆盖率、文档同步）见文档末尾"还没做"部分。

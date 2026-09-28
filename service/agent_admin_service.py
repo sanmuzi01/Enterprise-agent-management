@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy import update as sa_update
+from sqlalchemy.exc import IntegrityError
 
 from models.init_db import Agent, Team
 from service import audit_service
@@ -160,6 +161,18 @@ async def update_managed_agent(
         values["department_code"] = new_code
         values["team_id"] = new_team_id
 
+    if agent.agent_type == "department" and ("lifecycle_status" in values or "department_code" in values):
+        # P1 修复：同一个 department_code 同时只能有一个 published 的部门
+        # Agent——不然 central_router._find_department_agent 查出多条候选，
+        # 选哪个是未定义行为。`department_publish_key` 只在 published 时等于
+        # department_code 本身，其余状态一律清空；真正的互斥由
+        # models/init_db.py::Agent 上的唯一约束保证，这里只负责维护这一列跟
+        # "最终会变成什么状态"保持一致（用 values.get(...) 兜底还没被这次请求
+        # 改动的字段，取 agent 当前值）。
+        final_status = values.get("lifecycle_status", agent.lifecycle_status)
+        final_code = values.get("department_code", agent.department_code)
+        values["department_publish_key"] = final_code if final_status == "published" else None
+
     touching_prompt = any(v is not None for v in (role, task, constraints, output))
     if values or touching_prompt:
         # 乐观锁必须覆盖"只改 Prompt（role/task/constraints/output）"这种情况——
@@ -171,7 +184,21 @@ async def update_managed_agent(
         stmt = sa_update(Agent).where(Agent.id == agent_id)
         if expected_row_version is not None:
             stmt = stmt.where(Agent.row_version == expected_row_version)
-        result = await db.execute(stmt.values(**values))
+        # 执行前先把报错要用到的值取出来存成本地变量——执行失败并 rollback()
+        # 之后，`agent` 这个 ORM 对象的属性会被标记过期，这时再访问
+        # `agent.department_code` 会触发一次隐式懒加载查询，但在 AsyncSession
+        # 里这种"裸属性访问"没办法正确 await，会直接报
+        # `MissingGreenlet`——不是"检查失败"，是访问本身就出错，绝对不能在
+        # except 块里再碰 `agent` 的任何列属性。
+        department_code_for_error = values.get("department_code", agent.department_code)
+        try:
+            result = await db.execute(stmt.values(**values))
+        except IntegrityError:
+            await db.rollback()
+            raise InvalidInput(
+                f"部门「{department_code_for_error}」"
+                "已经有一个已发布的 Agent 了，请先把旧的退役再发布这一个"
+            )
         if result.rowcount == 0:
             await db.refresh(agent)
             raise Conflict(f"Agent 已被其他人修改（当前版本 {agent.row_version}），请刷新后重试")

@@ -215,5 +215,99 @@ class ManagedAgentCrudTest(unittest.TestCase):
         self.assertIn("org.managed_agent_published", actions)
 
 
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class DepartmentPublishUniquenessTest(unittest.TestCase):
+    """P1 修复：同一个 department_code 同时只能有一个 published 的部门 Agent
+    （docs/enterprise-rbac-plan.md 相关记录）。不依赖"本机默认企业是不是这个
+    测试建的那个"——直接 patch `_get_default_organization_id` 指向本测试建的
+    专属企业，任何机器上都能跑，不用 skip。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.admin = rc.create_user("aa-deptpub")
+        cls.org_id = _create_org(cls.db, "aa-deptpub-org", cls.admin["id"])
+        cls.team_id = _create_team(cls.db, cls.org_id, "aa-deptpub-team", cls.admin["id"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.db.execute(text("DELETE FROM agent WHERE name LIKE 'aa-dp-%'"))
+        cls.db.execute(text("DELETE FROM teams WHERE id=:i"), {"i": cls.team_id})
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
+        cls.db.commit()
+        rc.cleanup()
+        cls.db.close()
+
+    def tearDown(self):
+        # 每个测试方法自己清干净，不依赖 unittest 的方法执行顺序——不然一个
+        # 测试方法故意留下的 published Agent 会跟另一个测试方法用的
+        # department_code 打架。
+        self.db.execute(text("DELETE FROM agent WHERE name LIKE 'aa-dp-%'"))
+        self.db.commit()
+
+    def _run_with_org(self, fn):
+        from unittest.mock import AsyncMock, patch
+        import service.agent_admin_service as svc
+
+        async def _wrapper():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                with patch.object(svc, "_get_default_organization_id", AsyncMock(return_value=self.org_id)):
+                    return await fn(db)
+
+        return _run(_wrapper())
+
+    def test_publishing_second_agent_with_same_department_code_is_rejected(self):
+        import service.agent_admin_service as svc
+
+        first = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-first", "department", department_code="hr", team_id=self.team_id,
+        ))
+        second = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-second", "department", department_code="hr", team_id=self.team_id,
+        ))
+
+        published_first = self._run_with_org(lambda db: svc.update_managed_agent(
+            db, first["id"], self.admin["id"], lifecycle_status="published",
+        ))
+        self.assertEqual(published_first["lifecycle_status"], "published")
+
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.update_managed_agent(
+                db, second["id"], self.admin["id"], lifecycle_status="published",
+            ))
+
+        # 第一个退役之后，第二个才能发布——不是"这个部门永远只能有一个"，而是
+        # "同时只能有一个"。
+        self._run_with_org(lambda db: svc.update_managed_agent(
+            db, first["id"], self.admin["id"], lifecycle_status="retired",
+        ))
+        published_second = self._run_with_org(lambda db: svc.update_managed_agent(
+            db, second["id"], self.admin["id"], lifecycle_status="published",
+        ))
+        self.assertEqual(published_second["lifecycle_status"], "published")
+
+    def test_two_different_department_codes_can_both_be_published(self):
+        # 用跟另一个测试方法不同的 department_code（finance/sales，不是
+        # hr/it）——unittest 不保证方法执行顺序，另一个测试方法结束时会故意
+        # 留一个 published 的 hr Agent 在数据库里，两个测试方法不能抢同一个
+        # department_code，不然会互相污染。
+        import service.agent_admin_service as svc
+
+        finance_agent = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-finance", "department", department_code="finance", team_id=self.team_id,
+        ))
+        sales_agent = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-sales", "department", department_code="sales", team_id=self.team_id,
+        ))
+        self._run_with_org(lambda db: svc.update_managed_agent(
+            db, finance_agent["id"], self.admin["id"], lifecycle_status="published",
+        ))
+        result = self._run_with_org(lambda db: svc.update_managed_agent(
+            db, sales_agent["id"], self.admin["id"], lifecycle_status="published",
+        ))
+        self.assertEqual(result["lifecycle_status"], "published")
+
+
 if __name__ == "__main__":
     unittest.main()
