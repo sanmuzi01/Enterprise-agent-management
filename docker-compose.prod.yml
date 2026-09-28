@@ -10,8 +10,12 @@
 # 启动：
 #   docker compose -f docker-compose.prod.yml build
 #   docker compose -f docker-compose.prod.yml up -d db
-#   （等 db healthy 后再迁移，见下面 docker compose ps 确认）
-#   docker compose -f docker-compose.prod.yml run --rm api python -m alembic upgrade head
+#   （等 db healthy 后再迁移，见下面 docker compose ps 确认；这一步用 root，
+#    因为要建表——DB_USER/DB_PASSWORD 这时候已经是下面的业务运行时账号，
+#    没有 DDL 权限，必须显式覆盖成 root）：
+#   set -a; . .env; set +a
+#   docker compose -f docker-compose.prod.yml run --rm -e DB_USER=root -e DB_PASSWORD="$MYSQL_ROOT_PASSWORD" \
+#     api python -m alembic upgrade head
 #   docker compose -f docker-compose.prod.yml up -d
 #   （等 api / enterprise-hub 都 healthy，两边的 audit_event 表都建好后，设了
 #    AUDIT_DB_USER 才需要这一步——把最小权限账号的 GRANT 补上，见 .venv/Scripts/python.exe
@@ -20,16 +24,37 @@
 #
 # .env 需要这几项（对应本文件里的服务名，不是 127.0.0.1）：
 #   DB_HOST=db
-#   DB_USER=root
-#   DB_PASSWORD=<和下面 MYSQL_ROOT_PASSWORD 保持一致>
+#   MYSQL_ROOT_PASSWORD=<强密码，只给 db 容器自己启动、建账号、跑迁移这类管理操作用；
+#                         api/worker/enterprise-hub 平时干活完全不碰这个密码>
+#   DB_USER=app_runtime                 （业务运行时账号，只有 SELECT/INSERT/UPDATE/DELETE，
+#                                         没有 DDL；deploy/mysql-init/03-create-app-runtime-users.sh 建的）
+#   DB_PASSWORD=<强密码，DB_USER 对应的密码，不能跟 MYSQL_ROOT_PASSWORD 一样>
 #   DB_NAME=agent_sql
+#   DB_AUTO_BOOTSTRAP=0                 （关掉进程内自动建表/迁移，表结构完全交给 alembic
+#                                         upgrade head 管，运行时账号也就永远不需要 DDL 权限）
 #   REDIS_URL=redis://redis:6379/0
 #   CHROMA_SERVER_HOST=chroma
 #   CHROMA_SERVER_PORT=8000
 #   ENTERPRISE_HUB_BASE_URL=http://enterprise-hub:8090
 #   ENTERPRISE_HUB_HMAC_SECRET=<跟下面 enterprise-hub 服务用的同一个值>
-#   AUDIT_DB_USER=audit_writer          （可选，不设就退回 root 写审计，见 .env.production.example）
+#   ENTERPRISE_DB_USER=app_runtime_java （Java 侧业务运行时账号，同样只有 DML，没有 DDL）
+#   ENTERPRISE_DB_PASSWORD=<强密码，不能跟 MYSQL_ROOT_PASSWORD 或 DB_PASSWORD 重复>
+#   AUDIT_DB_USER=audit_writer          （可选，不设就退回 DB_USER 写审计，见 .env.production.example）
 #   AUDIT_DB_PASSWORD=<强密码，设了 AUDIT_DB_USER 就必须设>
+#
+# 关于 root：业务服务（api/worker/enterprise-hub 处理真实请求那条路径）现在完全不用 root，
+# 只有两处还会短暂用到——上面手动跑的 alembic 迁移，和 enterprise-hub 容器启动时 Flyway
+# 自动建表那一刻（Spring Boot 约定，见 enterprise-business-hub 的 application.yml 里
+# spring.flyway.* 单独配的 FLYWAY_DB_USER/FLYWAY_DB_PASSWORD，跟主 datasource 的账号分开）。
+# 一个被攻破的、只处理业务请求的进程连接的是限权账号，改不了表结构、建不了新账号、
+# 拿不到 mysql.user 之类的系统表。
+#
+# 老部署升级：之前 DB_USER=root 的部署要先在 .env 里补上 MYSQL_ROOT_PASSWORD（哪怕跟旧的
+# DB_PASSWORD 相同也先能跑，之后务必改成不同的值），把 DB_USER/DB_PASSWORD、
+# ENTERPRISE_DB_USER/ENTERPRISE_DB_PASSWORD 改成上面新账号的值，因为初始化脚本不会对已经
+# 初始化过的数据卷重跑，要手动建号一次（把 deploy/mysql-init/03-create-app-runtime-users.sh
+# 里的 SQL 抄出来，用 `docker compose exec db mysql -uroot -p` 手动跑一遍），再重启
+# api/worker/enterprise-hub。
 #
 # enterprise-hub（Phase 5，企业业务中心）第一次跟 db 一起起时，db 容器还是空的，
 # deploy/mysql-init/ 下的脚本会自动建好 enterprise_business 库；如果 db 之前已经
@@ -43,13 +68,21 @@ services:
     restart: unless-stopped
     command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
     environment:
-      # 必须和 .env 里的 DB_PASSWORD 保持一致，两边任何一个改了都要同步改另一个。
-      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请在 .env 设置 DB_PASSWORD}
+      # 独立的管理密码，只给这个容器自己启动/建账号/跑迁移用，跟下面业务运行时
+      # 账号的密码（DB_PASSWORD）彻底分开——业务进程平时干活不会碰到这个值。
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME:-agent_sql}
       # 供 deploy/mysql-init/02-create-audit-user.sh 建审计写入专用最小权限账号
       # （只给 audit_event 表 INSERT/SELECT）。留空会跳过创建，审计写入退回主账号。
       AUDIT_DB_USER: ${AUDIT_DB_USER:-audit_writer}
       AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-}
+      # 供 deploy/mysql-init/03-create-app-runtime-users.sh 建业务服务运行时账号
+      # （只给对应库 SELECT/INSERT/UPDATE/DELETE，没有 DDL）——api/worker 用
+      # APP_DB_*，enterprise-hub 用 JAVA_APP_DB_*，两个服务分开建号、互不连带。
+      APP_DB_USER: ${DB_USER:-app_runtime}
+      APP_DB_PASSWORD: ${DB_PASSWORD:-}
+      JAVA_APP_DB_USER: ${ENTERPRISE_DB_USER:-app_runtime_java}
+      JAVA_APP_DB_PASSWORD: ${ENTERPRISE_DB_PASSWORD:-}
     volumes:
       - mysql_data:/var/lib/mysql
       # 只在数据卷为空（第一次初始化）时跑一次，给 enterprise-business-hub 建它自己的库。
@@ -144,8 +177,17 @@ services:
       ENTERPRISE_DB_HOST: db
       ENTERPRISE_DB_PORT: "3306"
       ENTERPRISE_DB_NAME: enterprise_business
-      ENTERPRISE_DB_USER: root
-      ENTERPRISE_DB_PASSWORD: ${DB_PASSWORD:?请在 .env 设置 DB_PASSWORD}
+      # 主 datasource（JPA/Hibernate/JdbcTemplate，处理真实业务请求那条路径）
+      # 用最小权限账号，不是 root——只有 SELECT/INSERT/UPDATE/DELETE，
+      # deploy/mysql-init/03-create-app-runtime-users.sh 建的。
+      ENTERPRISE_DB_USER: ${ENTERPRISE_DB_USER:-app_runtime_java}
+      ENTERPRISE_DB_PASSWORD: ${ENTERPRISE_DB_PASSWORD:?请在 .env 设置 ENTERPRISE_DB_PASSWORD}
+      # Flyway 建表迁移单独用 root——这是 Spring Boot 原生支持的分离配置
+      # （application.yml 里 spring.flyway.url/user/password），迁移只在容器
+      # 启动那一刻跑一次，之后处理业务请求全部走上面的限权账号，不会长期拿着
+      # root 权限处理外部输入。
+      FLYWAY_DB_USER: root
+      FLYWAY_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
       ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:?请在 .env 设置 ENTERPRISE_HUB_HMAC_SECRET}
       # 审计事件写入专用最小权限账号（只给 audit_event 表 INSERT/SELECT），
       # 跟 db 服务里建号脚本用的是同一对账号密码，见上面 db.environment 的注释。

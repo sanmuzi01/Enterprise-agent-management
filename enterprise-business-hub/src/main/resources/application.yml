@@ -20,6 +20,16 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration
+    # 迁移账号跟主 datasource 账号分开：主 datasource（上面的 spring.datasource.*，
+    # JPA/Hibernate/JdbcTemplate 处理真实业务请求用）应该是只有 DML 权限的最小权限
+    # 账号，但 Flyway 建表/改表需要 DDL——两者不能是同一个账号，不然运行时账号就
+    # 必须保留建表权限，等于没有限权。未单独设置 FLYWAY_DB_* 时退回主 datasource
+    # 的账号（本地开发/测试两者一样，都是同一个 root 风格账号，行为不变）；生产
+    # 环境用有 DDL 权限的账号跑迁移（见 docker-compose.prod.yml 的 FLYWAY_DB_USER），
+    # 平时业务请求处理走的是限权账号，不会长期持有建表权限。
+    url: ${FLYWAY_DB_URL:${spring.datasource.url}}
+    user: ${FLYWAY_DB_USER:${ENTERPRISE_DB_USER:root}}
+    password: ${FLYWAY_DB_PASSWORD:${ENTERPRISE_DB_PASSWORD:}}
 
 # 审计事件（audit_event 表）写入专用账号：只被授予 INSERT/SELECT，见
 # com.enterprisehub.audit.AuditService 和 docs/enterprise-rbac-plan.md 第21节。

@@ -1306,3 +1306,76 @@ department_code 的 Agent 可以同时发布，互不影响。跑完之后用
 乐观锁完整化、最后一个 owner 并发保护、审批流程并发缺口、部门 Agent 路由
 确定性）全部完成。剩余 P1（#4 审计账号彻底去 root、#8 Java HMAC 完整签名）
 和全部 P2（测试资源清理、覆盖率、文档同步）见文档末尾"还没做"部分。
+
+## 27. 第四轮审计 P1：业务服务账号彻底去 root（2026-09-28）
+
+### P1-4（后半部分）：主应用和 Java 服务处理业务请求时不再用 root
+
+第21节/第23节已经做了审计表账号最小权限，但审计报告指出这只是一半——"主应用
+和 Java 服务仍持有 MySQL root 密码"，处理真实业务请求（增删改查）那条路径
+本身还是用 root 连库，一个被攻破的应用进程理论上能改表结构、建新账号、拿到
+`mysql.user` 之类的系统表，权限范围跟它实际需要的完全不对等。
+
+**设计**：业务运行时账号（Python 侧 `DB_USER`/`DB_PASSWORD`，Java 侧
+`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`）只授予对应库的
+`SELECT`/`INSERT`/`UPDATE`/`DELETE`，没有 `CREATE`/`ALTER`/`DROP`/`GRANT`；
+真正需要建表权限的操作单独用一个新引入的、彻底独立的 `MYSQL_ROOT_PASSWORD`
+（不再跟 `DB_PASSWORD` 复用同一个值——之前 `MYSQL_ROOT_PASSWORD` 直接读
+`DB_PASSWORD`，业务账号一泄露等于 root 也泄露了，这个漏洞本身也顺手堵上）：
+
+- **Python**：`deploy/mysql-init/03-create-app-runtime-users.sh` 建号（`GRANT ...
+  ON db.*` 是整库通配，不要求表已存在，能跟 `CREATE USER` 放在同一步，不像
+  审计账号那样要拆成"建号"和"补授权"两个阶段——这一点在真实 Docker 容器里
+  验证过）。`DB_AUTO_BOOTSTRAP=0` 关掉进程内自动建表/幂等迁移，表结构完全
+  交给 `alembic upgrade head` 管，运行时账号因此可以放心不给 DDL。迁移作为
+  一次性手动命令，显式覆盖成 root（`docker compose run --rm -e DB_USER=root
+  -e DB_PASSWORD="$MYSQL_ROOT_PASSWORD" api python -m alembic upgrade head`），
+  长期运行的 `api`/`worker` 容器全程只读取限权账号，root 密码从不出现在它们
+  的正常运行环境里。
+- **Java**：`enterprise-business-hub` 的 Flyway 是 Spring Boot 约定在容器每次
+  启动时自动跑的，没法像 Python 那样拆成完全独立的一次性命令——`application.yml`
+  新增 `spring.flyway.url/user/password`，跟主 `spring.datasource.*`（JPA/
+  Hibernate/JdbcTemplate，处理真实业务请求那条路径）分开配置：迁移阶段用
+  `FLYWAY_DB_USER=root` 建表，建完之后所有业务请求处理都走
+  `ENTERPRISE_DB_USER=app_runtime_java`（限权）。这意味着 Java 进程的环境变量
+  里整个生命周期都会有 root 密码（不像 Python 那样彻底不出现）——这是一个
+  已知的、比 Python 弱一点的折衷：SQL 注入类攻击（走应用自己的查询连接池）
+  被限权账号完全挡住，但如果攻击者拿到了任意代码执行（能读进程环境变量），
+  仍然能读到 root 密码。真正做到"迁移完全独立、进程里从不出现 root"需要把
+  Flyway 迁移拆成单独的部署步骤（类似 K8s initContainer），这次不做这个更大的
+  改动，评估后判断这个折衷在当前阶段可以接受。
+- `service/config_validation.py` 新增生产环境校验：`MYSQL_ROOT_PASSWORD`
+  必须显式设置、不能是占位值、不能跟 `DB_PASSWORD`/`ENTERPRISE_DB_PASSWORD`
+  相同——这是最容易犯的配置错误（图省事把两个密码设成一样的，等于限权账号
+  形同虚设），启动时直接拦截，不用等真出事才发现。
+
+**真实 Docker 验证**（不是只看配置文件"看着像对"）：起了一个真实 MySQL 8
+容器，把 `deploy/mysql-init/` 目录原样挂载进去（模拟 `docker-compose.prod.yml`
+真实的初始化流程），确认三个脚本（`01`/`02`/`03`）都成功跑完、建号符合预期；
+用 root 覆盖跑 `alembic upgrade head` 从空库建出完整 38 张表的 schema；用
+`app_runtime` 账号验证 `INSERT`/`SELECT`/`DELETE` 成功、`ALTER TABLE` 被拒绝
+（`ERROR 1142`）；Java 侧用 `FLYWAY_DB_USER=root` + `ENTERPRISE_DB_USER=
+app_runtime_java` 跑通全部 35 个测试（含真实 HTTP + 真实 MySQL），同时验证
+`app_runtime_java` 账号同样能 DML、不能 DDL。过程中撞见一次真实的操作失误
+（忘记在跑 Java 测试前先执行审计账号的补授权脚本，报了一次
+`Access denied for user 'audit_writer'@'%' to database 'enterprise_business'`
+——这不是代码 bug，是部署顺序没走对，补跑授权脚本后立刻恢复正常，记录下来
+是因为这正是文档里强调"迁移和授权必须按顺序执行"的真实原因，不是纸面上的
+提醒）。
+
+`.env.production.example`/`docker-compose.prod.yml`/`docs/deployment.md`
+（新增 2.2 节）同步更新，含老部署的升级步骤。全量 875 个 Python 测试 +
+新增的 `config_validation` 相关测试通过，`release_check.py` 全量跑通，Java
+35 个测试通过。
+
+### 还没做
+
+Java 侧 Flyway 迁移和业务请求处理仍在同一个进程生命周期内，root 密码整个
+进程运行期间都在环境变量里（只是不再被业务查询连接池使用）——彻底解决需要
+把迁移拆成独立的部署步骤（类似 K8s initContainer 或单独的 migrate-once 容器），
+评估后判断当前阶段这个折衷可以接受，不在这次一并做。
+
+审计报告里提到的"审计采用事务 Outbox，重要审计同步到独立数据库或 OSS 保留"
+也没有做——这是比账号最小权限更大的架构改动（需要引入消息队列或 WAL 式的
+写入保证"业务成功但审计写入失败"不会发生），评估后判断超出这一轮的合理范围，
+留作后续单独评估。

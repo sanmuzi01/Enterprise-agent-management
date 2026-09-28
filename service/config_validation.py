@@ -68,6 +68,32 @@ def validate_runtime_config() -> Dict[str, object]:
         _add_required(checks, name, os.getenv(name, ""))
     _check_fernet_key(checks)
 
+    # MYSQL_ROOT_PASSWORD 只给建账号/跑迁移用，业务运行时账号（DB_USER/DB_PASSWORD、
+    # ENTERPRISE_DB_USER/ENTERPRISE_DB_PASSWORD）应该权限收紧过，见
+    # docker-compose.prod.yml 顶部注释和 docs/enterprise-rbac-plan.md。这里拦的是
+    # 最容易犯的错误——操作员图省事把两个密码设成一样的，等于业务账号一旦泄露就
+    # 直接等于泄露了 root，限权账号形同虚设。
+    if production:
+        mysql_root_password = (os.getenv("MYSQL_ROOT_PASSWORD", "") or "").strip()
+        db_password = (os.getenv("DB_PASSWORD", "") or "").strip()
+        enterprise_db_password = (os.getenv("ENTERPRISE_DB_PASSWORD", "") or "").strip()
+        if _is_blank(mysql_root_password):
+            checks.append({"name": "MYSQL_ROOT_PASSWORD", "ok": False, "level": "error", "message": "缺少必填配置"})
+        elif _looks_placeholder(mysql_root_password):
+            checks.append({"name": "MYSQL_ROOT_PASSWORD", "ok": False, "level": "error", "message": "仍是示例占位值"})
+        elif mysql_root_password == db_password:
+            checks.append({
+                "name": "MYSQL_ROOT_PASSWORD", "ok": False, "level": "error",
+                "message": "不能跟 DB_PASSWORD 相同——业务运行时账号一旦泄露就等于泄露了 root，限权就没意义了",
+            })
+        elif enterprise_db_password and mysql_root_password == enterprise_db_password:
+            checks.append({
+                "name": "MYSQL_ROOT_PASSWORD", "ok": False, "level": "error",
+                "message": "不能跟 ENTERPRISE_DB_PASSWORD 相同，理由同上",
+            })
+        else:
+            checks.append({"name": "MYSQL_ROOT_PASSWORD", "ok": True, "level": "ok", "message": "已配置且与业务账号密码不同"})
+
     redis_url = os.getenv("REDIS_URL", "")
     if production:
         _add_required(checks, "REDIS_URL", redis_url)

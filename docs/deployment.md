@@ -146,6 +146,48 @@ python scripts/grant_audit_db_privileges.py
 （Docker 部署下 mysql-init 脚本不会对已初始化过的数据卷重跑），再跑上面的授权脚本，
 最后重启 `api`/`worker`（Docker 部署再加 `enterprise-hub`）让新环境变量生效。
 
+### 2.2 业务运行时账号（强烈建议生产开启，`docker-compose.prod.yml` 已默认这样配）
+
+主应用（api/worker）和 Java 企业业务中心（enterprise-hub）之前处理真实业务请求
+时用的是 MySQL `root`——一个被攻破的、只该做增删改查的应用进程理论上能改表结构、
+建新账号、拿到 `mysql.user` 之类的系统表，权限范围跟它实际需要的完全不对等。
+
+**方案**：业务运行时账号（`DB_USER`/`DB_PASSWORD`，Java 侧
+`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`）只授予对应库的
+`SELECT`/`INSERT`/`UPDATE`/`DELETE`，没有 `CREATE`/`ALTER`/`DROP`/`GRANT`；
+真正需要建表权限的操作（Python 的 `alembic upgrade head`、Java 的 Flyway
+自动迁移）单独用 `MYSQL_ROOT_PASSWORD`——这是一个新的、独立的密码，只给
+"建账号/跑迁移"这类管理操作用，业务进程处理请求那条路径完全不会碰到它。
+
+**Docker 部署**：`deploy/mysql-init/03-create-app-runtime-users.sh` 在 `db` 容器
+第一次初始化时自动建号（这里的 GRANT 是整库通配 `ON db.*`，不要求表已存在，
+不像审计账号那样要拆成两步）。跟着 `docker-compose.prod.yml` 顶部的启动步骤走：
+迁移那一步显式覆盖成 `root`（`docker compose run --rm -e DB_USER=root -e
+DB_PASSWORD="$MYSQL_ROOT_PASSWORD" api python -m alembic upgrade head`），
+`.env` 里正常配置的 `DB_USER`/`DB_PASSWORD`（业务运行时账号）只用来跑
+`api`/`worker`。Java 侧的 Flyway 迁移账号通过 `FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`
+单独配置（`enterprise-hub` 服务启动时自动用它建表，之后处理业务请求走的是
+`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`）。
+
+**必须同时设置 `DB_AUTO_BOOTSTRAP=0`**：不然 `api`/`worker` 进程内的自动建表/
+幂等迁移（`models/init_db.py::bootstrap_database`）还是会尝试用业务运行时账号
+做 DDL，权限不够会直接启动失败——表结构必须完全交给 `alembic upgrade head`
+管，这也是为什么运行时账号可以放心收紧成没有 DDL 权限。
+
+**非 Docker 部署**：自己建两个账号（一个给 Python，一个给 Java），SQL 参考
+`deploy/mysql-init/03-create-app-runtime-users.sh`，`GRANT` 目标库分别是
+`agent_sql`/`enterprise_business`。
+
+**老部署升级**：先在 `.env` 补上 `MYSQL_ROOT_PASSWORD`（务必设成跟现有
+`DB_PASSWORD` 不同的新密码），把 `DB_USER`/`DB_PASSWORD`、
+`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD` 改成新账号的值；Docker 部署下
+mysql-init 脚本不会对已初始化过的数据卷重跑，把
+`deploy/mysql-init/03-create-app-runtime-users.sh` 里的 SQL 抄出来，用
+`docker compose exec db mysql -uroot -p` 手动跑一遍建号，再重启
+`api`/`worker`/`enterprise-hub`。`scripts/release_check.py`/生产启动校验
+（`service/config_validation.py`）会在 `MYSQL_ROOT_PASSWORD` 缺失或跟业务账号
+密码重复时直接报错拦下来，不会等到真出事才发现。
+
 ## 3. 健康检查
 
 `/health` 是公开的、不需要登录的探活端点，只回 `{"ok": true/false}`，给 Docker

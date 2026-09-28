@@ -10,8 +10,9 @@ from service.config_validation import assert_runtime_config, validate_runtime_co
 def _valid_env():
     return {
         "APP_ENV": "production",
-        "DB_USER": "root",
+        "DB_USER": "app_runtime",
         "DB_PASSWORD": "strong-password",
+        "MYSQL_ROOT_PASSWORD": "strong-root-password-different-from-db-password",
         "DB_HOST": "mysql",
         "DB_PORT": "3306",
         "DB_NAME": "agent_sql",
@@ -76,6 +77,35 @@ class ConfigValidationTest(unittest.TestCase):
             self.assertIn("LLM_ENCRYPTION_KEY", error_names)
             with self.assertRaises(RuntimeError):
                 assert_runtime_config()
+
+    def test_production_config_requires_mysql_root_password(self):
+        env = _valid_env()
+        env.pop("MYSQL_ROOT_PASSWORD", None)
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            self.assertTrue(
+                any(item["name"] == "MYSQL_ROOT_PASSWORD" for item in result["checks"] if item["level"] == "error")
+            )
+
+    def test_production_config_rejects_mysql_root_password_same_as_db_password(self):
+        # 业务运行时账号密码和 root 密码相同，一个被攻破的应用进程泄露的凭据
+        # 就直接等于泄露了 root——限权账号完全形同虚设，必须拦。
+        env = _valid_env()
+        env["MYSQL_ROOT_PASSWORD"] = env["DB_PASSWORD"]
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            with self.assertRaises(RuntimeError):
+                assert_runtime_config()
+
+    def test_production_config_rejects_mysql_root_password_same_as_enterprise_db_password(self):
+        env = _valid_env()
+        env["ENTERPRISE_DB_PASSWORD"] = "strong-java-db-password"
+        env["MYSQL_ROOT_PASSWORD"] = env["ENTERPRISE_DB_PASSWORD"]
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
 
     def test_development_config_allows_missing_redis(self):
         env = _valid_env()
