@@ -6,6 +6,7 @@ tests/test_admin_plan_crud.py 是同一套写法：直接调 service 函数（As
 不经过 HTTP 层——路由层只是薄薄一层 Depends 转发，真正的行为在 service 里。
 """
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import text
 
@@ -404,6 +405,64 @@ class LastOwnerProtectionTest(unittest.TestCase):
                 db, self.other["id"], self.owner["id"], role_code="owner",
             ))
             _run_db(lambda db: svc.remove_org_member(db, self.owner["id"], self.other["id"]))
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class LastOwnerProtectionConcurrencyTest(unittest.TestCase):
+    """P1 并发修复的真实验证：两个 owner 同时把自己降级，用真正的 asyncio.gather
+    并发调用（不是顺序调两次），必须只有一个成功，企业绝不能被同时清空到零 owner。
+
+    不依赖"本机默认企业是不是这个测试建的那个"这个环境限制（`LastOwnerProtectionTest`
+    受这个限制会整体 skip）——直接 patch `_get_default_organization` 指向本测试建的
+    专属企业，任何机器上都能跑。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.owner_a = rc.create_user("lastown-ca")
+        cls.owner_b = rc.create_user("lastown-cb")
+        cls.org_id = _create_org(cls.db, "lastowner-concurrency-org", cls.owner_a["id"])
+        _add_org_member(cls.db, cls.org_id, cls.owner_a["id"], "owner")
+        _add_org_member(cls.db, cls.org_id, cls.owner_b["id"], "owner")
+
+    @classmethod
+    def tearDownClass(cls):
+        rc.cleanup()
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
+        cls.db.commit()
+        cls.db.close()
+
+    def test_concurrent_demote_of_both_owners_leaves_exactly_one(self):
+        import asyncio
+        import service.organization_admin_service as svc
+        from models.async_db import AsyncSessionLocal
+        from models.init_db import Organization
+
+        org_id = self.org_id
+
+        async def _fake_default_org(db):
+            return await db.get(Organization, org_id)
+
+        async def _demote(user_id):
+            async with AsyncSessionLocal() as db:
+                try:
+                    return await svc.update_org_member(db, user_id, user_id, role_code="member")
+                except InvalidInput:
+                    return None
+
+        async def _do():
+            with patch.object(svc, "_get_default_organization", side_effect=_fake_default_org):
+                return await asyncio.gather(_demote(self.owner_a["id"]), _demote(self.owner_b["id"]))
+
+        results = _run(_do())
+        winners = [r for r in results if r is not None]
+        losers = [r for r in results if r is None]
+        self.assertEqual(len(winners), 1, "两个 owner 同时降级，必须只有一个成功")
+        self.assertEqual(len(losers), 1, "另一个必须被 InvalidInput 拒绝，不能两个都成功")
+
+        remaining = _run_db(lambda db: svc._count_active_owners(db, org_id))
+        self.assertEqual(remaining, 1, "并发降级后企业必须还剩恰好 1 个 owner，不能变成 0")
 
 
 if __name__ == "__main__":

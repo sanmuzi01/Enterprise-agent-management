@@ -317,15 +317,32 @@ async def list_org_members(db) -> List[Dict]:
 
 
 async def _count_active_owners(db, organization_id: int, exclude_user_id: Optional[int] = None) -> int:
+    """数"这个企业还剩几个在职 owner"（排除 exclude_user_id 那一个，也就是正要被
+    降级/移除的人）。
+
+    P1 并发修复：之前"先数一遍剩几个 owner，数完了再改"这两步不是原子的，两个
+    并发请求可能都在对方提交之前读到"还有 1 个"，都判断"安全，可以降级/移除"，
+    最终把最后两个 owner 同时降级/移除掉，企业变成零 owner。
+
+    加锁范围不能按 `exclude_user_id` 缩小——如果 SQL 层面就把"正要被排除的那个
+    人"排除在锁定范围之外，两个并发请求分别降级 A、B 两个不同的 owner 时，各自
+    排除的是对方，加锁的也就是"对方那一行"，双方锁的集合刚好不重叠，等于都没
+    锁住，一样会读到"还有人"就都放行。必须锁"这个企业当前全部在职 owner 行"这个
+    不随 exclude_user_id 变化的固定集合，让任何两个并发的"改这个企业 owner"操作
+    都抢同一把锁，才能真正互斥；排除自己改成锁到之后、在 Python 里过滤。
+    """
     owner_role_id = await _role_id(db, "organization", "owner")
-    query = select(func.count(OrganizationMember.id)).where(
-        OrganizationMember.organization_id == organization_id,
-        OrganizationMember.role_id == owner_role_id,
-        OrganizationMember.status == "active",
+    result = await db.execute(
+        select(OrganizationMember.user_id).where(
+            OrganizationMember.organization_id == organization_id,
+            OrganizationMember.role_id == owner_role_id,
+            OrganizationMember.status == "active",
+        ).with_for_update()
     )
+    owner_user_ids = [row[0] for row in result.all()]
     if exclude_user_id is not None:
-        query = query.where(OrganizationMember.user_id != exclude_user_id)
-    return (await db.execute(query)).scalar() or 0
+        owner_user_ids = [uid for uid in owner_user_ids if uid != exclude_user_id]
+    return len(owner_user_ids)
 
 
 async def add_org_member(db, operator_id: int, user_id: int, role_code: str = "member") -> Dict:
