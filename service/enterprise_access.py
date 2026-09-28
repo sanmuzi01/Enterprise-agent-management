@@ -59,28 +59,37 @@ def _min_required_rank(db: Session, scope: str, roles: Iterable[str]) -> int:
 
 
 def _org_role_rank(db: Session, user_id: int) -> Optional[int]:
-    """当前用户在企业里的最高角色等级；不是成员返回 None。
+    """当前用户在企业里的最高角色等级；不是成员、或所在企业已停用都返回 None。
 
     单企业部署下一个用户实际只会在一个 organization_members 行里，取 MAX 是为了
     未来真的支持多企业时也不用改这个函数。
+
+    必须 JOIN `organizations` 检查 `status='active'`——企业本身被停用后，成员的
+    企业角色不能继续生效，不然管理员在组织后台停用企业只是摆设（修复记录见
+    docs/enterprise-rbac-plan.md 第18节）。
     """
     return db.execute(
         text(
             "SELECT MAX(er.rank) FROM organization_members om "
+            "JOIN organizations o ON om.organization_id = o.id "
             "JOIN enterprise_role er ON om.role_id = er.id "
-            "WHERE om.user_id = :uid AND om.status = 'active' AND er.scope = 'organization'"
+            "WHERE om.user_id = :uid AND om.status = 'active' AND er.scope = 'organization' "
+            "AND o.status = 'active'"
         ),
         {"uid": user_id},
     ).scalar()
 
 
 def _team_role_rank(db: Session, user_id: int, team_id: int) -> Optional[int]:
+    """同上，JOIN `teams` 检查 `status='active'`——部门被停用后，部门内角色
+    （包括部门负责人）立即失效，不用等成员关系本身也被清掉。"""
     return db.execute(
         text(
             "SELECT MAX(er.rank) FROM team_members tm "
+            "JOIN teams t ON tm.team_id = t.id "
             "JOIN enterprise_role er ON tm.role_id = er.id "
             "WHERE tm.user_id = :uid AND tm.team_id = :tid "
-            "AND tm.status = 'active' AND er.scope = 'team'"
+            "AND tm.status = 'active' AND er.scope = 'team' AND t.status = 'active'"
         ),
         {"uid": user_id, "tid": team_id},
     ).scalar()
@@ -134,8 +143,10 @@ async def _org_role_rank_async(db, user_id: int) -> Optional[int]:
     result = await db.execute(
         text(
             "SELECT MAX(er.rank) FROM organization_members om "
+            "JOIN organizations o ON om.organization_id = o.id "
             "JOIN enterprise_role er ON om.role_id = er.id "
-            "WHERE om.user_id = :uid AND om.status = 'active' AND er.scope = 'organization'"
+            "WHERE om.user_id = :uid AND om.status = 'active' AND er.scope = 'organization' "
+            "AND o.status = 'active'"
         ),
         {"uid": user_id},
     )
@@ -191,7 +202,7 @@ def require_team_role(*roles: str):
         if user_org_rank is None:
             raise NotFound("部门不存在或无权限")
         team_org_id = db.execute(
-            text("SELECT organization_id FROM teams WHERE id = :tid"), {"tid": team_id}
+            text("SELECT organization_id FROM teams WHERE id = :tid AND status = 'active'"), {"tid": team_id}
         ).scalar()
         user_org_id = db.execute(
             text(

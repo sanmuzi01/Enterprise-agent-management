@@ -87,6 +87,11 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
     2. 没有部门 Agent 上下文（比如通过中央/个人 Agent 直接调用）才退回"用户自己在职的
        部门"，且只在这种退回场景下才可能出现"一人多部门只能拿到其中一个"的旧问题——
        主路径（通过对应部门 Agent 操作）已经不受这个限制。
+
+    两步都只认"未被停用"的部门（`teams.status='active'`）——部门被管理员停用后，
+    不应该再有任何新的业务数据被记到这个部门名下（`is_team_admin`/`is_org_admin`
+    本身也已经在 `service/enterprise_access.py` 里挡了停用部门的角色判断，这里是
+    双重保险，避免"团队已停用但 team_id 还照样解析出来"这种半失效状态）。
     """
     from models.init_db import SessionLocal
     from sqlalchemy import text
@@ -97,14 +102,21 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
         team_id = None
         if agent_id is not None:
             row = db.execute(
-                text("SELECT team_id FROM agent WHERE id=:aid AND agent_type='department'"),
+                text(
+                    "SELECT a.team_id FROM agent a JOIN teams t ON a.team_id = t.id "
+                    "WHERE a.id=:aid AND a.agent_type='department' AND t.status='active'"
+                ),
                 {"aid": agent_id},
             ).first()
             if row and row[0] is not None:
                 team_id = row[0]
         if team_id is None:
             row = db.execute(
-                text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
+                text(
+                    "SELECT tm.team_id FROM team_members tm JOIN teams t ON tm.team_id = t.id "
+                    "WHERE tm.user_id=:u AND tm.status='active' AND t.status='active' "
+                    "ORDER BY tm.id LIMIT 1"
+                ),
                 {"u": user_id},
             ).first()
             team_id = row[0] if row else None

@@ -224,6 +224,69 @@ class IsOrgAdminIsTeamAdminTest(unittest.TestCase):
     def test_is_team_admin_with_none_team_id_is_false(self):
         self.assertFalse(is_team_admin(self.db, self.team_admin_user["id"], None))
 
+    def test_disabling_team_immediately_revokes_team_admin(self):
+        # 管理员在组织后台把部门停用后，部门负责人的角色必须立刻失效——不能只改了
+        # teams.status，鉴权还照样放行（这是没有 JOIN teams 检查 status 时的漏洞）。
+        self.assertTrue(is_team_admin(self.db, self.team_admin_user["id"], self.team_id))
+        self.db.execute(text("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_id})
+        self.db.commit()
+        try:
+            self.assertFalse(is_team_admin(self.db, self.team_admin_user["id"], self.team_id))
+        finally:
+            self.db.execute(text("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_id})
+            self.db.commit()
+
+    def test_disabling_organization_immediately_revokes_org_admin(self):
+        self.assertTrue(is_org_admin(self.db, self.org_admin_user["id"]))
+        self.db.execute(text("UPDATE organizations SET status='disabled' WHERE id=:i"), {"i": self.org_id})
+        self.db.commit()
+        try:
+            self.assertFalse(is_org_admin(self.db, self.org_admin_user["id"]))
+        finally:
+            self.db.execute(text("UPDATE organizations SET status='active' WHERE id=:i"), {"i": self.org_id})
+            self.db.commit()
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class RequireTeamRoleDisabledTeamTest(unittest.TestCase):
+    """`require_team_role` 依赖工厂在部门被停用时也要视为"部门不存在"（404），
+    覆盖它自己单独查 team_org_id 的那条 SQL（不只是复用 `_team_role_rank`）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.user = rc.create_user("ea-disabledteam-user")
+        cls.org_id = _create_org(cls.db, "ea-disabledteam-org", cls.user["id"])
+        _add_org_member(cls.db, cls.org_id, cls.user["id"], "member")
+        cls.team_id = _create_team(cls.db, cls.org_id, "ea-disabledteam-team", cls.user["id"])
+        _add_team_member(cls.db, cls.team_id, cls.user["id"], "admin")
+
+    @classmethod
+    def tearDownClass(cls):
+        rc.cleanup()
+        cls.db.execute(text("DELETE FROM teams WHERE id=:i"), {"i": cls.team_id})
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
+        cls.db.commit()
+        cls.db.close()
+
+    def _user_obj(self, uid):
+        from models.init_db import User
+        return self.db.get(User, uid)
+
+    def test_disabled_team_is_not_found(self):
+        dep = require_team_role("admin")
+        result = dep(self.team_id, current_user=self._user_obj(self.user["id"]), db=self.db)
+        self.assertEqual(result.id, self.user["id"])
+
+        self.db.execute(text("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_id})
+        self.db.commit()
+        try:
+            with self.assertRaises(NotFound):
+                dep(self.team_id, current_user=self._user_obj(self.user["id"]), db=self.db)
+        finally:
+            self.db.execute(text("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_id})
+            self.db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -88,6 +88,31 @@ class TeamCrudTest(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             _run_db(lambda db: svc.update_team(db, created["id"], status="deleted"))
 
+    def test_disabling_team_via_admin_backend_immediately_revokes_access(self):
+        # 闭环验证：管理员在这个后台点"停用部门"之后，用之前已经在这个部门的
+        # 负责人身份必须立刻失效——不能只是 teams.status 改了，鉴权层没跟上
+        # （P0 修复：service/enterprise_access.py::_team_role_rank 现在会 JOIN
+        # teams 检查 status='active'）。
+        import service.organization_admin_service as svc
+        from service.enterprise_access import is_team_admin
+
+        team = _run_db(lambda db: svc.create_team(db, "oa-test-disable-revokes", self.admin["id"]))
+        _run_db(lambda db: svc.add_team_member(db, team["id"], self.member1["id"], "admin"))
+
+        sync_db = SessionLocal()
+        try:
+            self.assertTrue(is_team_admin(sync_db, self.member1["id"], team["id"]))
+        finally:
+            sync_db.close()
+
+        _run_db(lambda db: svc.update_team(db, team["id"], status="disabled"))
+
+        sync_db = SessionLocal()
+        try:
+            self.assertFalse(is_team_admin(sync_db, self.member1["id"], team["id"]))
+        finally:
+            sync_db.close()
+
     def test_add_member_sets_lead_and_appears_in_list(self):
         import service.organization_admin_service as svc
 

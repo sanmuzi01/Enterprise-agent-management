@@ -2,38 +2,27 @@
 
 跟 oa_leave.py/procurement.py 是同一种薄工具层。CRM 跟采购一样要求 `team_id`
 （客户按部门隔离），比 OA/采购简单的地方是没有审批环节，只有草稿->确认两步。
+
+`team_id` 通过 `hub.resolve_caller_context()` 推导（同 oa_leave.py/procurement.py），
+不再自己另写一份——之前 CRM 单独手写的 `_resolve_team_id` 只会取"在职的第一个部门"，
+一人管两个部门时通过第二个部门的销售 Agent 操作会查错部门数据，这是 OA/采购已经
+修过的同一个问题，CRM 当时漏了（docs/enterprise-rbac-plan.md 第16节）。
 """
 import json
 import uuid
-from typing import Optional
 
 from service import enterprise_hub_client as hub
 from service.tools.base import BaseTool, ToolRegistry
 
 
-def _resolve_team_id(user_id: int) -> Optional[int]:
-    from models.init_db import SessionLocal
-    from sqlalchemy import text
-
-    db = SessionLocal()
-    try:
-        row = db.execute(
-            text("SELECT team_id FROM team_members WHERE user_id=:u AND status='active' ORDER BY id LIMIT 1"),
-            {"u": user_id},
-        ).first()
-        return row[0] if row else None
-    finally:
-        db.close()
-
-
-def _require_user_and_team(ctx) -> tuple:
+def _require_user_and_auth(ctx) -> tuple:
     if not ctx or not ctx.user_id:
         raise ValueError("缺少用户上下文，无法调用企业业务中心")
     user_id = ctx.user_id
-    team_id = _resolve_team_id(user_id)
-    if team_id is None:
+    auth = hub.resolve_caller_context(user_id, ctx.agent_id)
+    if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行 CRM 操作（客户按部门隔离）")
-    return user_id, team_id
+    return user_id, auth
 
 
 def _error_json(exc: hub.EnterpriseHubError) -> str:
@@ -59,14 +48,15 @@ class GetCustomerSummaryTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         customer_id = kwargs.get("customer_id")
         try:
             result = hub.call(
-                "GET", f"/crm/customers/{int(customer_id)}", user_id, team_id,
+                "GET", f"/crm/customers/{int(customer_id)}", user_id, auth["team_id"],
                 ["crm.read"], "get_customer_summary",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -95,14 +85,15 @@ class CreateFollowupDraftTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         customer_id = kwargs.get("customer_id")
         try:
             result = hub.call(
-                "POST", f"/crm/customers/{int(customer_id)}/followups", user_id, team_id,
+                "POST", f"/crm/customers/{int(customer_id)}/followups", user_id, auth["team_id"],
                 ["crm.write"], "create_followup_draft",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body={"content": kwargs.get("content")}, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -129,14 +120,16 @@ class SubmitCustomerFollowupTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         followup_id = kwargs.get("followup_id")
         try:
             result = hub.call(
-                "POST", f"/crm/followups/{int(followup_id)}/confirm", user_id, team_id,
-                ["crm.write"], "submit_customer_followup", idempotency_key=str(uuid.uuid4()),
+                "POST", f"/crm/followups/{int(followup_id)}/confirm", user_id, auth["team_id"],
+                ["crm.write"], "submit_customer_followup",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+                idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -168,7 +161,7 @@ class CreateOrUpdateOpportunityTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         customer_id = kwargs.get("customer_id")
@@ -177,8 +170,9 @@ class CreateOrUpdateOpportunityTool(BaseTool):
             body["opportunityId"] = kwargs.get("opportunity_id")
         try:
             result = hub.call(
-                "POST", f"/crm/customers/{int(customer_id)}/opportunities", user_id, team_id,
+                "POST", f"/crm/customers/{int(customer_id)}/opportunities", user_id, auth["team_id"],
                 ["crm.write"], "create_or_update_opportunity",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
                 json_body=body, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
@@ -205,14 +199,15 @@ class GetOpportunitiesTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         try:
-            user_id, team_id = _require_user_and_team(self._ctx)
+            user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
         customer_id = kwargs.get("customer_id")
         try:
             result = hub.call(
-                "GET", f"/crm/customers/{int(customer_id)}/opportunities", user_id, team_id,
+                "GET", f"/crm/customers/{int(customer_id)}/opportunities", user_id, auth["team_id"],
                 ["crm.read"], "get_opportunities",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)

@@ -71,6 +71,32 @@ class ResolveCallerContextMultiTeamTest(unittest.TestCase):
         auth = hub.resolve_caller_context(self.user["id"], 999_999_999)
         self.assertEqual(auth["team_id"], self.team_a)
 
+    def test_disabled_department_agent_team_is_skipped(self):
+        # team_b 被停用后，即使还是通过 team_b 的部门 Agent 操作，也不能再拿到
+        # team_b 的 team_id（那是个已经不存在的部门了）——应该退回兜底（team_a）。
+        from sqlalchemy import text as _sql
+        self.db.execute(_sql("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_b})
+        self.db.commit()
+        try:
+            auth = hub.resolve_caller_context(self.user["id"], self.dept_agent_b_id)
+            self.assertEqual(auth["team_id"], self.team_a)
+        finally:
+            self.db.execute(_sql("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_b})
+            self.db.commit()
+
+    def test_disabled_first_team_is_skipped_by_fallback(self):
+        # 没有部门 Agent 上下文时，兜底逻辑也不能选中已停用的 team_a——应该跳过它，
+        # 落到仍然启用的 team_b。
+        from sqlalchemy import text as _sql
+        self.db.execute(_sql("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_a})
+        self.db.commit()
+        try:
+            auth = hub.resolve_caller_context(self.user["id"], None)
+            self.assertEqual(auth["team_id"], self.team_b)
+        finally:
+            self.db.execute(_sql("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_a})
+            self.db.commit()
+
 
 if __name__ == "__main__":
     unittest.main()

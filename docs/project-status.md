@@ -149,7 +149,7 @@
 - `python -m compileall` 通过。
 - 前端 `npm run build`（含 vue-tsc 类型检查）通过。
 - FastAPI 应用导入与路由生成通过。
-- `python -m unittest`：808 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
+- `python -m unittest`：820 通过（含真实路由级测试 + agent_runtime / RAG 检索 async 链路、
   quick_connect、chunk_size、RAG 节省统计、web_query 联网检索、工作台模板、计费配额、
   配额阈值提醒、告警推送、新增 Agent 工具、报表导出、知识库 OCR/Excel、LLM 客户端 SSRF
   防护、Agent 流水线、LangChain base_url 拼接测试、Phase 3D 企业 RBAC/审批/审计/中央路由
@@ -165,6 +165,14 @@
   第15/16节。企业组织管理后台已补齐（`/admin/org/*` + `/admin/organization` 页面）：
   部门增删改、成员分配/改角色/移出、部门负责人设置、企业角色调整、部门权限关系
   查看，之前只能靠迁移脚本或直接改库，见第17节。
+  2026-09-28 补了一个 P0：组织后台上线后立刻发现"停用部门/企业"完全不生效——
+  鉴权链路（`enterprise_access.py`/`enterprise_dao.py`）只查
+  `team_members.status`/`organization_members.status`，没查 `teams.status`/
+  `organizations.status`，成员权限在部门被停用后仍然有效。已修复并补齐"停用即
+  失效"的端到端测试。同时修了平台审批的两个洞：`decide()` 禁止自审批、
+  `try_consume_approved()` 从"先查后改"改成条件 UPDATE 防止并发重复消费
+  （真并发测试验证）。CRM 也补上了第16节的多部门 `team_id` 修复（之前漏了）。
+  见第18节。
 - Phase 5（Spring Boot 企业业务中心，见
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名

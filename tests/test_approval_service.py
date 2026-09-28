@@ -113,6 +113,50 @@ class ApprovalServiceTest(unittest.TestCase):
                     await approval_service.decide(db, pending["id"], self.approver["id"], approve=True)
         _run(_do())
 
+    def test_cannot_approve_own_request(self):
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            from service.exceptions import PermissionDenied
+            async with AsyncSessionLocal() as db:
+                pending = await approval_service.request_or_get_pending(
+                    db, self.applicant["id"], "test_resource.delete", "test_resource", 9007,
+                )
+                with self.assertRaises(PermissionDenied):
+                    await approval_service.decide(db, pending["id"], self.applicant["id"], approve=True)
+                # 拒绝之后单子还是 pending，没有被"尝试自审批"这次调用带偏状态
+                from models.init_db import ApprovalRequest
+                still_pending = await db.get(ApprovalRequest, pending["id"])
+                self.assertEqual(still_pending.status, "pending")
+        _run(_do())
+
+    def test_concurrent_consume_only_one_wins(self):
+        """真实并发：两个独立会话同时对同一条已批准审批单调用 try_consume_approved，
+        只能有一个拿到非 None——这是"先查后改"改成条件 UPDATE 之后要保证的行为，
+        用真正的 asyncio.gather 并发调用测，不是顺序调两次。"""
+        async def _do():
+            import asyncio
+            from models.async_db import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as setup_db:
+                pending = await approval_service.request_or_get_pending(
+                    setup_db, self.applicant["id"], "test_resource.delete", "test_resource", 9008,
+                )
+                await approval_service.decide(setup_db, pending["id"], self.approver["id"], approve=True)
+
+            async def _consume():
+                async with AsyncSessionLocal() as db:
+                    return await approval_service.try_consume_approved(
+                        db, "test_resource.delete", "test_resource", 9008,
+                    )
+
+            results = await asyncio.gather(_consume(), _consume())
+            winners = [r for r in results if r is not None]
+            losers = [r for r in results if r is None]
+            self.assertEqual(len(winners), 1)
+            self.assertEqual(len(losers), 1)
+            self.assertEqual(winners[0], pending["id"])
+        _run(_do())
+
     def test_decide_unknown_id_raises_not_found(self):
         async def _do():
             from models.async_db import AsyncSessionLocal

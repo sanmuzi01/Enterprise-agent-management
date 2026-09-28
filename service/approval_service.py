@@ -10,11 +10,11 @@ Spring Boot 业务中心）是两条不同的线，不混在一起。
 from datetime import timedelta
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from models.init_db import ApprovalRequest
 from service import audit_service
-from service.exceptions import InvalidInput, NotFound
+from service.exceptions import InvalidInput, NotFound, PermissionDenied
 from utils.timeutil import utcnow
 
 _ACTIVE_STATUSES = ("pending", "approved")
@@ -88,6 +88,10 @@ async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[
     )).scalars().first()
     if row is None:
         raise NotFound("审批单不存在")
+    if approver_id == row.applicant_id:
+        # 双人审批的底线：申请人是企业管理员时，`require_org_role("admin")` 本身
+        # 挡不住他给自己的申请签字——这条必须在这里单独判断，不能只靠角色门槛。
+        raise PermissionDenied("不能审批自己提交的申请")
     if row.status != "pending":
         raise InvalidInput(f"审批单已经是 {row.status} 状态，不能重复决定")
     if _is_expired(row):
@@ -111,6 +115,13 @@ async def try_consume_approved(db, action: str, resource_type: str, resource_id:
     """有一条 approved、未过期、还没被消费过的审批单就标 `executed_at` 并返回它的 id；
     否则返回 None。调用方拿到非 None 就放行真正的高风险操作，拿到 None 就转去调
     `request_or_get_pending` 建单/复用一条已有的 pending 单。
+
+    "先查再改"两步分开做在并发下不安全——两个请求可能都读到 `executed_at IS NULL`，
+    都以为自己抢到了这条审批单，都去执行了一遍高风险操作。改成一条条件 UPDATE
+    （`WHERE id=:id AND executed_at IS NULL`），受影响行数为 0 就说明被别的并发请求
+    抢先消费了：UPDATE 语句本身对目标行是加锁的"当前读"，不是普通 SELECT 那种快照读，
+    两个并发事务里只有一个能真的把 `executed_at` 从 NULL 改成非 NULL，这是数据库
+    保证的原子性，不需要应用层自己加锁。
     """
     row = (await db.execute(
         select(ApprovalRequest).where(
@@ -123,6 +134,13 @@ async def try_consume_approved(db, action: str, resource_type: str, resource_id:
     )).scalars().first()
     if row is None or _is_expired(row):
         return None
-    row.executed_at = utcnow()
+
+    result = await db.execute(
+        update(ApprovalRequest)
+        .where(ApprovalRequest.id == row.id, ApprovalRequest.executed_at.is_(None))
+        .values(executed_at=utcnow())
+    )
     await db.commit()
+    if result.rowcount == 0:
+        return None
     return row.id

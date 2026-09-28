@@ -15,30 +15,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 DEFAULT_ORG_NAME = "默认企业"
 
 _TEAM_ADMIN_OF_TEAM_SQL = (
-    "SELECT 1 FROM team_members tm JOIN enterprise_role er ON tm.role_id = er.id "
+    "SELECT 1 FROM team_members tm "
+    "JOIN teams t ON tm.team_id = t.id "
+    "JOIN enterprise_role er ON tm.role_id = er.id "
     "WHERE tm.user_id = :uid AND tm.team_id = :tid AND tm.status = 'active' "
-    "AND er.scope = 'team' AND er.code = 'admin' LIMIT 1"
+    "AND er.scope = 'team' AND er.code = 'admin' AND t.status = 'active' LIMIT 1"
 )
 
 # 不限角色等级：任意在职部门成员即可，用于"部门Agent/Skill 对本部门所有人可用"这类
 # 使用类（而非管理类）判断——跟上面的"部门管理员"是两个不同的问题。
 _TEAM_MEMBER_OF_TEAM_SQL = (
-    "SELECT 1 FROM team_members WHERE user_id = :uid AND team_id = :tid "
-    "AND status = 'active' LIMIT 1"
+    "SELECT 1 FROM team_members tm JOIN teams t ON tm.team_id = t.id "
+    "WHERE tm.user_id = :uid AND tm.team_id = :tid "
+    "AND tm.status = 'active' AND t.status = 'active' LIMIT 1"
 )
 
 # 同理：任意在职企业成员，用于"企业级Agent/Skill 对全企业可用"。
 _ORG_MEMBER_SQL = (
-    "SELECT 1 FROM organization_members WHERE user_id = :uid "
-    "AND status = 'active' LIMIT 1"
+    "SELECT 1 FROM organization_members om JOIN organizations o ON om.organization_id = o.id "
+    "WHERE om.user_id = :uid AND om.status = 'active' AND o.status = 'active' LIMIT 1"
 )
 
 _SPACE_IDS_WHERE_TEAM_ADMIN_SQL = (
     "SELECT ks.id FROM knowledge_spaces ks "
     "JOIN team_members tm ON tm.team_id = ks.team_id "
+    "JOIN teams t ON tm.team_id = t.id "
     "JOIN enterprise_role er ON tm.role_id = er.id "
     "WHERE tm.user_id = :uid AND tm.status = 'active' "
-    "AND er.scope = 'team' AND er.code = 'admin'"
+    "AND er.scope = 'team' AND er.code = 'admin' AND t.status = 'active'"
 )
 
 

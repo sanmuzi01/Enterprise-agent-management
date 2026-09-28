@@ -749,3 +749,55 @@ Python 测试全绿。
 owner 降级，单企业部署下这是管理员自己的操作，先不加这层保护）；给这个后台单独
 接一套企业内部权限（`require_org_role`），如果以后要支持"委托非平台超级管理员的
 人管部门"，需要重新设计这一层。
+
+## 18. P0：停用部门/企业不生效 + 平台审批双人制/原子消费（2026-09-28）
+
+组织后台上线后立刻复查出一个严重问题：**管理员点"停用部门"之后，成员权限完全
+不受影响**——后台只改了 `teams.status`，但整条鉴权链路（`service/enterprise_access.py`
+的 `_org_role_rank`/`_team_role_rank`、`models/enterprise_dao.py` 的
+`is_team_admin_of_team`/`is_team_member_of_team`/`is_org_member`/
+`list_space_ids_where_team_admin`）全部只查 `team_members.status`/
+`organization_members.status`，从来没有 JOIN `teams`/`organizations` 检查它们
+自己的 `status`。第17节的组织后台等于是给一个不存在的功能做了个能点的按钮——
+这个漏洞本来就在，只是之前没有触发它的入口，这次是我自己捅出来的窟窿，必须
+在同一批里补上。
+
+同时复查还发现两个平台审批（`service/approval_service.py`）的问题：`decide()`
+不检查 `approver_id != applicant_id`（知识空间所有者同时是企业管理员时能自己
+批自己）；`try_consume_approved()` 是"先查后改"两步，并发下可能被消费两次。
+
+### 修复
+
+1. **停用立即失效**：`_org_role_rank`/`_org_role_rank_async` JOIN `organizations`
+   加 `status='active'`；`_team_role_rank` JOIN `teams` 加 `status='active'`；
+   `require_team_role` 自己单独查的 `team_org_id` 也加上同样的条件。
+   `models/enterprise_dao.py` 的四个 SQL 常量全部加上对应的 JOIN。
+   `service/enterprise_hub_client.py::resolve_caller_context` 的 team_id 推导
+   （部门 Agent 自己的 team_id、用户在职部门兜底）两处都跳过已停用的部门，
+   不会解析出一个"名义上还在，实际已经死了"的 team_id。`service/tools/crm.py`
+   顺手一起改成调用 `resolve_caller_context(user_id, agent_id)`（不再自己另写
+   一份 `_resolve_team_id`），这同时也是第16节多部门修复漏掉的一环
+   （CRM 之前一直没跟上 OA/采购那次改动）。
+2. **禁止自审批**：`approval_service.decide()` 开头加
+   `if approver_id == row.applicant_id: raise PermissionDenied(...)`——角色门槛
+   （`require_org_role("admin")`）挡不住"申请人自己就是管理员"这种情况，必须
+   单独判断。
+3. **原子消费**：`try_consume_approved()` 从"SELECT 检查 + 单独 UPDATE"改成
+   条件 UPDATE（`WHERE id=:id AND executed_at IS NULL`），受影响行数为 0 就说明
+   被别的并发请求抢先消费——UPDATE 语句本身对目标行是加锁的"当前读"，不是 SELECT
+   那种快照读，数据库保证只有一个事务能真的把 `executed_at` 从 NULL 改成非 NULL。
+
+### 测试
+
+新增 `tests/test_enterprise_dao.py`（3个）直接测四个 SQL 常量在部门/企业停用后的
+行为；`tests/test_enterprise_access.py` 新增 3 个（`_org_role_rank`/`_team_role_rank`/
+`require_team_role` 各一个停用即失效场景）；`tests/test_enterprise_hub_client.py`
+新增 2 个（部门 Agent 自己的团队被停用、兜底团队被停用，两条推导路径都要跳过）；
+`tests/test_organization_admin_service.py` 新增 1 个端到端测试，直接调用组织后台
+的 `update_team(status="disabled")`，验证 `is_team_admin` 立刻翻转为 False——
+不是只测底层 SQL，是测这个后台功能真的做了它声称要做的事。`tests/test_crm_tools.py`
+按 oa_leave/procurement 的模式重写。`tests/test_approval_service.py` 新增自审批
+拒绝测试 + 一个真并发测试（`asyncio.gather` 两个独立会话同时 `try_consume_approved`
+同一条审批单，断言恰好一个成功一个返回 None——不是顺序调用两次，是真的并发）。
+
+全量 820 个 Python 测试全绿，ruff 干净。
