@@ -162,7 +162,10 @@
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名
   请求上下文、幂等、审计），15 个 JUnit 集成测试 + 17 个 FastAPI Agent 工具全绿。
-  还没做：`RealSapConnector`、Docker Compose 生产部署集成。
+  Docker Compose 生产部署集成已完成并用真实 Docker daemon 验证过（构建镜像 →
+  启动容器 → `mysql-init` 自动建库 → Flyway 迁移 → healthcheck 通过 → 宿主机
+  `curl` 探活成功，见 [enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)
+  第15节）。还没做：`RealSapConnector`（等真实企业提供接口）。
 - `npm run release:check` 静态检查通过。
 
 ## 当前主要风险
@@ -180,9 +183,13 @@
   **仍待办**：这是开发机数字，不是生产容量规划依据，上线后要在真实服务器上照同一套命令
   重新跑一遍；`/metrics` 仍缺生产环境的告警规则阈值调优。
 - ~~外部服务熔断目前是进程内状态，多 API/Worker 实例不共享全局熔断~~：已接 Redis
-  共享（见上面"已完成能力"熔断/降级条目），本机没有真实 Redis 环境验证多实例场景，
-  用 `tests/test_http_resilience.py` 里的假 Redis 客户端验证了逻辑本身；生产部署后
-  应该拿两个进程实际验证一次"一个进程打开熔断，另一个进程立刻看到"。
+  共享（见上面"已完成能力"熔断/降级条目）。`tests/test_http_resilience.py` 里的假
+  Redis 客户端验证了逻辑本身；2026-09-28 又拿真实 Redis 容器 + 两个独立
+  `CircuitBreaker` 实例（模拟两个进程，各自连接同一个 Redis，不是共享同一个
+  Python 对象）实测过："进程 A 记录 3 次失败触发熔断" → "进程 B 从未调用过
+  `record_failure`，但立刻在 `before_call` 看到熔断打开" → "进程 B 调用
+  `record_success`，进程 A 也立刻看到熔断关闭"，全部符合预期。跨实例共享已经
+  是实测过的行为，不再是纯逻辑推断。
 - ~~备份命令已给出，但还需在真实部署环境做恢复演练~~：本机已完整跑通一次
   "备份 → 还原到独立 scratch 库 → 校验表数量/行数一致 → 删除"，见
   [docs/production-readiness-verification.md](production-readiness-verification.md)。

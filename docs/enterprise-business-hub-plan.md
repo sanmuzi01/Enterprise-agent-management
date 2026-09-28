@@ -311,3 +311,31 @@ CRM4），Python 774个测试全绿。
 事务测试（三个模块各自的集成测试已经覆盖了这些场景，按模块测的，没有再写一份
 跨模块的端到端测试）。销售部门（`department_code="sales"`）现在也能被中央
 Agent路由过去了，跟采购一样不用改路由代码，建一个绑好这5个工具的 Agent 即可。
+
+## 15. 执行结果（Docker Compose 接入 + 真实容器验证，2026-09-28）
+
+`docker-compose.prod.yml` 新增 `enterprise-hub` 服务（多阶段构建：
+`maven:3.9-eclipse-temurin-21` 编译 → `eclipse-temurin:21-jre-alpine` 运行），
+`db` 服务挂上 `deploy/mysql-init/01-create-enterprise-business-db.sql`，第一次
+初始化（数据卷为空）时自动建好 `enterprise_business` 库。只绑 `127.0.0.1:8090`，
+不直接对外，跟 `api` 服务一个模式。
+
+首次接入时本机 Docker daemon 没起，只跑了 `docker compose config` 做语法检查，
+容器级验证当时留白。这次把 Docker Desktop 启动起来后补了一次真实验证（独立
+project `enthub-verify`，一次性密码/密钥，跑完整个 `down -v` 清干净，没碰任何
+正式环境的卷）：
+
+- `docker compose build enterprise-hub` 真实构建镜像，不是只检查语法。
+- `docker compose up -d db enterprise-hub`：`db` healthcheck 通过，
+  `mysql-init` 脚本确认真的建出了 `enterprise_business` 库（`SHOW DATABASES`
+  验证过）。
+- `enterprise-hub` 容器里 Flyway 在真实 MySQL 上依次跑完 3 个迁移
+  （V1 OA、V2 采购、V3 CRM），Hibernate 校验通过，容器 healthcheck 变
+  `healthy`，日志里没有异常。
+- 宿主机直接 `curl http://127.0.0.1:8090/actuator/health` 拿到
+  `{"status":"UP"}`，确认端口绑定和 healthcheck 配置本身没问题（不是只在
+  容器网络内部能通）。
+
+到这里 Docker Compose 这块从"语法验证过，容器级没验证过"变成"真实构建 +
+真实启动 + 真实健康检查全部跑通过"。剩下还没做的只有 `RealSapConnector`（等
+真实企业提供接口）和销售 Agent 的界面接入（后端工具已经好了，见第14节）。
