@@ -120,7 +120,7 @@ async def create_managed_agent(
 
     await db.commit()
     await audit_service.record_async(
-        db, creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,
+        creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,
         detail={"name": agent.name, "agent_type": agent_type, "department_code": department_code, "team_id": team_id},
     )
     return _agent_to_dict(agent, team_name)
@@ -190,7 +190,7 @@ async def update_managed_agent(
     if values or any(v is not None for v in (role, task, constraints, output)):
         action = f"org.managed_agent_{lifecycle_status}" if lifecycle_status else "org.managed_agent_updated"
         await audit_service.record_async(
-            db, operator_id, action, resource_type="agent", resource_id=agent.id,
+            operator_id, action, resource_type="agent", resource_id=agent.id,
             detail={k: v for k, v in values.items() if k != "row_version"},
         )
     return _agent_to_dict(agent, team_name)

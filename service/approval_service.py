@@ -68,7 +68,7 @@ async def request_or_get_pending(
     db.add(row)
     await db.commit()
     await audit_service.record_async(
-        db, applicant_id, f"{action}.approval_requested",
+        applicant_id, f"{action}.approval_requested",
         resource_type=resource_type, resource_id=resource_id, detail={"approval_id": row.id},
     )
     return _to_dict(row)
@@ -104,7 +104,7 @@ async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[
     row.decided_at = utcnow()
     await db.commit()
     await audit_service.record_async(
-        db, approver_id, f"{row.action}.approval_{row.status}",
+        approver_id, f"{row.action}.approval_{row.status}",
         resource_type=row.resource_type, resource_id=row.resource_id,
         detail={"approval_id": row.id},
     )

@@ -1013,18 +1013,10 @@ owner 都被拒绝"两个断言，验证完立刻清理，没有留任何数据�
 
 ### 还没做
 
-审计表账号最小权限（"独立数据库账号，只给 INSERT/SELECT，不给 UPDATE/DELETE"）
-没有做——目前审计写入用的还是应用主账号（`docker-compose.prod.yml` 里配的
-`DB_USER`/`DB_PASSWORD`，生产环境目前是 `root`），能写审计的账号理论上也能改/删
-审计记录，不是真正的"防篡改"。要做对需要：审计写入换一个独立的 SQLAlchemy
-engine/session（不能复用调用方传进来的 `db` 会话，那个会话的账号权限跟主业务
-一致），新的 MySQL 账号只授予 `audit_event` 表的 `INSERT`/`SELECT`，
-`docker-compose.prod.yml`/`deploy/mysql-init/` 加上建这个账号的脚本，
-Java 那边（`enterprise-business-hub` 自己的 `audit_event` 表，docs/
-enterprise-business-hub-plan.md）需要同样处理。这是一次独立的基础设施改动，
-风险和验证成本都比这次的应用层改动高（要在真实分权限的 MySQL 账号下跑通整条
-审计写入链路才能算验证过，不是单元测试能完全覆盖的），值得单独一次会话做，
-不在这次顺手带上。
+~~审计表账号最小权限~~ **已完成**（独立 SQLAlchemy engine/session +
+Java 独立 HikariDataSource/JdbcTemplate，`docker-compose.prod.yml`/
+`deploy/mysql-init/` 建号脚本 + `scripts/grant_audit_db_privileges.py` 补授权，
+真实受限权限账号跑通验证），见第23节。
 
 ## 22. 发布自检修好 + Java 测试接入 CI（2026-09-28）
 
@@ -1051,3 +1043,73 @@ HTTP+MySQL 集成测试 + 7 个纯逻辑单测）。之前这些测试只在本�
 throwaway MySQL 容器）在本机验证过一遍，35 个测试全部通过，YAML 语法也过了
 `yaml.safe_load` 校验。测试结果用 `actions/upload-artifact` 存 Surefire 报告，
 跟 `backend` job 存 coverage.xml 是同一个思路。
+
+## 23. 审计表账号最小权限：独立 INSERT/SELECT 专用账号（2026-09-28）
+
+第21节遗留的"还没做"：审计写入（`audit_event` 表，FastAPI 侧 `agent_sql` 库和
+Java `enterprise-business-hub` 侧 `enterprise_business` 库各一张）之前复用应用主
+账号——能写就能改/删，不是真正的防篡改。这次补上：写入换一个独立连接，接一个
+只被授予该表 `INSERT`/`SELECT` 权限的专用 MySQL 账号，没有 `UPDATE`/`DELETE`。
+
+**Python 侧**：新增 `models/audit_db.py`，一套独立的同步/异步 SQLAlchemy
+engine/session（`AUDIT_DB_USER`/`AUDIT_DB_PASSWORD`，留空退回主账号
+`DB_USER`/`DB_PASSWORD`，本地开发/CI 不受影响）。`service/audit_service.py` 的
+`record`/`record_async` 不再接受调用方传入的 `db` 会话——之前签名是
+`record_async(db, user_id, action, ...)`，`db` 只是转手传给 `audit_dao`，现在改成
+函数内部自己开一个绑定到独立账号的会话，`db` 参数直接去掉（不是留着不用的
+兼容性摆设）。3 个调用方（`approval_service.py`、`agent_admin_service.py`、
+`organization_admin_service.py`，共 12 处调用）同步去掉了第一个 `db,` 实参。
+
+**Java 侧**：`AuditService` 原来用 `AuditEventRepository`（JPA，走主 `EntityManager`/
+主数据源）写入；现在改成自己 `new` 一个 `HikariDataSource` + `JdbcTemplate`（读
+`audit.datasource.username`/`password`，`application.yml` 里配的默认值同样是
+"留空退回主账号"），直接 SQL `INSERT`。**关键决定：这个 HikariDataSource/JdbcTemplate
+不注册成 Spring `@Bean`**——如果注册成 `@Bean DataSource`/`@Bean JdbcTemplate`，
+会触发 Spring Boot 的 `DataSourceAutoConfiguration`/`JdbcTemplateAutoConfiguration`
+的 `@ConditionalOnMissingBean` 退让逻辑，导致主数据源的自动配置被我的次要数据源
+顶替、或者已有测试里未加限定符的 `@Autowired JdbcTemplate` 字段意外注入到审计专用
+（权限受限）的那个连接上，跑起来才会在测试清理阶段报 "DELETE command denied"——
+这是先想了两版 `@Bean` 方案，意识到会有这个坑之后改的第三版，没有先跑起来发现问题
+才改，是看 Spring Boot 自动配置条件注解的文档提前判断出来的。因为不再需要 JPA
+实体，`AuditEventRepository.java`、`AuditEvent.java` 两个文件直接删除（唯一的调用方
+只有 `AuditService.java` 自己，确认过没有其他地方 `import`）。
+
+**部署**：`deploy/mysql-init/02-create-audit-user.sh` 建账号（`CREATE USER`），不在
+这一步授权——实测过 MySQL 的表级 `GRANT` 要求目标表已存在（不存在直接
+`ERROR 1146`，会中断整个 `docker-entrypoint-initdb.d` 流程），而这一步跑在容器第一次
+启动、Alembic/Flyway 都还没建表的时候。新增 `scripts/grant_audit_db_privileges.py`，
+在两边迁移都跑完之后单独执行一次补授权（`GRANT` 本身幂等，可重复执行）。
+`docker-compose.prod.yml` 的 `db`/`enterprise-hub` 服务新增
+`AUDIT_DB_USER`/`AUDIT_DB_PASSWORD` 环境变量透传，顶部启动步骤注释和
+`.env.production.example` 同步更新；`docs/deployment.md` 新增 2.1 节，Docker/
+非 Docker 两种部署路径都给了具体命令。
+
+**真实验证，不是只看单元测试**：起了一个 throwaway MySQL 8 容器，完整走了一遍
+"CREATE USER（不带 GRANT）→ 建表 → 跑 `grant_audit_db_privileges.py` 补授权 →
+用真实 `audit_writer`/密码连接" 的流程：
+- Python 侧：用这个真实受限账号跑 `audit_service.record_async()`，确认真的写进去了
+  （`SELECT` 能读到刚写的行）；再用同一个账号对该表发 `UPDATE`，确认被 MySQL 拒绝
+  （`asyncmy.errors.OperationalError: 1142 UPDATE command denied`），不是靠猜权限
+  生效,是拿错误信息实测到的。
+- Java 侧：`ENTERPRISE_DB_USER=root`（主账号，JPA/Flyway 用）+
+  `AUDIT_DB_USER=audit_writer`（受限账号，`AuditService` 用）同时配置，跑
+  `LeaveControllerIntegrationTest` 全部 13 个测试通过——测试自己的
+  `jdbc.update("DELETE FROM audit_event ...")` 清理逻辑用的是主账号绑定的默认
+  `JdbcTemplate`，这一步能过，反向证明了"不注册成 Spring bean"那个设计决定确实
+  避免了两个 `JdbcTemplate` 打架的问题，不是侥幸。
+- 直接用 `mysql` 客户端连 `audit_writer` 账号，对 `audit_event` 表分别发
+  `INSERT`/`SELECT`/`UPDATE`/`DELETE`，前两个成功、后两个报
+  `ERROR 1142 (42000): ... command denied`，确认账号权限精确匹配"只给
+  INSERT/SELECT"这个设计目标，不多不少。
+
+跑完整个 35 个 Java 测试 + 47 个相关 Python 测试（`test_agent_admin_service.py`/
+`test_approval_service.py`/`test_organization_admin_service.py`，本机 MySQL，
+`.venv/Scripts/python.exe -m unittest`）全部通过，确认去掉 `db` 参数、改独立会话
+之后没有破坏任何既有行为。
+
+### 还没做
+
+`kb_audit_log`（知识库空间模块自己的审计表，`service/knowledge_space/document_service.py`
+里的 `_audit`）没有做同样的账号隔离——这次范围严格对应第21节承诺的
+`audit_event` 表，`kb_audit_log` 是另一张表、另一个模块，需要单独评估要不要照
+同样的模式做，不在这次顺手带上。

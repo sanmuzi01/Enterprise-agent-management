@@ -13,6 +13,10 @@
 #   （等 db healthy 后再迁移，见下面 docker compose ps 确认）
 #   docker compose -f docker-compose.prod.yml run --rm api python -m alembic upgrade head
 #   docker compose -f docker-compose.prod.yml up -d
+#   （等 api / enterprise-hub 都 healthy，两边的 audit_event 表都建好后，设了
+#    AUDIT_DB_USER 才需要这一步——把最小权限账号的 GRANT 补上，见 .venv/Scripts/python.exe
+#    scripts/grant_audit_db_privileges.py 顶部说明。跑一次即可，重复跑也安全）：
+#   docker compose -f docker-compose.prod.yml exec api python scripts/grant_audit_db_privileges.py
 #
 # .env 需要这几项（对应本文件里的服务名，不是 127.0.0.1）：
 #   DB_HOST=db
@@ -24,6 +28,8 @@
 #   CHROMA_SERVER_PORT=8000
 #   ENTERPRISE_HUB_BASE_URL=http://enterprise-hub:8090
 #   ENTERPRISE_HUB_HMAC_SECRET=<跟下面 enterprise-hub 服务用的同一个值>
+#   AUDIT_DB_USER=audit_writer          （可选，不设就退回 root 写审计，见 .env.production.example）
+#   AUDIT_DB_PASSWORD=<强密码，设了 AUDIT_DB_USER 就必须设>
 #
 # enterprise-hub（Phase 5，企业业务中心）第一次跟 db 一起起时，db 容器还是空的，
 # deploy/mysql-init/ 下的脚本会自动建好 enterprise_business 库；如果 db 之前已经
@@ -40,6 +46,10 @@ services:
       # 必须和 .env 里的 DB_PASSWORD 保持一致，两边任何一个改了都要同步改另一个。
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?请在 .env 设置 DB_PASSWORD}
       MYSQL_DATABASE: ${DB_NAME:-agent_sql}
+      # 供 deploy/mysql-init/02-create-audit-user.sh 建审计写入专用最小权限账号
+      # （只给 audit_event 表 INSERT/SELECT）。留空会跳过创建，审计写入退回主账号。
+      AUDIT_DB_USER: ${AUDIT_DB_USER:-audit_writer}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-}
     volumes:
       - mysql_data:/var/lib/mysql
       # 只在数据卷为空（第一次初始化）时跑一次，给 enterprise-business-hub 建它自己的库。
@@ -137,6 +147,10 @@ services:
       ENTERPRISE_DB_USER: root
       ENTERPRISE_DB_PASSWORD: ${DB_PASSWORD:?请在 .env 设置 DB_PASSWORD}
       ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:?请在 .env 设置 ENTERPRISE_HUB_HMAC_SECRET}
+      # 审计事件写入专用最小权限账号（只给 audit_event 表 INSERT/SELECT），
+      # 跟 db 服务里建号脚本用的是同一对账号密码，见上面 db.environment 的注释。
+      AUDIT_DB_USER: ${AUDIT_DB_USER:-audit_writer}
+      AUDIT_DB_PASSWORD: ${AUDIT_DB_PASSWORD:-}
     depends_on:
       db:
         condition: service_healthy

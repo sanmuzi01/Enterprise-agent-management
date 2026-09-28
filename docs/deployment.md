@@ -117,6 +117,35 @@ python -m service.background_worker
 - `deploy/prometheus.yml` + `deploy/prometheus-rules.yml` —— 抓 `127.0.0.1:8000/metrics`
 - `deploy/grafana/provisioning/` —— Grafana 数据源与预置面板
 
+### 2.1 审计写入最小权限账号（可选，推荐生产开启）
+
+审计表（`audit_event`，FastAPI 侧 `agent_sql` 库和 Java `enterprise-business-hub`
+侧 `enterprise_business` 库各一张）默认跟主业务共用同一个数据库账号写入——能写就能
+改/删，不是真正的防篡改。设置 `.env` 里的 `AUDIT_DB_USER`/`AUDIT_DB_PASSWORD`
+（`.env.production.example` 已给默认用户名 `audit_writer`）后，审计写入会改走一个
+单独的账号，只授予 `audit_event` 表 `INSERT`/`SELECT`，没有 `UPDATE`/`DELETE`。
+
+**Docker 部署**：`deploy/mysql-init/02-create-audit-user.sh` 在 `db` 容器第一次
+初始化时自动建号（只建号，不授权——MySQL 的表级 GRANT 要求表已存在，这时
+Alembic/Flyway 都还没建表）。两边迁移都跑完、`docker compose ... up -d` 之后，
+补跑一次授权（幂等，重复执行安全）：
+
+```bash
+docker compose -f docker-compose.prod.yml exec api python scripts/grant_audit_db_privileges.py
+```
+
+**非 Docker 部署**（自己管理 MySQL）：手动建号 + 让两张 `audit_event` 表都建好后，
+在项目根目录跑同一个脚本（读本机 `.env`）：
+
+```powershell
+mysql -uroot -p -e "CREATE USER 'audit_writer'@'%' IDENTIFIED BY '<AUDIT_DB_PASSWORD>';"
+python scripts/grant_audit_db_privileges.py
+```
+
+老部署新增这个账号：先在 `.env` 补上 `AUDIT_DB_USER`/`AUDIT_DB_PASSWORD`，手动建号
+（Docker 部署下 mysql-init 脚本不会对已初始化过的数据卷重跑），再跑上面的授权脚本，
+最后重启 `api`/`worker`（Docker 部署再加 `enterprise-hub`）让新环境变量生效。
+
 ## 3. 健康检查
 
 `/health` 是公开的、不需要登录的探活端点，只回 `{"ok": true/false}`，给 Docker

@@ -21,6 +21,14 @@ spring:
     enabled: true
     locations: classpath:db/migration
 
+# 审计事件（audit_event 表）写入专用账号：只被授予 INSERT/SELECT，见
+# com.enterprisehub.audit.AuditService 和 docs/enterprise-rbac-plan.md 第21节。
+# 未单独设置 AUDIT_DB_USER/AUDIT_DB_PASSWORD 时退回主账号，仅适合本地开发。
+audit:
+  datasource:
+    username: ${AUDIT_DB_USER:${ENTERPRISE_DB_USER:root}}
+    password: ${AUDIT_DB_PASSWORD:${ENTERPRISE_DB_PASSWORD:}}
+
 # 跨服务签名（docs/enterprise-business-hub-plan.md 第 6 节）：FastAPI 签发短时效
 # RequestContext，这里用同一把密钥校验 HMAC。本地开发默认值只用于双方都跑在本机的场景，
 # 生产必须由部署方各自生成一个随机密钥并保持两边一致（同 JWT_SECRET_KEY 的管理方式）。

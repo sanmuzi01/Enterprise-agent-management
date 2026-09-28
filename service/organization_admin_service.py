@@ -127,7 +127,7 @@ async def create_team(db, name: str, owner_user_id: int) -> Dict:
     await db.flush()
     await db.commit()
     await audit_service.record_async(
-        db, owner_user_id, "org.team_created", resource_type="team", resource_id=team.id,
+        owner_user_id, "org.team_created", resource_type="team", resource_id=team.id,
         detail={"name": team.name},
     )
     return {"id": team.id, "name": team.name, "status": team.status, "member_count": 0, "leads": []}
@@ -153,7 +153,7 @@ async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = 
     await db.commit()
     if changes:
         await audit_service.record_async(
-            db, operator_id, "org.team_updated", resource_type="team", resource_id=team.id, detail=changes,
+            operator_id, "org.team_updated", resource_type="team", resource_id=team.id, detail=changes,
         )
     return {"id": team.id, "name": team.name, "status": team.status}
 
@@ -239,7 +239,7 @@ async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role
     await _ensure_org_member(db, user_id)
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.team_member_added", resource_type="team", resource_id=team_id,
+        operator_id, "org.team_member_added", resource_type="team", resource_id=team_id,
         detail={"user_id": user_id, "role_code": role_code},
     )
     return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
@@ -256,7 +256,7 @@ async def update_team_member_role(db, team_id: int, operator_id: int, user_id: i
     member.role_id = await _role_id(db, "team", role_code)
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.team_member_role_changed", resource_type="team", resource_id=team_id,
+        operator_id, "org.team_member_role_changed", resource_type="team", resource_id=team_id,
         detail={"user_id": user_id, "role_code": role_code},
     )
     return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
@@ -273,7 +273,7 @@ async def remove_team_member(db, team_id: int, operator_id: int, user_id: int) -
     await db.delete(member)
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.team_member_removed", resource_type="team", resource_id=team_id,
+        operator_id, "org.team_member_removed", resource_type="team", resource_id=team_id,
         detail={"user_id": user_id},
     )
     return {"message": "已移出部门"}
@@ -348,7 +348,7 @@ async def add_org_member(db, operator_id: int, user_id: int, role_code: str = "m
         db.add(OrganizationMember(organization_id=org.id, user_id=user_id, role_id=role_id, status="active"))
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.member_added", resource_type="organization", resource_id=org.id,
+        operator_id, "org.member_added", resource_type="organization", resource_id=org.id,
         detail={"user_id": user_id, "role_code": role_code},
     )
     return {"user_id": user_id, "role_code": role_code}
@@ -385,7 +385,7 @@ async def update_org_member(db, operator_id: int, user_id: int, role_code: Optio
         member.status = new_status
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.member_updated", resource_type="organization", resource_id=org.id,
+        operator_id, "org.member_updated", resource_type="organization", resource_id=org.id,
         detail={"user_id": user_id, "role_code": role_code, "status": status},
     )
     return {"user_id": user_id}
@@ -422,7 +422,7 @@ async def remove_org_member(db, operator_id: int, user_id: int) -> Dict:
     await db.delete(member)
     await db.commit()
     await audit_service.record_async(
-        db, operator_id, "org.member_removed", resource_type="organization", resource_id=org.id,
+        operator_id, "org.member_removed", resource_type="organization", resource_id=org.id,
         detail={"user_id": user_id},
     )
     return {"message": "已移出企业"}

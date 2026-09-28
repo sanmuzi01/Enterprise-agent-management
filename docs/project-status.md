@@ -185,8 +185,11 @@
   终于有了管理入口，不用再直接改数据库——"中央 Agent 管理部门 Agent"这个目标
   的最后一块缺口补上了。见第20节。组织后台的写操作（建部门、分配成员、改角色、
   建/发布 Agent）现在都写审计了，之前完全没有留痕；企业最后一个 owner 不能被
-  降级/停用/移除。审计表账号最小权限（独立 DB 账号，只给 INSERT/SELECT）还没
-  做，目前审计写入跟主业务共用同一个数据库账号，见第21节"还没做"部分。
+  降级/停用/移除。2026-09-28 又补上了审计表账号最小权限：审计写入（Python
+  `audit_event` + Java enterprise-business-hub 自己的 `audit_event`）现在各自
+  走一个独立连接，接一个只被授予该表 INSERT/SELECT 权限的专用 MySQL 账号，
+  不再复用主业务账号；用真实受限权限账号验证过 INSERT/SELECT 能成功、
+  UPDATE/DELETE 会被 MySQL 拒绝，见 enterprise-rbac-plan.md 第23节。
 - Phase 5（Spring Boot 企业业务中心，见
   [docs/enterprise-business-hub-plan.md](enterprise-business-hub-plan.md)）：OA 请假、
   库存与采购（含 SAP Mock Connector）、CRM 客户跟进三个业务域全部端到端跑通（HMAC 签名
