@@ -566,7 +566,7 @@ class RouteIsolationTest(unittest.TestCase):
             self.client.get("/skill/templates", headers=regular),
             self.client.get("/skill/tools", headers=regular),
             self.client.post("/skill/", json={"name": "x", "system_prompt": "x"}, headers=regular),
-            self.client.put("/skill/999999", json={"name": "x"}, headers=regular),
+            self.client.put("/skill/999999", json={"name": "x", "expected_row_version": 0}, headers=regular),
             self.client.delete("/skill/999999", headers=regular),
             self.client.post("/skill/999999/translate", headers=regular),
             self.client.get("/skill/999999/export", headers=regular),
@@ -628,9 +628,12 @@ class RouteIsolationTest(unittest.TestCase):
 
         try:
             admin, alice = self.admin["headers"], self.alice["headers"]
-            self.assertEqual(self.client.put(f"/skill/{skill_id}", json={"system_prompt": "别人改"}, headers=alice).status_code, 403)
+            self.assertEqual(
+                self.client.put(f"/skill/{skill_id}", json={"system_prompt": "别人改", "expected_row_version": 0},
+                                 headers=alice).status_code, 403)
 
-            r = self.client.put(f"/skill/{skill_id}", json={"system_prompt": "管理员改过", "tool_names": ["word_count"]},
+            r = self.client.put(f"/skill/{skill_id}", json={"system_prompt": "管理员改过", "tool_names": ["word_count"],
+                                                              "expected_row_version": 0},
                                 headers=admin)
             self.assertEqual(r.status_code, 200, r.text)
             with open(path, encoding="utf-8") as f:

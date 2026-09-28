@@ -65,7 +65,10 @@ class ManagedAgentUpdate(BaseModel):
     team_id: Optional[int] = None
     model_name: Optional[str] = None
     lifecycle_status: Optional[str] = Field(default=None, description="draft/reviewing/published/retired")
-    expected_row_version: Optional[int] = Field(default=None, description="乐观锁：传了才校验版本号")
+    # 必须传：这是给管理员编辑表单用的入口（读旧值→改→保存），不接受"不比对版本"
+    # 这个退路——见 FasdtApi/skill_route.py::SkillUpdate.expected_row_version 的
+    # 同一条理由。
+    expected_row_version: int = Field(description="乐观锁：必须跟数据库当前 row_version 一致才允许更新")
     role: Optional[str] = None
     task: Optional[str] = None
     constraints: Optional[str] = None

@@ -308,7 +308,13 @@ def update_skill_with_config(
         # 管理员自己主动做的状态决定，此时才不覆盖（比如同时把它改成"已退役"）。
         fields = {**fields, "lifecycle_status": "draft"}
     snapshot_before_edit(db, skill_id, user_id, allow_admin)
-    if fields:
+    # 乐观锁必须覆盖"只改运行配置（system_prompt/tool_names/permissions）"这种
+    # 情况——之前只有 fields 非空才会走 update_skill，纯 config_fields 编辑完全
+    # 不会比对/递增 row_version，两次并发的纯配置编辑会互相覆盖都不知道。这里
+    # 之前已经保证 fields 和 config_fields 至少有一个非空（顶部提前 return 过），
+    # 所以哪怕 fields 是空字典也要调用一次 update_skill——不传实际字段值，
+    # 只用来触发 row_version 递增和乐观锁比对。
+    if fields or config_fields:
         skill = update_skill(
             db, skill_id, user_id=user_id, commit=False,
             allow_admin=allow_admin, snapshot=False, expected_row_version=expected_row_version, **fields,

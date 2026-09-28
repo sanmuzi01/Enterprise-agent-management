@@ -699,6 +699,7 @@ const submitAgentDialog = async () => {
         team_id: agentDialog.value.form.agent_type === 'department' ? (agentDialog.value.form.team_id ?? undefined) : undefined,
         role: agentDialog.value.form.role || undefined,
         task: agentDialog.value.form.task || undefined,
+        expected_row_version: agentDialog.value.editing.row_version,
       })
     } else {
       await orgApi.createManagedAgent({

@@ -363,6 +363,74 @@ class PublishedSkillAutoDemotesOnConfigEditTest(unittest.TestCase):
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class ConfigOnlyEditBumpsRowVersionTest(unittest.TestCase):
+    """P1：只改运行配置（system_prompt/tool_names/permissions，不改 name/is_public
+    等 DB 字段）之前完全不会碰 row_version，乐观锁形同虚设——两次并发的纯配置
+    编辑会互相覆盖都不知道。这里用 draft 状态的 Skill（不触发上面的自动降级
+    逻辑），单独测"config_fields 单独出现时 row_version 照样递增+比对"这件事。
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.owner = rc.create_user("skl-cfgver")
+        cls.root = tempfile.mkdtemp(prefix="skl_cfgver_")
+        cls._patches = [patch.object(skill_loader, "SKILLS_ROOT", cls.root)]
+        for p in cls._patches:
+            p.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        for p in cls._patches:
+            p.stop()
+        shutil.rmtree(cls.root, ignore_errors=True)
+        skill_loader.invalidate_skill_config()
+        rc.cleanup()
+        cls.db.close()
+
+    def setUp(self):
+        cfg = {"name": "cfgver", "description": "d", "tools": [{"name": "word_count", "defaults": {}}],
+               "tool_names": ["word_count"], "system_prompt": "old prompt"}
+        real_path = os.path.join(self.root, "user_created")
+        os.makedirs(real_path, exist_ok=True)
+        with open(os.path.join(real_path, "cfgver.yml"), "w", encoding="utf-8") as f:
+            yaml.safe_dump(cfg, f, allow_unicode=True, sort_keys=False)
+        skill_loader.invalidate_skill_config()
+        self.skill = Skill(user_id=self.owner["id"], name="cfgver", description="d",
+                            config_file="user_created/cfgver.yml")
+        self.db.add(self.skill)
+        self.db.commit()
+
+    def tearDown(self):
+        from sqlalchemy import text
+        self.db.execute(text("DELETE FROM skill_version WHERE skill_id=:i"), {"i": self.skill.id})
+        self.db.execute(text("DELETE FROM skill WHERE id=:i"), {"i": self.skill.id})
+        self.db.commit()
+
+    def test_config_only_edit_bumps_row_version(self):
+        result = crud.update_skill_with_config(
+            self.db, self.skill.id, self.owner["id"],
+            fields={}, config_fields={"system_prompt": "new prompt"}, allow_admin=True,
+            expected_row_version=0,
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["row_version"], 1)
+
+    def test_config_only_edit_with_stale_version_raises_conflict(self):
+        crud.update_skill_with_config(
+            self.db, self.skill.id, self.owner["id"],
+            fields={}, config_fields={"system_prompt": "first edit"}, allow_admin=True,
+            expected_row_version=0,
+        )
+        with self.assertRaises(Conflict):
+            crud.update_skill_with_config(
+                self.db, self.skill.id, self.owner["id"],
+                fields={}, config_fields={"system_prompt": "second edit, stale"}, allow_admin=True,
+                expected_row_version=0,
+            )
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
 class OptimisticLockingTest(unittest.TestCase):
     """每个测试自己建一条 Skill（不共用一条跨测试改），避免 unittest 默认按字母序
     跑测试时，后面的测试意外依赖前一个测试已经把 row_version 推到了哪个值。"""

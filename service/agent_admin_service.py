@@ -160,7 +160,13 @@ async def update_managed_agent(
         values["department_code"] = new_code
         values["team_id"] = new_team_id
 
-    if values:
+    touching_prompt = any(v is not None for v in (role, task, constraints, output))
+    if values or touching_prompt:
+        # 乐观锁必须覆盖"只改 Prompt（role/task/constraints/output）"这种情况——
+        # 之前只有 values（name/model_name/lifecycle_status/department_code/
+        # team_id 这些 DB 字段）非空才会走这段递增+比对，纯改 Prompt 完全不会碰
+        # row_version，两个管理员并发改同一个 Agent 的 Prompt 会互相覆盖都不知道。
+        # 哪怕 values 是空字典也要走一次 UPDATE，只为了递增 row_version 和比对。
         values["row_version"] = Agent.row_version + 1
         stmt = sa_update(Agent).where(Agent.id == agent_id)
         if expected_row_version is not None:
@@ -170,7 +176,7 @@ async def update_managed_agent(
             await db.refresh(agent)
             raise Conflict(f"Agent 已被其他人修改（当前版本 {agent.row_version}），请刷新后重试")
 
-    if any(v is not None for v in (role, task, constraints, output)):
+    if touching_prompt:
         from prompt.prompt_manager import read_prompt_file, update_prompt_file
         existing = read_prompt_file(agent_id) or {}
         update_prompt_file(
@@ -187,7 +193,7 @@ async def update_managed_agent(
     if agent.team_id:
         team_name = (await db.execute(select(Team.name).where(Team.id == agent.team_id))).scalar_one_or_none()
 
-    if values or any(v is not None for v in (role, task, constraints, output)):
+    if values or touching_prompt:
         action = f"org.managed_agent_{lifecycle_status}" if lifecycle_status else "org.managed_agent_updated"
         await audit_service.record_async(
             operator_id, action, resource_type="agent", resource_id=agent.id,

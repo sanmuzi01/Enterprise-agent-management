@@ -161,6 +161,27 @@ class ManagedAgentCrudTest(unittest.TestCase):
                 expected_row_version=0, name="aa-test-lock-stale",
             ))
 
+    def test_prompt_only_edit_bumps_row_version_and_respects_optimistic_lock(self):
+        # P1：之前只有 name/model_name/lifecycle_status/department_code/team_id
+        # 这些 DB 字段变化才会碰 row_version，只改 role/task/constraints/output
+        # （Prompt 文件）完全不会递增/比对——两个管理员并发改同一个 Agent 的
+        # Prompt 会互相覆盖都不知道。
+        import service.agent_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-promptver", "central"))
+        agent_id = created["id"]
+        self.assertEqual(created["row_version"], 0)
+
+        updated = _run_db(lambda db: svc.update_managed_agent(
+            db, agent_id, self.admin["id"], expected_row_version=0, task="第一次改任务",
+        ))
+        self.assertEqual(updated["row_version"], 1)
+
+        with self.assertRaises(Conflict):
+            _run_db(lambda db: svc.update_managed_agent(
+                db, agent_id, self.admin["id"], expected_row_version=0, task="第二次改任务，过期版本",
+            ))
+
     def test_invalid_lifecycle_status_raises_invalid_input(self):
         import service.agent_admin_service as svc
 

@@ -67,9 +67,13 @@ class SkillUpdate(BaseModel):
     permissions: Optional[Dict[str, Any]] = None
     # 发布生命周期：draft/reviewing/published/retired（service/lifecycle.py）。
     lifecycle_status: Optional[str] = None
-    # 乐观锁：传了就必须跟数据库当前 row_version 一致才允许更新，不传就是旧行为
-    # （不做版本比对），兼容还不知道这个概念的调用方。
-    expected_row_version: Optional[int] = None
+    # 乐观锁：这是唯一一个给"人在编辑表单里读了旧值再保存"这种场景用的入口
+    # （管理员编辑弹窗），必须传，不接受"不比对版本"这个退路——不然两个管理员
+    # 前后脚保存同一个 Skill，后保存的会悄悄覆盖前一个的改动，乐观锁形同虚设。
+    # `service/skills_core/crud.py::update_skill`/`models/skill_dao.py::update_skill`
+    # 的 `expected_row_version` 参数本身仍然是可选的——那是给 import/translate/
+    # reanalyze 这类不走这个 HTTP 路由的系统内部单字段更新用的，不受这里收紧。
+    expected_row_version: int
 
 
 class SkillTemplateSave(BaseModel):
