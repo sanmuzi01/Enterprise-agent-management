@@ -188,6 +188,17 @@ async def try_consume_approved(db, action: str, resource_type: str, resource_id:
     抢先消费了：UPDATE 语句本身对目标行是加锁的"当前读"，不是普通 SELECT 那种快照读，
     两个并发事务里只有一个能真的把 `executed_at` 从 NULL 改成非 NULL，这是数据库
     保证的原子性，不需要应用层自己加锁。
+
+    第五轮审计 P1-5：这里**不 commit**——调用方拿到非 None 的 id 后，必须在同一个
+    还没提交的事务里接着做真正的业务操作（比如删除知识空间），最后由那次操作
+    自己的 commit 把"标记已消费"和"真正执行"一起提交。之前这里自己 commit 一次，
+    等于把这两件事拆成两个独立事务：如果后面真正执行那一步失败（DB 故障、进程崩溃），
+    审批已经被标记消费掉了，但业务没有成功，而且旧审批用不了、新审批又申请不了
+    （dedupe key 还占着），资源卡死在一个既没删成又申请不了新审批的状态。现在
+    真正执行那一步失败时，如果调用方的 session 因为异常没提交就被关闭/回滚
+    （FastAPI 的 AsyncSession 依赖退出时的默认行为），这条 UPDATE 会跟着一起
+    回滚，审批单恢复成"approved、未消费"，下次重试会重新走到这里、重新消费，
+    不会卡死。调用方必须确保消费和真正执行之间不能有中间提交。
     """
     row = (await db.execute(
         select(ApprovalRequest).where(
@@ -206,7 +217,6 @@ async def try_consume_approved(db, action: str, resource_type: str, resource_id:
         .where(ApprovalRequest.id == row.id, ApprovalRequest.executed_at.is_(None))
         .values(executed_at=utcnow())
     )
-    await db.commit()
     if result.rowcount == 0:
         return None
     return row.id

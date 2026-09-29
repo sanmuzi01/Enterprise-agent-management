@@ -143,6 +143,12 @@ async def delete_space(db, user_id: int, space_id: int) -> Dict[str, Any]:
     （docs/enterprise-rbac-plan.md 9.5）：第一次调用只建审批单并返回"待审批"，
     企业管理员通过 `POST /approvals/{id}/decide` 批准后，用户重新调一次这个接口
     才真正执行删除（`approval_service.try_consume_approved` 认领那条 approved 单）。
+
+    第五轮审计 P1-5：`try_consume_approved` 认领审批（标 `executed_at`）之后，不能
+    中途 `commit`——必须跟下面真正的删除操作在同一个事务里，靠 `dao.delete_space_async`
+    最后那一次 commit 一起提交，删除失败时（DB 故障等）这次 session 不提交就被
+    回滚/关闭，认领动作也会跟着回滚，审批单恢复成"approved、未消费"，下次重试
+    能重新走到这里，不会出现"审批用掉了但空间没删掉，还申请不了新审批"的卡死状态。
     """
     space = await get_owned_space_async(db, user_id, space_id)
     if not space:
@@ -165,13 +171,19 @@ async def delete_space(db, user_id: int, space_id: int) -> Dict[str, Any]:
         return {"message": "删除知识库空间需要企业管理员审批，已提交申请，审批通过后请再次删除",
                 "approval": pending}
 
-    await _audit(db, user_id, "space.delete", space_id=space_id, target_type="space",
-                target_id=space_id, detail={"name": space.name})
+    space_name = space.name  # 下面 delete 之后再取，图省事直接用对象属性容易被读成"删完还能读"的偶然行为
     from sqlalchemy import delete as sa_delete
     from models.init_db import SpaceMember
 
     await db.execute(sa_delete(SpaceMember).where(SpaceMember.space_id == space_id))
     await dao.delete_space_async(db, space)
+    # 审计放在真正删除、真正 commit 之后：kb_audit_dao.record_async 自己会 commit，
+    # 挪到前面的话会把 try_consume_approved 那条还没提交的"标已消费" UPDATE 提前
+    # 冲掉，跟这次修复要保证的"消费和真正删除同一个事务"正好相反。放在这里，
+    # 就算审计这次失败（_audit 自己吞掉异常），空间也已经真的删掉、真的提交过了，
+    # 不影响主流程。
+    await _audit(db, user_id, "space.delete", space_id=space_id, target_type="space",
+                target_id=space_id, detail={"name": space_name})
     return {"message": "已删除", "id": space_id}
 
 

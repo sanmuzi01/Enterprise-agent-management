@@ -10,6 +10,7 @@
      还没有对应的真实路由，见文档"仍未收口"的说明）。
 """
 import unittest
+from unittest.mock import patch
 
 from sqlalchemy import text
 
@@ -132,7 +133,13 @@ class ApprovalServiceTest(unittest.TestCase):
     def test_concurrent_consume_only_one_wins(self):
         """真实并发：两个独立会话同时对同一条已批准审批单调用 try_consume_approved，
         只能有一个拿到非 None——这是"先查后改"改成条件 UPDATE 之后要保证的行为，
-        用真正的 asyncio.gather 并发调用测，不是顺序调两次。"""
+        用真正的 asyncio.gather 并发调用测，不是顺序调两次。
+
+        第五轮审计 P1-5 之后 try_consume_approved 本身不再 commit（必须跟调用方
+        真正的业务操作一起提交，见该函数文档），这里模拟真实调用方的用法——拿到
+        非 None 就当作"业务操作也做完了"紧接着 commit，不commit的那一侧（loser）
+        必须能安全丢弃：拿到 None 之后什么都不用做，事务被 AsyncSessionLocal 的
+        __aexit__ 自动回滚，不影响下次重新消费。"""
         async def _do():
             import asyncio
             from models.async_db import AsyncSessionLocal
@@ -145,9 +152,12 @@ class ApprovalServiceTest(unittest.TestCase):
 
             async def _consume():
                 async with AsyncSessionLocal() as db:
-                    return await approval_service.try_consume_approved(
+                    consumed = await approval_service.try_consume_approved(
                         db, "test_resource.delete", "test_resource", 9008,
                     )
+                    if consumed is not None:
+                        await db.commit()  # 模拟"消费+真正的业务操作"一起提交
+                    return consumed
 
             results = await asyncio.gather(_consume(), _consume())
             winners = [r for r in results if r is not None]
@@ -155,6 +165,36 @@ class ApprovalServiceTest(unittest.TestCase):
             self.assertEqual(len(winners), 1)
             self.assertEqual(len(losers), 1)
             self.assertEqual(winners[0], pending["id"])
+        _run(_do())
+
+    def test_uncommitted_consume_can_be_retried(self):
+        """第五轮审计 P1-5 的核心场景：consume 成功但调用方没有提交（模拟真正的业务
+        操作失败），审批必须恢复成可以重新消费的状态，不能卡死。"""
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as setup_db:
+                pending = await approval_service.request_or_get_pending(
+                    setup_db, self.applicant["id"], "test_resource.delete", "test_resource", 9014,
+                )
+                await approval_service.decide(setup_db, pending["id"], self.approver["id"], approve=True)
+
+            # 第一次：消费成功，但模拟真正的删除操作失败——不 commit，直接让 session 关闭。
+            async with AsyncSessionLocal() as db:
+                consumed = await approval_service.try_consume_approved(
+                    db, "test_resource.delete", "test_resource", 9014,
+                )
+                self.assertEqual(consumed, pending["id"])
+                # 故意不 commit，模拟真正的业务操作抛异常——session 关闭时自动回滚。
+
+            # 第二次：换一个全新 session 重试，应该能重新消费到同一条审批单
+            # （证明上面那次没有真正提交的消费，被完整回滚了，不是卡死状态）。
+            async with AsyncSessionLocal() as db2:
+                retried = await approval_service.try_consume_approved(
+                    db2, "test_resource.delete", "test_resource", 9014,
+                )
+                self.assertEqual(retried, pending["id"])
+                await db2.commit()
         _run(_do())
 
     def test_concurrent_request_only_creates_one_row(self):
@@ -408,6 +448,74 @@ class SpaceDeleteApprovalIntegrationTest(unittest.TestCase):
                 self.assertIsNone(check_db.get(KnowledgeSpace, self.space_id))
             finally:
                 check_db.close()
+        _run(_do())
+
+    def test_delete_failure_after_consume_can_be_retried(self):
+        """第五轮审计 P1-5 核心场景：审批被消费之后，真正的删除操作失败——修复前
+        `try_consume_approved` 会自己单独 commit，这里模拟的失败会导致"审批用掉了
+        但空间没删，还申请不了新审批（dedupe key 还占着）"的卡死状态。修复后：
+        消费和真正删除在同一个事务里，删除失败时消费也跟着回滚，重试不需要重新
+        申请审批，直接就能重新消费、真的删掉。"""
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            from models.init_db import User
+            from service.knowledge_space import space_async_service
+
+            db = SessionLocal()
+            try:
+                space = KnowledgeSpace(user_id=self.owner["id"], name="appr-retry-space")
+                db.add(space)
+                db.commit()
+                space_id = space.id
+            finally:
+                db.close()
+
+            try:
+                async with AsyncSessionLocal() as db1:
+                    first = await space_async_service.delete_space(db1, self.owner["id"], space_id)
+                    approval_id = first["approval"]["id"]
+
+                async with AsyncSessionLocal() as db2:
+                    admin_user = await db2.get(User, self.admin["id"])
+                    await approval_service.decide(db2, approval_id, admin_user.id, approve=True)
+
+                # 模拟真正删除那一步失败（比如数据库故障、进程崩溃）。
+                with patch(
+                    "models.knowledge_space_async_dao.delete_space_async",
+                    side_effect=RuntimeError("模拟数据库故障"),
+                ):
+                    async with AsyncSessionLocal() as db3:
+                        with self.assertRaises(RuntimeError):
+                            await space_async_service.delete_space(db3, self.owner["id"], space_id)
+
+                # 空间还在——没有真的删掉。
+                check_db = SessionLocal()
+                try:
+                    self.assertIsNotNone(check_db.get(KnowledgeSpace, space_id))
+                finally:
+                    check_db.close()
+
+                # 重试：如果上次失败的消费没有被回滚（旧 bug），这里会因为审批已经被
+                # "用掉"、又申请不了新单（dedupe key 还占着）而卡死在待审批分支，
+                # 拿不到"已删除"。
+                async with AsyncSessionLocal() as db4:
+                    retried = await space_async_service.delete_space(db4, self.owner["id"], space_id)
+                    self.assertEqual(retried.get("message"), "已删除")
+
+                check_db = SessionLocal()
+                try:
+                    self.assertIsNone(check_db.get(KnowledgeSpace, space_id))
+                finally:
+                    check_db.close()
+            finally:
+                cleanup_db = SessionLocal()
+                try:
+                    cleanup_db.execute(text("DELETE FROM knowledge_spaces WHERE id=:s"), {"s": space_id})
+                    cleanup_db.commit()
+                except Exception:  # noqa: BLE001
+                    cleanup_db.rollback()
+                finally:
+                    cleanup_db.close()
         _run(_do())
 
 

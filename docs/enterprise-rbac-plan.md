@@ -1537,3 +1537,54 @@ broad except 把这个连接失败吞掉，业务照常成功，但没有任何�
 `_valid_env()` 基线补上这些新必填项，同步修好了它引发的几个既有测试。
 全量 905 个测试通过（895 基线 + 新增 10），ruff/compileall 干净，
 `release_check.py` 全量跑通。
+
+## 31. 第五轮审计 P1-5：审批被消费后，实际业务操作仍可能失败（2026-09-29）
+
+审计报告指出：`approval_service.try_consume_approved` 先把审批单标
+`executed_at`（认领）并自己 `commit`，之后调用方才真正执行业务操作（比如
+`space_async_service.delete_space` 删知识空间）。这两步分属两个独立事务：
+如果真正执行那一步失败（DB 故障、进程崩溃），审批已经被标记消费、且已经
+落库，但业务没有成功；而且 `active_dedupe_key` 只在 `rejected` 时释放，
+`approved→consumed` 之后不会清空——旧审批用不了（已消费），新审批又申请不了
+（dedupe key 还占着同一个 `(action, resource_type, resource_id)`），资源
+卡死在一个既没删成又申请不了新审批的状态。
+
+**修复**：`try_consume_approved` 不再自己 `commit`，只做那条条件 UPDATE
+（原子性不受影响，仍然靠 UPDATE 语句本身的行锁保证）；调用方必须让"标记
+已消费"和"真正执行业务操作"落在同一个未提交事务里，最后由业务操作自己的
+commit 一起提交。`space_async_service.delete_space` 因此不需要显式改
+commit 逻辑——它本来就靠 `knowledge_space_async_dao.delete_space_async`
+最后那一次 `db.commit()` 收尾，只要中间不再有别的地方提前 commit 就自动
+获得了这个原子性。
+
+**修复过程中一个值得记录的坑**：第一版只改了 `try_consume_approved`，验证
+时发现审批照样在业务操作失败前就被永久标记消费——排查发现
+`delete_space` 在真正删除**之前**调用的 `_audit(...)`（写 `KbAuditLog`）
+底层是 `kb_audit_dao.record_async`，这个函数自己会 `db.commit()`。之前这个
+提前 commit 不是问题（因为 `try_consume_approved` 反正也会自己提前
+commit，审计提交早一点晚一点没区别），但去掉 `try_consume_approved` 的
+commit 之后，这条藏在审计逻辑里的 commit 变成了新的"提前冲掉未提交状态"
+的点，把刚做的修复又绕开了。修法：把 `_audit(...)` 调用挪到真正删除、真正
+commit 之后（审计记录的是"已经发生的事实"，本来就该在事实发生之后写，
+审计本身失败也不影响主流程，`_audit` 内部的 try/except 兜底不变）。这个坑
+提醒了一件事：某个函数"看起来没有副作用的提交行为"（这里是一条审计写入）
+可能悄悄依赖着调用顺序，改动事务边界时不能只看直接相关的代码，要顺着调用链
+把每一步会不会提交都查一遍，不能靠"看起来不会"就跳过。
+
+**真实验证**：没有只看代码就假设修好了——写了真实场景复现：`patch` 掉
+`knowledge_space_async_dao.delete_space_async` 让它抛异常，模拟"审批被
+消费之后真正的删除失败"，先在只改了 `try_consume_approved`、还没挪 `_audit`
+调用顺序的中间状态下跑了一遍，实测复现"重试仍然要求重新审批"（说明还是
+卡死了），确认前面这个坑是真的会发生，不是理论推测；改完 `_audit` 调用
+顺序后再跑一遍，确认空间在失败后还在、重试不需要重新审批直接就能删掉。
+`tests/test_approval_service.py` 新增
+`test_uncommitted_consume_can_be_retried`（`try_consume_approved` 之后
+不 commit，session 关闭自动回滚，换一个新 session 能重新消费到同一条单）
+和 `test_delete_failure_after_consume_can_be_retried`（真实场景，`patch`
+真正删除函数抛异常，验证空间没被删、审批没被卡死、重试直接成功），并修了
+`test_concurrent_consume_only_one_wins`——`try_consume_approved` 不再自己
+commit 之后，测试里"赢家"必须自己补一次 commit 才算完整模拟了真实调用方
+（消费+真正业务操作一起提交），不然两个并发协程都会在对方回滚后重新抢到
+同一条审批单，反而破坏了原来要测的"只有一个赢家"这个断言。全量 907 个
+测试通过（905 基线 + 新增 2），ruff/compileall 干净，`release_check.py`
+全量跑通。
