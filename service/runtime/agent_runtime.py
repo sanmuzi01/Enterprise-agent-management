@@ -47,7 +47,7 @@ def _short_text(value: Any, limit: int = 1000) -> str:
 
 
 def _format_rag_audit(results: List[Dict[str, Any]], rag_context: str,
-                      stats: Dict[str, Any] = None) -> str:
+                      stats: Dict[str, Any] = None, blocked_count: int = 0) -> str:
     import json
 
     payload = {
@@ -69,17 +69,28 @@ def _format_rag_audit(results: List[Dict[str, Any]], rag_context: str,
     }
     if stats:
         payload["stats"] = stats  # 上下文压缩 / Token 节省，见 service/rag/rag_stats.py
+    if blocked_count:
+        # 第五轮审计 P0-1：有多少条检索结果因为密级限制没有进 context——
+        # 管理员回看轨迹时能看出"结果变少了"是策略拦的，不是检索本身没命中。
+        payload["blocked_by_sensitivity_count"] = blocked_count
     return json.dumps(payload, ensure_ascii=False)
 
 
-async def _kb_retrieve_async(agent, user_id: int, agent_id: int, user_message: str) -> Dict[str, Any]:
+async def _kb_retrieve_async(db, agent, user_id: int, agent_id: int, user_message: str) -> Dict[str, Any]:
     """统一 RAG 检索（彻底 async）：绑定了知识库空间走多空间联合检索（带来源），否则走旧 Agent 私有库。
 
     走 `search_entry.search_for_agent_async` —— 向量化 + 归属校验 + chunk 反查全 async，
     ChromaDB / rerank 封 `to_thread`；不再整段 `asyncio.to_thread` 一个同步 Session。
     返回 {context, citations, hit_count, mode, refused, error}。异常降级为空。
+
+    第五轮审计 P0-1：拿到检索结果之后、拼进 system prompt 之前，按内容密级过滤一遍
+    （`service/data_egress_policy.py`）——之前不管命中内容密级是什么都会原样发给
+    Agent 配置的模型，`confidential`/`restricted` 的文档一样会被送到 DeepSeek/智谱
+    这类外部云 API。被拦下来的 hits 不进 context/citations，只在 `blocked_count`
+    里体现一个数字，方便前端提示"部分结果因密级限制未显示"。
     """
     from service.rag import search_entry
+    from service import data_egress_policy
 
     try:
         res = await search_entry.search_for_agent_async(
@@ -88,20 +99,43 @@ async def _kb_retrieve_async(agent, user_id: int, agent_id: int, user_message: s
             rerank=bool(getattr(agent, "kb_rerank_enabled", 0)),
             refuse_when_empty=bool(getattr(agent, "kb_refuse_when_empty", 1)),
         )
+        hits = res.get("hits", [])
+        mode = res.get("mode", "agent")
+        allowed, blocked = await data_egress_policy.filter_hits_by_sensitivity_async(
+            db, hits, mode, getattr(agent, "sensitivity", "internal"), agent.model_name,
+        )
+        if blocked:
+            context, citations = _reassemble_after_policy_filter(allowed, mode)
+        else:
+            context, citations = res.get("context", ""), res.get("citations", [])
         return {
-            "context": res.get("context", ""),
-            "citations": res.get("citations", []),
-            "hit_count": len(res.get("hits", [])),
-            "hits": res.get("hits", []),
-            "mode": res.get("mode", "agent"),
+            "context": context,
+            "citations": citations,
+            "hit_count": len(allowed),
+            "hits": allowed,
+            "mode": mode,
             "refused": bool(res.get("refused")),
             "stats": res.get("stats"),
             "error": "",
+            "blocked_count": len(blocked),
         }
     except Exception as e:  # noqa: BLE001 —— RAG 失败一律降级，不阻断对话
         logger.warning(f"RAG 检索失败（降级跳过）: {e}")
         return {"context": "", "citations": [], "hit_count": 0, "hits": [],
-                "mode": "error", "refused": False, "stats": None, "error": str(e)}
+                "mode": "error", "refused": False, "stats": None, "error": str(e), "blocked_count": 0}
+
+
+def _reassemble_after_policy_filter(allowed_hits, mode: str):
+    """密级策略拦掉了一部分 hits 之后，用剩下的重新拼 context/citations——不能直接
+    用过滤前的 context 字符串抠掉一段，那样容易漏斩不干净；复用检索模块自己的组装
+    逻辑（跟没被拦时走的是同一份代码，格式/编号规则不会跟正常路径长出两套）。"""
+    if not allowed_hits:
+        return "", []
+    if mode == "spaces":
+        from service.rag.space_search import _assemble
+        return _assemble(allowed_hits)
+    from service.rag.search_entry import _assemble_agent_context
+    return _assemble_agent_context(allowed_hits)
 
 
 def _compose_kb_prompt(system_prompt: str, agent, rag: Dict[str, Any]) -> str:
@@ -322,13 +356,13 @@ async def run_with_history_async(
         citations: List[Dict[str, Any]] = []
         if rag_enabled:
             logger.info(f"RAG已启用，开始检索: query='{user_message[:30]}...'")
-            rag = await _kb_retrieve_async(agent, user_id, agent_id, user_message)
+            rag = await _kb_retrieve_async(db, agent, user_id, agent_id, user_message)
             citations = rag.get("citations", [])
             if rag["error"]:
                 thought, audit = f"RAG检索异常，已降级跳过: {rag['error'][:100]}", "检索失败，已跳过"
             elif rag["hit_count"]:
                 thought = f"检索到{rag['hit_count']}条相关片段（{rag['mode']}）"
-                audit = _format_rag_audit(rag["hits"], rag["context"], rag.get("stats"))
+                audit = _format_rag_audit(rag["hits"], rag["context"], rag.get("stats"), rag.get("blocked_count", 0))
             else:
                 thought, audit = "知识库中未检索到相关内容", "无匹配结果"
             await create_step_async(
@@ -474,13 +508,13 @@ async def run_stream_with_history_async(
                "refused": False, "error": ""}
         if rag_enabled:
             logger.info(f"RAG已启用，开始检索: query='{user_message[:30]}...'")
-            rag = await _kb_retrieve_async(agent, user_id, agent_id, user_message)
+            rag = await _kb_retrieve_async(db, agent, user_id, agent_id, user_message)
             if rag["error"]:
                 thought, audit = f"RAG检索异常，已降级跳过: {rag['error'][:100]}", "检索失败，已跳过"
                 yield make_retrieval(hit_count=0, content_preview=f"检索异常已跳过: {rag['error'][:100]}")
             elif rag["hit_count"]:
                 thought = f"检索到{rag['hit_count']}条相关片段（{rag['mode']}）"
-                audit = _format_rag_audit(rag["hits"], rag["context"], rag.get("stats"))
+                audit = _format_rag_audit(rag["hits"], rag["context"], rag.get("stats"), rag.get("blocked_count", 0))
                 yield make_retrieval(hit_count=rag["hit_count"], content_preview=rag["context"],
                                      stats=rag.get("stats"))
             else:

@@ -1740,3 +1740,66 @@ Skill 里没有新增自动化测试——这是部署拓扑层面的改动（co
 Spring Boot 启动模式），不在 `mvn test`/Python `unittest` 的覆盖范围内，
 跟第27节"业务账号去 root"用的是同一种验证方式（真实起容器/进程手动验证），
 不是本次改动引入了新的测试缺口。
+
+## 35. 第五轮审计 P0-1：资源密级目前只是字段，没有实际安全作用（2026-09-29）
+
+审计报告指出：Agent/Skill/知识库空间都有 `sensitivity` 字段
+（public/internal/confidential/restricted，第9.5节 Phase 3D 阶段1加的），
+但业务代码没有根据密级限制检索、模型选择或数据外发——`confidential`/
+`restricted` 文档一样会原样拼进 system prompt，发给 Agent 配置的模型，
+可能是 DeepSeek、智谱这类企业没有直接控制权的外部云 API。
+
+**方案取舍**：审计建议的完整方案是"public/internal 允许云模型、confidential
+脱敏后才允许外发、restricted 只允许 Ollama 等本地模型、检索结果进入模型前
+执行 DLP"。这次只做第一步——**检索结果进入 prompt 前的硬拦截**，不做正则
+脱敏/语义 DLP（复杂度和误判率都需要先看硬拦截本身的实际效果再评估，属于
+后续迭代）。“restricted 只允许本地模型”这条在当前基础设施上不成立：查过
+`service/llm/model_catalog.py`，里面每一个 chat 模型都是外部 HTTP API，
+项目里没有 Ollama 之类的本地/离线模型集成，也没有为了这条规则单独去接一个
+——所以 `restricted` 的实际语义简化成"不管 Agent 配的是什么模型都直接拒绝
+外发"，不是"允许但换个模型"，跟审计的意图一致（restricted 内容不能离开
+企业能控制的边界），只是没有本地模型这个"安全出口"可选。
+
+**设计**：新增 `service/data_egress_policy.py`：
+- `restricted`：硬拒绝，没有白名单/豁免路径。
+- `confidential`：只有 Agent 当前配置的模型在 `CONFIDENTIAL_TIER_ALLOWED_MODELS`
+  这个环境变量配置的白名单里才放行，默认空（没配等于什么模型都不批准）。
+  跟这个项目里其它"企业策略"统一走环境变量配置的惯例一致
+  （`SMS_PROVIDER`/`TRUSTED_HOSTS` 等），不是新建一整套数据库表+管理后台
+  UI——先用最小成本堵住这个口子，以后真需要运行时热改再在这个基础上加表。
+- `public`/`internal`：不限制，跟改动前的实际行为一致。
+
+密级目前只有**空间**级别（`KnowledgeSpace.sensitivity`）和 **Agent** 级别
+（`Agent.sensitivity`），`Knowledge`（单文档）没有单独的 sensitivity
+列——文档继承所在空间的密级，跟这一轮其它 RBAC 工作的颗粒度（按空间管权限，
+不是按单篇文档）一致，不是漏了这一列。
+
+**接线位置**：`service/runtime/agent_runtime.py::_kb_retrieve_async`——检索
+结果拿到手、还没拼进 `_compose_kb_prompt` 之前，按每个 hit 的
+`source.space_id`（多空间联合检索模式）或 `Agent.sensitivity` 本身
+（遗留的"Agent 私有库"检索，没有空间概念）过滤一遍，被拦掉的 hits 不进
+context/citations。空间密级批量查一次（这次检索最多涉及几个空间，不是
+逐条查几十个 chunk）。过滤后如果确实拦掉了内容，用检索模块自己的组装函数
+（`space_search._assemble`/`search_entry._assemble_agent_context`）在剩下
+的 hits 上重新拼 context——不是在原 context 字符串里抠一段，那样容易漏斩
+不干净，而且"来源"编号会重新连续编号（不会留着"来源1、来源3"这种因为
+来源2 被拦掉留下的空洞）。什么都没被拦掉时直接复用检索模块本来产出的
+context/citations，不做无意义的重新组装。`blocked_count` 顺带记进
+`_format_rag_audit` 的轨迹里，方便管理员回看时看出"结果变少了"是策略拦的，
+不是检索本身没命中。
+
+**真实验证**：`tests/test_data_egress_policy.py` 新增 12 个测试——纯规则
+测试（public/internal 不限制、restricted 不管白名单怎么配都拒绝、
+confidential 默认空白名单等于都不批准）；真实 DB 上建三个不同密级的空间，
+验证按 `source.space_id` 批量查询、正确拆成放行/拒绝两组，以及 mode="agent"
+时改用 Agent 自己的 sensitivity 而不是去查空间表；一个端到端集成测试真实
+调用 `agent_runtime._kb_retrieve_async`（只 mock 最底层的向量检索，密级
+过滤/重新组装全走真代码），断言机密内容确实不出现在最终拼给模型的 context
+里、且来源编号重新连续——这是这次修复最核心的断言，也是先在只去掉过滤逻辑
+的旧版本上跑了一遍确认测试真的会失败（3 条命中一条不落地过滤，
+`hit_count` 断言 2 != 3），再恢复代码确认变绿，不是凭经验直接判断"应该
+修好了"。全量 927 个测试通过（915 基线 + 新增 12），ruff/compileall
+干净，`release_check.py` 全量跑通。`.env.production.example` 新增
+`CONFIDENTIAL_TIER_ALLOWED_MODELS` 说明。
+
+至此，第五轮审计报告里全部 2 个 P0 和全部 5 个 P1 都已处理完。
