@@ -168,6 +168,15 @@ async def _min_required_rank_async(db, scope: str, roles: Iterable[str]) -> int:
     return min(ranks) if ranks else 10**9
 
 
+async def is_org_admin_async(db, user_id: int) -> bool:
+    """`is_org_admin` 的异步版，部门工作台（`service/department_workspace_service.py`）
+    在异步路由里判断"当前用户是不是企业管理员"要用这个，不新开同步 Session。"""
+    rank = await _org_role_rank_async(db, user_id)
+    if rank is None:
+        return False
+    return rank >= await _min_required_rank_async(db, "organization", ["admin"])
+
+
 def require_org_role_async(*roles: str):
     """`require_org_role` 的异步版，语义完全一致——给已经全异步化的模块（比如
     Phase 3D 阶段4 的审批路由）用，避免为了一个权限校验硬塞一个同步 Session。"""

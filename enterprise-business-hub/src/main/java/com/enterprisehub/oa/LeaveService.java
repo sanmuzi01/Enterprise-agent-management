@@ -126,6 +126,27 @@ public class LeaveService {
         return LeaveRequestDto.from(request, type);
     }
 
+    /** "我的请假"列表——天然按 applicantUserId 过滤，不存在跨用户泄露的可能，不需要额外的归属校验。 */
+    public List<LeaveRequestDto> listMine(long applicantUserId) {
+        return leaveRequestRepository.findByApplicantUserIdOrderByCreatedAtDesc(applicantUserId).stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    /** "部门待审批"列表——跟 approve/reject 用同一个 TeamAccessGuard 检查，只有这个部门的负责人
+     * 或企业管理员能看，跟审批时的权限判断口径完全一致（不是查看权限更松）。 */
+    public List<LeaveRequestDto> listTeamPending(long teamId, Long callerTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
+        TeamAccessGuard.requireTeamAccess(callerTeamId, isOrgAdmin, isTeamAdmin, teamId);
+        return leaveRequestRepository.findByTeamIdAndStatusOrderByCreatedAtDesc(teamId, LeaveStatus.SUBMITTED).stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    private LeaveRequestDto toDto(LeaveRequest request) {
+        LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
+        return LeaveRequestDto.from(request, type);
+    }
+
     private LeaveRequest getOwnedDraft(long requestId, long applicantUserId) {
         LeaveRequest request = leaveRequestRepository.findById(requestId)
                 .orElseThrow(() -> notFound("请假单不存在"));

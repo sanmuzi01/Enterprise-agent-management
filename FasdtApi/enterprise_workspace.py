@@ -1,0 +1,73 @@
+from typing import Optional
+
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
+
+from models.async_db import get_async_db
+from models.init_db import User
+from service import department_workspace_service as dept_workspace
+from service.dependencies import get_current_user_async
+from service.enterprise_workspace_service import get_workspace
+
+router = APIRouter(prefix="/enterprise", tags=["企业工作台"])
+
+
+@router.get("/workspace")
+async def workspace(db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    return await get_workspace(db, user.id)
+
+
+# ============================================================================
+# 部门工作台：请假闭环（里程碑1）。不挂在 /admin 下——任何登录用户都能调，
+# 权限判断（是不是这个部门的成员/负责人）在 service 层做，不是路由级门槛。
+# ============================================================================
+
+class CreateLeaveDraftBody(BaseModel):
+    team_id: int
+    leave_type_code: str = Field(min_length=1, max_length=40)
+    start_date: str
+    end_date: str
+    reason: Optional[str] = Field(default=None, max_length=500)
+
+
+class LeaveDecisionBody(BaseModel):
+    team_id: int
+    action: str = Field(pattern="^(approve|reject)$")
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.get("/oa/leave/mine")
+async def my_leave_requests(user: User = Depends(get_current_user_async)):
+    return await dept_workspace.list_my_leave_requests_async(user.id)
+
+
+@router.post("/oa/leave/mine")
+async def create_my_leave_draft(
+        body: CreateLeaveDraftBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await dept_workspace.create_my_leave_draft_async(
+        db, user.id, body.team_id, body.leave_type_code, body.start_date, body.end_date, body.reason,
+    )
+
+
+@router.post("/oa/leave/{request_id}/submit")
+async def submit_my_leave_request(request_id: int, user: User = Depends(get_current_user_async)):
+    return await dept_workspace.submit_my_leave_request_async(user.id, request_id)
+
+
+@router.get("/oa/leave/team-pending")
+async def team_pending_leave_requests(
+        team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await dept_workspace.list_team_pending_leave_requests_async(db, user.id, team_id)
+
+
+@router.post("/oa/leave/{request_id}/decide")
+async def decide_leave_request(
+        request_id: int, body: LeaveDecisionBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await dept_workspace.decide_leave_request_async(
+        db, user.id, request_id, body.team_id, body.action, body.note,
+    )

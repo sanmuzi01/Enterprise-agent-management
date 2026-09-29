@@ -100,4 +100,22 @@ public class LeaveController {
         RequestContext ctx = RequestContextHolder.current();
         return leaveService.getStatus(id, ctx.userId(), ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
     }
+
+    /** "我的请假"——部门工作台的列表视图，第五轮之外的里程碑1新增。 */
+    @GetMapping("/requests/mine")
+    public List<LeaveRequestDto> myRequests() {
+        ScopeGuard.require("oa.leave.read");
+        RequestContext ctx = RequestContextHolder.current();
+        return leaveService.listMine(ctx.userId());
+    }
+
+    /** "待我审批"——部门负责人/企业管理员查看某个部门的待审批请假单。teamId 是显式查询参数，
+     * 不是从 ctx.teamId() 直接取：FastAPI 那边已经决定了"当前在看哪个部门"，这里的
+     * TeamAccessGuard 检查（在 LeaveService.listTeamPending 内部）是第二道纵深防御。 */
+    @GetMapping("/requests/team-pending")
+    public List<LeaveRequestDto> teamPending(@RequestParam long teamId) {
+        ScopeGuard.require("oa.leave.read");
+        RequestContext ctx = RequestContextHolder.current();
+        return leaveService.listTeamPending(teamId, ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
+    }
 }
