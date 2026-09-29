@@ -297,6 +297,20 @@ async def _ensure_org_member(db, user_id: int) -> None:
 
 async def list_org_members(db) -> List[Dict]:
     org = await _get_default_organization(db)
+    department_rows = await db.execute(
+        select(TeamMember.user_id, Team.id, Team.name, Team.status,
+               EnterpriseRole.code, EnterpriseRole.name, TeamMember.status)
+        .join(Team, Team.id == TeamMember.team_id)
+        .join(EnterpriseRole, EnterpriseRole.id == TeamMember.role_id)
+        .where(Team.organization_id == org.id)
+        .order_by(Team.id)
+    )
+    departments = {}
+    for uid, tid, name, status, code, role_name, membership_status in department_rows.all():
+        departments.setdefault(uid, []).append({
+            "id": tid, "name": name, "status": status, "role_code": code,
+            "role_name": role_name, "membership_status": membership_status,
+        })
     result = await db.execute(
         select(OrganizationMember, User.name, EnterpriseRole.code, EnterpriseRole.name)
         .join(User, User.id == OrganizationMember.user_id)
@@ -311,6 +325,7 @@ async def list_org_members(db) -> List[Dict]:
             "role_code": role_code,
             "role_name": role_name,
             "status": om.status,
+            "departments": departments.get(om.user_id, []),
         }
         for om, uname, role_code, role_name in result.all()
     ]

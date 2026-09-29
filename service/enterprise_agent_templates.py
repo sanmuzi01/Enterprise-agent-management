@@ -1,4 +1,6 @@
-"""Curated enterprise agents. Tool access is installed through real Skill bindings."""
+"""企业预置 Agent 模板：管理员建部门/中央 Agent 时可选，一步填好 role/task/constraints/output，
+工具访问权限通过真实的 Skill 绑定授予（不是硬编码进 Agent 本身），见
+service/agent_admin_service.py::create_managed_agent 的 template_id 参数。"""
 from copy import deepcopy
 
 _CONSTRAINTS = (

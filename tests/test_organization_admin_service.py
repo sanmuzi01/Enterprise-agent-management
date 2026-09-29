@@ -143,6 +143,15 @@ class TeamCrudTest(unittest.TestCase):
         org_members = _run_db(lambda db: svc.list_org_members(db))
         self.assertIn(self.member1["id"], [m["user_id"] for m in org_members])
 
+        # 部门工作台里程碑1新增：list_org_members 现在还要带上每个人所属的部门
+        # 列表（AdminOrganization.vue 建部门 Agent 时要看"这个人在哪些部门、
+        # 什么角色"）——不能只是"没报错"，要真的能看到刚加的这条部门归属。
+        member_row = next(m for m in org_members if m["user_id"] == self.member1["id"])
+        self.assertEqual(
+            [d["id"] for d in member_row["departments"]], [team["id"]],
+        )
+        self.assertEqual(member_row["departments"][0]["role_code"], "member")
+
     def test_update_and_remove_team_member(self):
         import service.organization_admin_service as svc
 

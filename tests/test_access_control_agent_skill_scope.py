@@ -214,6 +214,35 @@ class AgentSkillScopeTest(unittest.TestCase):
                     await access_control.get_usable_agent_async(db, self.outsider["id"], self.agent_org_id))
         _run(_do())
 
+    def test_agent_async_service_get_agent_uses_shared_scope_not_just_owner(self):
+        # 部门工作台里程碑1新增的"内嵌部门助手聊天面板"（EmbeddedAgentChatPanel.vue）
+        # 靠 GET /agent/{id}（FasdtApi/agent.py -> agent_async_service.get_agent）
+        # 查询部门 Agent 的信息——这个 Agent 的创建者是部门负责人/企业管理员，不是
+        # 每个来聊天的普通部门成员。改动前 get_agent 只认 `agent.user_id == user.id`，
+        # 部门成员会被直接拒绝，聊天面板根本打不开。这里直接测这个具体调用点
+        # （不是又测一遍 get_usable_agent_async 本身，那个矩阵在上面已经测过了），
+        # 确认它真的换成了共享范围判断，而不是漏接、还在用旧的 owner-only 逻辑。
+        import types
+
+        import service.agent_async_service as agent_async_service
+
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                dept_member_user = types.SimpleNamespace(id=self.dept_member["id"], selected_agent_id=None)
+                result = await agent_async_service.get_agent(db, dept_member_user, self.agent_dept_id)
+                self.assertIsNotNone(result, "部门成员应该能查到本部门的共享 Agent")
+                self.assertEqual(result["id"], self.agent_dept_id)
+
+                org_member_user = types.SimpleNamespace(id=self.org_member["id"], selected_agent_id=None)
+                blocked = await agent_async_service.get_agent(db, org_member_user, self.agent_dept_id)
+                self.assertIsNone(blocked, "只是企业成员、不在这个部门的人不该看到部门 Agent")
+
+                outsider_user = types.SimpleNamespace(id=self.outsider["id"], selected_agent_id=None)
+                also_blocked = await agent_async_service.get_agent(db, outsider_user, self.agent_dept_id)
+                self.assertIsNone(also_blocked, "完全不相关的人更加不该看到")
+        _run(_do())
+
     # ---------------- Skill ----------------
 
     def test_can_read_skill_without_db_keeps_old_behavior(self):

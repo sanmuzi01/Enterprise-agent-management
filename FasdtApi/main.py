@@ -32,6 +32,7 @@ from FasdtApi.memory import router as memory_router
 from FasdtApi.background_task import router as background_task_router
 from FasdtApi.admin import router as admin_router
 from FasdtApi.organization_admin import router as organization_admin_router
+from FasdtApi.enterprise_workspace import router as enterprise_workspace_router
 from FasdtApi.evaluation import router as evaluation_router
 from FasdtApi.web_monitor import router as web_monitor_router
 from FasdtApi.user_widget import router as user_widget_router
@@ -112,6 +113,7 @@ app.include_router(memory_router)
 app.include_router(background_task_router)
 app.include_router(admin_router)
 app.include_router(organization_admin_router)
+app.include_router(enterprise_workspace_router)
 app.include_router(evaluation_router)
 app.include_router(web_monitor_router)
 app.include_router(user_widget_router)

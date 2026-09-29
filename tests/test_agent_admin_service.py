@@ -4,9 +4,11 @@
 建出一个真正的中央/部门 Agent。见 docs/enterprise-rbac-plan.md 第20节。跟
 tests/test_organization_admin_service.py 同一套写法：直接调 service 函数。
 """
+import os
 import unittest
 from unittest.mock import AsyncMock, patch
 
+import yaml
 from sqlalchemy import text
 
 from models.init_db import SessionLocal
@@ -344,6 +346,139 @@ class DepartmentPublishUniquenessTest(unittest.TestCase):
             db, sales_agent["id"], self.admin["id"], lifecycle_status="published",
         ))
         self.assertEqual(result["lifecycle_status"], "published")
+
+
+@unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
+class ManagedAgentTemplateTest(unittest.TestCase):
+    """部门工作台里程碑1新增的 `template_id` 支持（service/enterprise_agent_templates.py）：
+    用企业预置模板（比如 "oa"）一步建出带 Prompt、带专属 Skill 绑定的部门/中央 Agent，
+    管理员不用手写 role/task/constraints，也不用单独再去配工具。跟
+    DepartmentPublishUniquenessTest 用同一个 `_run_with_org` 模式，但用不同的 name 前缀
+    （aa-tpl- 而不是 aa-dp-）避免两个测试类的 tearDown 互相清错对方的数据。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.db = SessionLocal()
+        cls.admin = rc.create_user("aa-tpl")
+        cls.org_id = _create_org(cls.db, "aa-tpl-org", cls.admin["id"])
+        cls.team_id = _create_team(cls.db, cls.org_id, "aa-tpl-team", cls.admin["id"])
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.db.execute(text("DELETE FROM agent WHERE name LIKE 'aa-tpl-%'"))
+        cls.db.execute(text("DELETE FROM teams WHERE id=:i"), {"i": cls.team_id})
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
+        cls.db.commit()
+        rc.cleanup()
+        cls.db.close()
+
+    def setUp(self):
+        # self.db 是整个测试类共享、从 setUpClass 就开始存活的同步 session——MySQL
+        # 默认隔离级别（REPEATABLE READ）下，它的普通 SELECT 用的是自己事务开始那
+        # 一刻的快照，看不到 `_run_with_org` 里另开的 AsyncSessionLocal 随后提交的
+        # 新数据。每个测试方法开始前先 commit 一次（没有待提交的写操作，纯粹是为了
+        # 结束旧事务、让下一次查询重新开一个事务），不然本方法自己创建的数据，
+        # 本方法自己拿 self.db 验证的时候都可能查不到（试出来的真实坑，不是猜的）。
+        self.db.commit()
+
+    def tearDown(self):
+        # 用模板建的 Agent 会关联一条 Skill 记录（agent_skill 外键表），必须先删
+        # agent_skill 关联、再删 skill 本身，最后才能删 agent——顺序反了会撞
+        # `agent_skill_ibfk_1` 外键约束，MySQL 直接拒绝删除还被引用的父行。磁盘上
+        # 的 skills/enterprise/agent_<id>.yml 同理要跟着清掉，不然一直留在文件系统里。
+        self.db.commit()
+        import service.skills.loader as skill_loader
+
+        rows = self.db.execute(
+            text("SELECT id FROM agent WHERE name LIKE 'aa-tpl-%'")
+        ).fetchall()
+        agent_ids = [r[0] for r in rows]
+        if agent_ids:
+            ids_sql = ",".join(str(i) for i in agent_ids)
+            self.db.execute(text(f"DELETE FROM agent_skill WHERE agent_id IN ({ids_sql})"))
+            self.db.execute(text(
+                "DELETE FROM skill WHERE user_id=:u AND config_file LIKE 'enterprise/agent_%.yml'"
+            ), {"u": self.admin["id"]})
+            for agent_id in agent_ids:
+                config_path = skill_loader._get_yml_path(f"enterprise/agent_{agent_id}.yml")
+                if os.path.exists(config_path):
+                    os.remove(config_path)
+        self.db.execute(text("DELETE FROM agent WHERE name LIKE 'aa-tpl-%'"))
+        self.db.commit()
+
+    def _run_with_org(self, fn):
+        from unittest.mock import AsyncMock, patch
+        import service.agent_admin_service as svc
+
+        async def _wrapper():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                with patch.object(svc, "_get_default_organization_id", AsyncMock(return_value=self.org_id)):
+                    return await fn(db)
+
+        return _run(_wrapper())
+
+    def test_oa_template_fills_prompt_and_binds_skill_with_its_tools(self):
+        import service.agent_admin_service as svc
+        from service.enterprise_agent_templates import TEMPLATES
+
+        created = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-tpl-oa", "department",
+            department_code="hr", team_id=self.team_id, template_id="oa",
+        ))
+
+        self.assertEqual(created["prompt"]["role"], TEMPLATES["oa"]["role"])
+        self.assertEqual(created["prompt"]["task"], TEMPLATES["oa"]["task"])
+
+        skill_row = self.db.execute(
+            text("SELECT id, config_file FROM skill WHERE config_file=:f"),
+            {"f": f"enterprise/agent_{created['id']}.yml"},
+        ).fetchone()
+        self.assertIsNotNone(skill_row, "模板应该给新建的 Agent 生成一个专属 Skill 记录")
+        linked = self.db.execute(
+            text("SELECT 1 FROM agent_skill WHERE agent_id=:a AND skill_id=:s"),
+            {"a": created["id"], "s": skill_row.id},
+        ).fetchone()
+        self.assertIsNotNone(linked, "生成的 Skill 必须真的关联到这个 Agent 上，不能只是插了一行孤儿记录")
+
+        import service.skills.loader as skill_loader
+        config_path = skill_loader._get_yml_path(f"enterprise/agent_{created['id']}.yml")
+        with open(config_path, encoding="utf-8") as f:
+            written = yaml.safe_load(f)
+        self.assertEqual(
+            [t["name"] for t in written["tools"]], TEMPLATES["oa"]["tools"],
+            "落盘的 Skill 配置里的工具列表要跟模板定义的完全一致（包括这次新增的两个只读列表工具）",
+        )
+
+    def test_template_department_code_mismatch_is_rejected(self):
+        import service.agent_admin_service as svc
+
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.create_managed_agent(
+                db, self.admin["id"], "aa-tpl-mismatch", "department",
+                department_code="procurement", team_id=self.team_id, template_id="oa",
+            ))
+
+    def test_unknown_template_id_is_rejected(self):
+        import service.agent_admin_service as svc
+
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.create_managed_agent(
+                db, self.admin["id"], "aa-tpl-unknown", "department",
+                department_code="hr", team_id=self.team_id, template_id="not-a-real-template",
+            ))
+
+    def test_explicit_role_overrides_template_default(self):
+        # 模板只负责"没填的时候兜底"，用户自己填了 role/task 应该原样保留，
+        # 不能被模板悄悄覆盖掉。
+        import service.agent_admin_service as svc
+
+        created = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-tpl-override", "department",
+            department_code="hr", team_id=self.team_id, template_id="oa",
+            role="自定义角色描述",
+        ))
+        self.assertEqual(created["prompt"]["role"], "自定义角色描述")
 
 
 if __name__ == "__main__":

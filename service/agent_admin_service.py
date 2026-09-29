@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
 
-from models.init_db import Agent, Team
+from models.init_db import Agent, Team, Skill, agent_skill
 from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 from service.lifecycle import VALID_LIFECYCLE_STATUSES
@@ -38,6 +38,7 @@ VALID_MANAGED_AGENT_TYPES = {"central", "department"}
 
 
 def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, Any]:
+    from prompt.prompt_manager import read_prompt_file
     return {
         "id": agent.id,
         "name": agent.name,
@@ -48,6 +49,7 @@ def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, A
         "model_name": agent.model_name,
         "lifecycle_status": agent.lifecycle_status,
         "row_version": agent.row_version,
+        "prompt": read_prompt_file(agent.id) or {},
     }
 
 
@@ -87,7 +89,18 @@ async def create_managed_agent(
         model_name: str = "glm-4",
         role: Optional[str] = None, task: Optional[str] = None,
         constraints: Optional[str] = None, output: Optional[str] = None,
+        template_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    template = None
+    if template_id:
+        from service.enterprise_agent_templates import get_template
+        template = get_template(template_id)
+        if agent_type != template["agent_type"] or department_code != template["department_code"]:
+            raise InvalidInput("模板与 Agent 类型或业务方向不一致")
+        role = role if role is not None else template["role"]
+        task = task if task is not None else template["task"]
+        constraints = constraints if constraints is not None else template["constraints"]
+        output = output if output is not None else template["output"]
     name = (name or "").strip()
     if not name:
         raise InvalidInput("名称不能为空")
@@ -122,6 +135,27 @@ async def create_managed_agent(
     from prompt.prompt_manager import create_prompt_file
     agent.prompt_file = create_prompt_file(agent.id, role, task, constraints, output)
 
+    # 每个用模板建的 Agent 都单独生成一份自己的 Skill 配置文件，不共享同一份——
+    # 不然以后改其中一个 Agent 的工具权限会连带影响所有用同一模板建的其他 Agent。
+    if template and template["tools"]:
+        import yaml
+        from service.skills_core.config_io import atomic_write_validated
+        config_file = f"enterprise/agent_{agent.id}.yml"
+        validation = atomic_write_validated(config_file, yaml.safe_dump({
+            "name": template["name"], "description": template["description"], "version": "1.0",
+            "tools": [{"name": tool} for tool in template["tools"]],
+            "system_prompt": template["constraints"],
+        }, allow_unicode=True))
+        if not validation["ok"]:
+            await db.rollback()
+            raise InvalidInput("专业技能配置校验失败")
+        skill = Skill(user_id=creator_user_id, name=f"{name} · 专业业务技能",
+                      description=template["description"], config_file=config_file,
+                      organization_id=org_id, team_id=team_id, scope_type=scope_type,
+                      lifecycle_status="published", is_public=0)
+        db.add(skill)
+        await db.flush()
+        await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill.id))
     await db.commit()
     await audit_service.record_async(
         creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,

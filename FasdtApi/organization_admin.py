@@ -48,6 +48,7 @@ class OrgMemberUpdate(BaseModel):
 
 
 class ManagedAgentCreate(BaseModel):
+    template_id: Optional[str] = None
     name: str = Field(min_length=1, max_length=255)
     agent_type: str = Field(description="central/department")
     department_code: Optional[str] = Field(default=None, description="agent_type=department 时必填")
@@ -203,6 +204,12 @@ async def get_managed_agents(
     return await agent_admin_service.list_managed_agents(async_db)
 
 
+@router.get("/agent-templates", summary="企业专业 Agent 模板")
+async def get_managed_agent_templates(current_user: User = Depends(get_current_admin_user_async)):
+    from service.enterprise_agent_templates import list_templates
+    return list_templates()
+
+
 @router.post("/agents", summary="创建中央/部门 Agent（默认 draft，需要单独发布才会被路由使用）")
 async def create_managed_agent(
         data: ManagedAgentCreate,
@@ -213,6 +220,7 @@ async def create_managed_agent(
         async_db, current_user.id, data.name, data.agent_type,
         department_code=data.department_code, team_id=data.team_id, model_name=data.model_name,
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
+        template_id=data.template_id,
     )
 
 
