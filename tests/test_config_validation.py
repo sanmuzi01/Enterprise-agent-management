@@ -26,6 +26,14 @@ def _valid_env():
         "TRUSTED_HOSTS": "example.test,www.example.test,api",
         "CORS_ALLOW_ORIGINS": "https://example.test,https://www.example.test",
         "ADMIN_PASSWORD": "strong-admin-password",
+        # 第五轮审计 P1-4 新增的必填项：独立审计账号 + 企业业务中心签名密钥/账号 +
+        # 关掉进程内自动建表。
+        "AUDIT_DB_USER": "audit_writer",
+        "AUDIT_DB_PASSWORD": "strong-audit-password",
+        "ENTERPRISE_HUB_HMAC_SECRET": "strong-hmac-secret-shared-with-enterprise-business-hub",
+        "ENTERPRISE_DB_USER": "app_runtime_java",
+        "ENTERPRISE_DB_PASSWORD": "strong-java-db-password",
+        "DB_AUTO_BOOTSTRAP": "0",
     }
 
 
@@ -107,6 +115,86 @@ class ConfigValidationTest(unittest.TestCase):
             result = validate_runtime_config()
             self.assertFalse(result["ok"])
 
+    def test_production_config_requires_audit_db_credentials(self):
+        env = _valid_env()
+        env.pop("AUDIT_DB_USER", None)
+        env.pop("AUDIT_DB_PASSWORD", None)
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            self.assertTrue(
+                any(item["name"] == "AUDIT_DB_USER" for item in result["checks"] if item["level"] == "error")
+            )
+            with self.assertRaises(RuntimeError):
+                assert_runtime_config()
+
+    def test_production_config_rejects_audit_db_user_same_as_main_db_user(self):
+        """真实撞见的 bug（models/audit_db.py）：AUDIT_DB_USER 跟 DB_USER 相同——
+        不管是显式配成一样，还是 docker-compose 把 AUDIT_DB_PASSWORD 设成空字符串
+        导致 os.getenv(key, default) 悄悄退回主账号——都必须在生产环境被拦下来，
+        否则审计账号形同虚设。"""
+        env = _valid_env()
+        env["AUDIT_DB_USER"] = env["DB_USER"]
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            self.assertTrue(
+                any(item["name"] == "AUDIT_DB_USER" for item in result["checks"] if item["level"] == "error")
+            )
+
+    def test_production_config_rejects_audit_db_password_placeholder(self):
+        env = _valid_env()
+        env["AUDIT_DB_PASSWORD"] = "change-me-strong-audit-password"
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+
+    def test_production_config_requires_enterprise_hub_hmac_secret(self):
+        env = _valid_env()
+        env.pop("ENTERPRISE_HUB_HMAC_SECRET", None)
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            self.assertTrue(
+                any(item["name"] == "ENTERPRISE_HUB_HMAC_SECRET" for item in result["checks"]
+                    if item["level"] == "error")
+            )
+
+    def test_production_config_requires_enterprise_db_credentials(self):
+        env = _valid_env()
+        env.pop("ENTERPRISE_DB_USER", None)
+        env.pop("ENTERPRISE_DB_PASSWORD", None)
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertFalse(result["ok"])
+            error_names = {item["name"] for item in result["checks"] if item["level"] == "error"}
+            self.assertIn("ENTERPRISE_DB_USER", error_names)
+            self.assertIn("ENTERPRISE_DB_PASSWORD", error_names)
+
+    def test_production_config_rejects_root_as_any_runtime_db_user(self):
+        for var_name in ("DB_USER", "AUDIT_DB_USER", "ENTERPRISE_DB_USER"):
+            env = _valid_env()
+            env[var_name] = "root"
+            with patch.dict(os.environ, env, clear=True):
+                result = validate_runtime_config()
+                self.assertFalse(result["ok"], f"{var_name}=root 应该被拒绝")
+                error_names = {item["name"] for item in result["checks"] if item["level"] == "error"}
+                self.assertIn(f"{var_name}_NOT_ROOT", error_names)
+
+    def test_production_config_requires_db_auto_bootstrap_disabled(self):
+        for bad_value in ("1", "true", ""):
+            env = _valid_env()
+            if bad_value:
+                env["DB_AUTO_BOOTSTRAP"] = bad_value
+            else:
+                env.pop("DB_AUTO_BOOTSTRAP", None)
+            with patch.dict(os.environ, env, clear=True):
+                result = validate_runtime_config()
+                self.assertFalse(result["ok"], f"DB_AUTO_BOOTSTRAP={bad_value!r} 应该被拒绝")
+                self.assertTrue(
+                    any(item["name"] == "DB_AUTO_BOOTSTRAP" for item in result["checks"] if item["level"] == "error")
+                )
+
     def test_development_config_allows_missing_redis(self):
         env = _valid_env()
         env["APP_ENV"] = "development"
@@ -115,6 +203,19 @@ class ConfigValidationTest(unittest.TestCase):
             result = validate_runtime_config()
             self.assertTrue(result["ok"])
             self.assertGreaterEqual(result["warning_count"], 1)
+
+    def test_development_config_allows_missing_audit_and_enterprise_hub_vars(self):
+        """这几条是第五轮审计 P1-4 新增的生产环境专属校验——本地开发/CI 没配这些账号
+        时（AUDIT_DB_USER 留空退回主账号、DB_AUTO_BOOTSTRAP 用默认的自动建表）必须
+        还能正常跑，不能变成新的硬依赖。"""
+        env = _valid_env()
+        env["APP_ENV"] = "development"
+        for name in ("AUDIT_DB_USER", "AUDIT_DB_PASSWORD", "ENTERPRISE_HUB_HMAC_SECRET",
+                     "ENTERPRISE_DB_USER", "ENTERPRISE_DB_PASSWORD", "DB_AUTO_BOOTSTRAP"):
+            env.pop(name, None)
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertTrue(result["ok"])
 
     def test_aliyun_sms_requires_credentials_and_system_template(self):
         env = _valid_env()

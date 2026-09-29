@@ -94,6 +94,54 @@ def validate_runtime_config() -> Dict[str, object]:
         else:
             checks.append({"name": "MYSQL_ROOT_PASSWORD", "ok": True, "level": "ok", "message": "已配置且与业务账号密码不同"})
 
+    # 第五轮审计 P1-4：这几个变量哪怕留空/退回默认值，应用也能正常跑起来——不会
+    # 报错，只是悄悄降级：AUDIT_DB_USER/PASSWORD 留空时 models/audit_db.py 会退回
+    # 主账号写审计（等于没有独立最小权限账号，一个被攻破的业务进程能篡改自己写过
+    # 的审计记录）；ENTERPRISE_HUB_HMAC_SECRET 缺失时 Python/Java 之间的请求签名
+    # 会用一个可预测的默认值；DB_AUTO_BOOTSTRAP 没关掉时进程内自动建表和 alembic
+    # 迁移会互相打架。这类"不报错但悄悄降级"的配置问题最危险，必须在生产环境
+    # 启动时就拦下来，不能指望运维凭经验记住每一条。
+    if production:
+        audit_db_user = (os.getenv("AUDIT_DB_USER") or "").strip()
+        audit_db_password = (os.getenv("AUDIT_DB_PASSWORD") or "").strip()
+        db_user = (os.getenv("DB_USER") or "").strip()
+        if _is_blank(audit_db_user) or _is_blank(audit_db_password):
+            checks.append({
+                "name": "AUDIT_DB_USER", "ok": False, "level": "error",
+                "message": "缺少必填配置——生产环境必须给审计写入配一个独立的最小权限账号，不能留空退回主账号",
+            })
+        elif audit_db_user == db_user:
+            checks.append({
+                "name": "AUDIT_DB_USER", "ok": False, "level": "error",
+                "message": "跟 DB_USER 相同——审计账号必须独立于业务账号，否则一个被攻破的业务进程能篡改自己写过的审计记录",
+            })
+        elif _looks_placeholder(audit_db_password):
+            checks.append({"name": "AUDIT_DB_USER", "ok": False, "level": "error", "message": "AUDIT_DB_PASSWORD 仍是示例占位值"})
+        else:
+            checks.append({"name": "AUDIT_DB_USER", "ok": True, "level": "ok", "message": "已配置独立的审计账号"})
+
+        _add_required(checks, "ENTERPRISE_HUB_HMAC_SECRET", os.getenv("ENTERPRISE_HUB_HMAC_SECRET", ""))
+        _add_required(checks, "ENTERPRISE_DB_USER", os.getenv("ENTERPRISE_DB_USER", ""))
+        _add_required(checks, "ENTERPRISE_DB_PASSWORD", os.getenv("ENTERPRISE_DB_PASSWORD", ""))
+
+        # 业务运行时账号（不管哪一个）都不能是 root——只要有一个是，权限收紧就形同虚设。
+        for name in ("DB_USER", "AUDIT_DB_USER", "ENTERPRISE_DB_USER"):
+            if (os.getenv(name) or "").strip().lower() == "root":
+                checks.append({
+                    "name": f"{name}_NOT_ROOT", "ok": False, "level": "error",
+                    "message": f"{name} 不能是 root——业务运行时账号必须是权限收紧过的最小权限账号",
+                })
+
+        # 语义跟 models/init_db.py::_env_bool 保持一致：只有明确的 1/true/yes/on 算开。
+        auto_bootstrap = (os.getenv("DB_AUTO_BOOTSTRAP") or "").strip().lower()
+        if auto_bootstrap in {"1", "true", "yes", "on"} or _is_blank(auto_bootstrap):
+            checks.append({
+                "name": "DB_AUTO_BOOTSTRAP", "ok": False, "level": "error",
+                "message": "生产环境必须显式设为 0，关掉进程内自动建表/迁移，表结构统一交给 alembic 管理",
+            })
+        else:
+            checks.append({"name": "DB_AUTO_BOOTSTRAP", "ok": True, "level": "ok", "message": "已关闭进程内自动建表"})
+
     redis_url = os.getenv("REDIS_URL", "")
     if production:
         _add_required(checks, "REDIS_URL", redis_url)

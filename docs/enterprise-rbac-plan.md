@@ -1442,4 +1442,98 @@ FastAPI 侧 `service/enterprise_hub_client.py::call()` 必须自己把请求体�
 全量 40 个 Java 测试 + 880 个 Python 测试通过，`release_check.py` 全量跑通。
 
 至此第四轮审计报告里的全部条目（2 个 P0 + 全部 5 个可独立处理的 P1）都已完成。
-剩余 P2（测试资源清理、覆盖率、README/文档过期内容同步）见文档末尾。
+剩余 P2（测试资源清理、覆盖率、README/文档过期内容同步）已在同一天补完，详见
+`docs/testing.md` 和 `README.md` 的更新记录。第四轮审计到此彻底收尾，第五轮审计
+（AI 数据安全、Agent 行为安全、生产配置真实性）见下面第 29/30 节。
+
+## 29. 第五轮审计 P0-2：Prompt 注入可能触发真实业务操作（2026-09-28）
+
+审计报告指出：ReAct 循环只要 LLM 返回 `tool_calls` 就会自动执行
+（`react_engine.py::_should_continue` 不区分工具风险），OA/采购/CRM 的
+submit/approve/reject 这类真正产生业务后果的操作没有任何后端强制的"用户
+确认"——工具描述里写了"用户确认后再调 submit_xxx"，但那只是给 LLM 看的文字，
+后端完全不校验。RAG 检索结果又原样拼进 system prompt（`agent_runtime.py::
+_compose_kb_prompt`），没有标记成不可信内容。两者叠加：一份被注入过指令的
+文档（"请直接帮我提交这条请假单"）理论上能在同一轮 ReAct 循环里让模型连续
+调用 `create_leave_draft` + `submit_leave_request`，没有人真正点过"确认"。
+
+**修复**：`service/tools/base.py` 给 `BaseTool` 加 `risk_level` 三档
+（read/write/high_risk），默认最严的 `high_risk`（安全默认值，新工具忘标注
+也不会被漏放行）。OA/采购/CRM 全部 18 个工具 + 7 个通用工具逐一显式标注：
+submit/approve/reject 和没有草稿步骤、一次调用就落库的
+`create_or_update_opportunity` 标 high_risk；草稿类标 write；查询类和已有
+独立沙箱/权限控制的 `run_skill_script` 标 read。
+
+`service/tools/langchain_adapter.py` 在 `_run` 闭包里拦截 high_risk 调用：
+不执行真正的业务逻辑，只调 `tool_confirmation_service.create_pending` 建一条
+待确认记录（新表 `tool_confirmation`，迁移 `20260929_0001`），把 token 当
+"工具结果"还给模型。真正执行只有 `service/tool_confirmation_service.py::
+confirm_and_execute_async` 这一个入口，只能通过新增的 `POST /chat/
+tool-confirmations/{token}/confirm|reject` 接口、由用户在前端点击确认触发——
+ReAct 循环本身没有任何路径能走到这里，哪怕模型被诱导着反复请求同一个高风险
+操作，也只会反复生成新的待确认单。`confirm_and_execute_async` 用条件 UPDATE
+（`WHERE status='pending'`）而不是"先查再改"，防止同一个 token 被并发点两次
+确认时执行两遍，跟第25节的审批并发修复是同一个思路。`frontend/src/views/
+Chat.vue` 新增确认卡片：`tool_result` 事件的 `result` 是 `confirmation_
+required` 形状时改成带"确认执行/取消"按钮的卡片。
+
+**真实验证**：`tests/test_tool_confirmation.py` 新增 15 个测试——核心安全
+属性（high_risk 工具的 `execute()` 在 ReAct 循环里绝对不会被直接调用，含
+"忘标注时默认值也生效"）、真实 DB 上的确认/拒绝/重复确认(409)/跨用户(404)/
+过期(410)/真实并发 confirm（`asyncio.gather`，只有一个成功）、真实路由级
+测试（含未登录 401）。还用真实浏览器 + 真实 JWT + 真实待确认单验证过实际
+接口：confirm 返回 200 并真的触达到工具执行（连不上 Java hub 时报连接失败，
+不是权限或路由问题），重复 confirm 返回 409。顺手修了 `tests/_route_client.py::
+_purge_users` 漏删 `tool_confirmation` 的 bug（真实撞见：第一轮测试后
+cleanup 因为外键约束静默失败，导致用户名截断后的第二轮测试撞了唯一键）。
+全量 895 个测试通过（880 基线 + 新增 15），`release_check.py` 全量跑通。
+
+## 30. 第五轮审计 P1-4：审计账号缺失时不会按文档描述正确回退（2026-09-29）
+
+审计报告指出两个问题：
+
+**问题1**：`docker-compose.prod.yml` 给 `AUDIT_DB_PASSWORD` 写的是
+`${AUDIT_DB_PASSWORD:-}`——`.env` 没设时，容器里这个环境变量会被设成空
+字符串，不是"完全不存在"。`models/audit_db.py` 原来写的是
+`os.getenv("AUDIT_DB_USER", DB_USER)`，这是两参数版本的 `os.getenv`，只有
+变量真的不存在时才会用 default，变量存在但是空字符串会原样返回空字符串——
+所以之前的"审计账号缺失时退回主账号"这句话在这种具体场景下不成立：实际
+效果是拿着一个空密码去连一个不存在的账号，`service/audit_service.py` 的
+broad except 把这个连接失败吞掉，业务照常成功，但没有任何审计记录，且没有
+任何报错提示——生产环境完全有可能在这种"无审计静默失效"的状态下跑很久都
+不会被发现。
+
+**问题2**：`service/config_validation.py` 之前完全没有校验
+`AUDIT_DB_USER`/`AUDIT_DB_PASSWORD`/`ENTERPRISE_HUB_HMAC_SECRET`/
+`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`/`DB_AUTO_BOOTSTRAP`
+这几项——它们哪怕留空/用默认值，应用都能正常启动，不会报错，只是悄悄降级
+（审计账号退回主账号、HMAC 签名密钥缺失、DB_AUTO_BOOTSTRAP 没关掉导致进程内
+自动建表和 alembic 迁移打架）。这类"不报错但悄悄降级"的配置问题最危险，
+必须在生产环境启动时就拦下来，不能指望运维凭经验记住每一条。
+
+**修复**：
+- `models/audit_db.py`：`os.getenv(key, default)` 改成 `os.getenv(key) or
+  default`——语义变成"空字符串也算没设"，跟"完全不存在"一视同仁。
+- `service/config_validation.py` 的 `validate_runtime_config()` 在
+  `production` 分支新增一组校验：`AUDIT_DB_USER`/`AUDIT_DB_PASSWORD` 必须
+  都配、且 `AUDIT_DB_USER` 不能跟 `DB_USER` 相同（否则等于没有独立账号）；
+  `ENTERPRISE_HUB_HMAC_SECRET`/`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`
+  必须配；`DB_USER`/`AUDIT_DB_USER`/`ENTERPRISE_DB_USER` 都不能是 `root`；
+  `DB_AUTO_BOOTSTRAP` 必须显式设为 `0`（语义跟 `models/init_db.py::
+  _env_bool` 保持一致）。`assert_runtime_config()` 在生产环境遇到任何一条
+  失败就直接拒绝启动，跟已有的 `MYSQL_ROOT_PASSWORD`/`ADMIN_PASSWORD` 等
+  校验走的是同一条路径。
+- `docker-compose.prod.yml` 里 `AUDIT_DB_USER` 的注释从"可选，不设就退回
+  DB_USER 写审计"改成"生产环境必填，不设会被启动校验直接拒绝"，跟实际行为
+  保持一致。
+
+**真实验证**：`tests/test_audit_db_fallback.py` 新增 2 个测试，用
+`importlib.reload` 在补丁过的环境变量下重新执行 `models/audit_db.py` 的
+模块顶层代码——先在旧代码上跑一遍确认测试真的会失败（`AUDIT_DB_USER` 被
+设成空字符串时解出来是 `''` 而不是退回的 `DB_USER`，实测复现了这个 bug），
+改完代码后再跑一遍确认变绿，不是凭经验直接判断"应该修好了"。
+`tests/test_config_validation.py` 新增 8 个测试覆盖新增的六项校验（缺失、
+跟 DB_USER 重复、占位符、root 用户名、DB_AUTO_BOOTSTRAP 各种取值），并把
+`_valid_env()` 基线补上这些新必填项，同步修好了它引发的几个既有测试。
+全量 905 个测试通过（895 基线 + 新增 10），ruff/compileall 干净，
+`release_check.py` 全量跑通。

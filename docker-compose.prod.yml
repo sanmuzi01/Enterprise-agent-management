@@ -39,8 +39,10 @@
 #   ENTERPRISE_HUB_HMAC_SECRET=<跟下面 enterprise-hub 服务用的同一个值>
 #   ENTERPRISE_DB_USER=app_runtime_java （Java 侧业务运行时账号，同样只有 DML，没有 DDL）
 #   ENTERPRISE_DB_PASSWORD=<强密码，不能跟 MYSQL_ROOT_PASSWORD 或 DB_PASSWORD 重复>
-#   AUDIT_DB_USER=audit_writer          （可选，不设就退回 DB_USER 写审计，见 .env.production.example）
-#   AUDIT_DB_PASSWORD=<强密码，设了 AUDIT_DB_USER 就必须设>
+#   AUDIT_DB_USER=audit_writer          （生产环境必填——不设就退回 DB_USER 写审计，等于
+#                                         没有独立的最小权限账号，service/config_validation.py
+#                                         会在生产环境启动时直接拦下来，不是可选项）
+#   AUDIT_DB_PASSWORD=<强密码，设了 AUDIT_DB_USER 就必须设，同样是生产环境必填>
 #
 # 关于 root：业务服务（api/worker/enterprise-hub 处理真实请求那条路径）现在完全不用 root，
 # 只有两处还会短暂用到——上面手动跑的 alembic 迁移，和 enterprise-hub 容器启动时 Flyway
