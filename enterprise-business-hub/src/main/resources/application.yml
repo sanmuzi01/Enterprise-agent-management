@@ -4,6 +4,13 @@ server:
 spring:
   application:
     name: enterprise-business-hub
+  main:
+    # 第五轮审计 P1-3：一次性迁移容器（docker-compose.prod.yml 的
+    # enterprise-hub-migrate 服务）把这个设成 none——不起 Web 服务器，Flyway
+    # 迁移跑在 ApplicationContext 初始化过程中，跑完 main() 就正常返回、JVM
+    # 退出（没有 servlet 容器/@Scheduled 之类的非 daemon 线程继续占着进程）。
+    # 长驻的 enterprise-hub 服务保持默认的 servlet，不受影响。
+    web-application-type: ${SPRING_MAIN_WEB_APPLICATION_TYPE:servlet}
   datasource:
     url: jdbc:mysql://${ENTERPRISE_DB_HOST:127.0.0.1}:${ENTERPRISE_DB_PORT:3306}/${ENTERPRISE_DB_NAME:enterprise_business}?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC
     username: ${ENTERPRISE_DB_USER:root}
@@ -18,7 +25,12 @@ spring:
       hibernate:
         format_sql: false
   flyway:
-    enabled: true
+    # 第五轮审计 P1-3：长驻的 enterprise-hub 服务不再自己跑迁移（设
+    # SPRING_FLYWAY_ENABLED=false），迁移单独交给一次性的
+    # enterprise-hub-migrate 服务（这里保持默认 true）——这样 MYSQL_ROOT_PASSWORD/
+    # FLYWAY_DB_USER/FLYWAY_DB_PASSWORD 只出现在那个跑完就退出的容器的环境变量里，
+    # 不会在处理真实业务请求的长驻进程里放一整个生命周期。
+    enabled: ${SPRING_FLYWAY_ENABLED:true}
     locations: classpath:db/migration
     # 迁移账号跟主 datasource 账号分开：主 datasource（上面的 spring.datasource.*，
     # JPA/Hibernate/JdbcTemplate 处理真实业务请求用）应该是只有 DML 权限的最小权限

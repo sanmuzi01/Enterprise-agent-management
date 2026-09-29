@@ -165,9 +165,16 @@ python scripts/grant_audit_db_privileges.py
 迁移那一步显式覆盖成 `root`（`docker compose run --rm -e DB_USER=root -e
 DB_PASSWORD="$MYSQL_ROOT_PASSWORD" api python -m alembic upgrade head`），
 `.env` 里正常配置的 `DB_USER`/`DB_PASSWORD`（业务运行时账号）只用来跑
-`api`/`worker`。Java 侧的 Flyway 迁移账号通过 `FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`
-单独配置（`enterprise-hub` 服务启动时自动用它建表，之后处理业务请求走的是
-`ENTERPRISE_DB_USER`/`ENTERPRISE_DB_PASSWORD`）。
+`api`/`worker`。Java 侧的 Flyway 迁移（第五轮审计 P1-3 之后）不再由长驻的
+`enterprise-hub` 容器自己在启动时跑——那样 `FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`/
+`MYSQL_ROOT_PASSWORD` 就得放进一个处理真实业务请求的进程的环境变量里，被攻破
+能读到 root 密码。改成单独一个一次性的 `enterprise-hub-migrate` 容器，只跑
+Flyway、跑完就退出（`spring.main.web-application-type=none`，本机验证过：
+真实 MySQL + 真实迁移，跑完进程正常退出，退出码 0）；`docker compose up -d`
+会等这个容器成功退出（`depends_on: condition: service_completed_successfully`）
+才起长驻的 `enterprise-hub`，长驻服务的 `SPRING_FLYWAY_ENABLED=false`，环境变量
+里完全不出现 root 密码，处理业务请求走的还是 `ENTERPRISE_DB_USER`/
+`ENTERPRISE_DB_PASSWORD`。
 
 **必须同时设置 `DB_AUTO_BOOTSTRAP=0`**：不然 `api`/`worker` 进程内的自动建表/
 幂等迁移（`models/init_db.py::bootstrap_database`）还是会尝试用业务运行时账号

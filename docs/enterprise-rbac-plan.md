@@ -1678,3 +1678,65 @@ Skill 那侧（`service/skills_core/crud.py::update_skill_with_config`）没有
 
 全量 915 个测试通过（911 基线 + 新增 4），ruff/compileall 干净，
 `release_check.py` 全量跑通。
+
+## 34. 第五轮审计 P1-3：Java 业务容器仍长期持有 MySQL root 密码（2026-09-29）
+
+审计报告指出：Java 业务查询已经用了最小权限账号（第27节的工作），但
+Flyway 建表迁移之前是长驻的 `enterprise-hub` 容器自己在**启动时**跑的
+（Spring Boot 约定：`spring.flyway.enabled=true` 时，Flyway 会作为
+`ApplicationContext` 初始化的一部分自动执行）——`MYSQL_ROOT_PASSWORD`/
+`FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD` 因此要作为环境变量传给这个之后会
+一直跑着处理真实业务请求的进程。只要 Java 进程出现任意代码执行漏洞，
+攻击者能从 `/proc/self/environ` 之类的地方读到这些环境变量，直接拿到 root
+密码——业务查询用限权账号不能弥补这个问题，因为 root 密码本身就摆在那个
+进程的环境里，跟查询用哪个账号无关。
+
+**修复**：拆成两个 compose 服务，跟 Python 侧"迁移交给 alembic、业务运行时
+账号没有 DDL 权限"是同一个思路：
+- 新增一次性的 `enterprise-hub-migrate` 服务：跟 `enterprise-hub` 用同一个
+  镜像/构建，只是把 `SPRING_MAIN_WEB_APPLICATION_TYPE` 设成 `none`——不起
+  Web 服务器，Flyway 迁移仍然跑在 `ApplicationContext` 初始化过程中（不用
+  额外写迁移逻辑，复用 Spring Boot 原生的 Flyway 自动迁移），跑完
+  `main()` 正常返回，JVM 因为没有非 daemon 线程继续占着进程而自己退出。
+  这个服务持有 `MYSQL_ROOT_PASSWORD`/`FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`，
+  跑完就退出，不处理任何外部请求。
+- `enterprise-business-hub/src/main/resources/application.yml` 新增两个
+  可由环境变量覆盖的配置项（都保留原来的默认值，不影响本地 `mvn
+  spring-boot:run`/现有测试）：`spring.main.web-application-type`（默认
+  `servlet`）、`spring.flyway.enabled`（默认 `true`）。
+- 长驻的 `enterprise-hub` 服务设 `SPRING_FLYWAY_ENABLED=false`，完全不再
+  收到 `FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`/`MYSQL_ROOT_PASSWORD` 这几个
+  变量——环境变量里不会出现 root 密码，被攻破也读不到。`depends_on` 加
+  `enterprise-hub-migrate: condition: service_completed_successfully`
+  （不是 `service_started`——必须等迁移容器真的**跑完且退出码是 0**，
+  不然长驻服务会因为表还不存在直接报错）。
+
+**真实验证**（Docker daemon 当时没在跑，改用本机原生 MySQL 服务
+`127.0.0.1:3306` + 本机 Maven/JDK 直接跑 jar，跟真实容器场景差的只是
+"是不是在容器里"，Flyway/Spring Boot 的行为完全一样，不影响验证的有效性）：
+- 建一个全新的空库 `enterprise_business_migrate_test`，用
+  `SPRING_MAIN_WEB_APPLICATION_TYPE=none` + 真实 root 账号跑 jar：日志显示
+  依次跑完 4 个 Flyway 迁移，`Started ... in 7.7 seconds` 之后立刻触发
+  `ApplicationShutdownHook`（关 JPA/Hikari），进程**退出码 0**——证明"跑完
+  migration 后 JVM 自己退出"这个设计假设是真的成立的，不是理论推测。
+- 同一个库，`SPRING_FLYWAY_ENABLED=false` 再跑一次：日志里对 "flyway"
+  大小写不敏感搜索零匹配，证明这个开关真的能让 Flyway 完全不跑；这次故意
+  没传 `FLYWAY_DB_USER`/`FLYWAY_DB_PASSWORD`，应用照样正常启动——证明长驻
+  服务的配置路径不再需要这两个变量。
+- 用 `docker compose -f docker-compose.prod.yml config`（不需要 Docker
+  daemon 在跑，纯本地解析/变量插值）配一份假的 `.env` 跑一遍，确认解析出的
+  最终配置里 `enterprise-hub` 的 `environment` 没有 `FLYWAY_DB_*`/
+  `MYSQL_ROOT_PASSWORD`、有 `SPRING_FLYWAY_ENABLED: "false"`，
+  `enterprise-hub-migrate` 有 `FLYWAY_DB_USER/PASSWORD`、`depends_on` 关系
+  正确——不是只改 YAML 就假设语法对、依赖关系对。
+- 在同一个已迁移好的库上跑 `mvn test`：全量 40 个 Java 测试通过
+  （`BUILD SUCCESS`），证明改动没有破坏现有的 Spring Boot 测试上下文
+  （测试默认走 `web-application-type: servlet` + `flyway.enabled: true`
+  的老默认值，跟改动前行为一致）。
+- `docs/deployment.md`、`docker-compose.prod.yml` 顶部注释同步更新，
+  不再描述"迁移时长驻容器自己建表"这个已经不存在的行为。
+
+Skill 里没有新增自动化测试——这是部署拓扑层面的改动（compose 服务拆分 +
+Spring Boot 启动模式），不在 `mvn test`/Python `unittest` 的覆盖范围内，
+跟第27节"业务账号去 root"用的是同一种验证方式（真实起容器/进程手动验证），
+不是本次改动引入了新的测试缺口。

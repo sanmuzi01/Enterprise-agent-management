@@ -45,11 +45,14 @@
 #   AUDIT_DB_PASSWORD=<强密码，设了 AUDIT_DB_USER 就必须设，同样是生产环境必填>
 #
 # 关于 root：业务服务（api/worker/enterprise-hub 处理真实请求那条路径）现在完全不用 root，
-# 只有两处还会短暂用到——上面手动跑的 alembic 迁移，和 enterprise-hub 容器启动时 Flyway
-# 自动建表那一刻（Spring Boot 约定，见 enterprise-business-hub 的 application.yml 里
-# spring.flyway.* 单独配的 FLYWAY_DB_USER/FLYWAY_DB_PASSWORD，跟主 datasource 的账号分开）。
-# 一个被攻破的、只处理业务请求的进程连接的是限权账号，改不了表结构、建不了新账号、
-# 拿不到 mysql.user 之类的系统表。
+# 只有两处还会短暂用到——上面手动跑的 alembic 迁移，和 enterprise-hub-migrate 这个一次性
+# 容器（第五轮审计 P1-3：之前 Flyway 建表是长驻的 enterprise-hub 容器自己在启动时跑的，
+# MYSQL_ROOT_PASSWORD/FLYWAY_DB_* 就一直放在这个处理真实业务请求的进程的环境变量里，
+# 被攻破了能从 /proc/self/environ 之类的地方读到 root 密码；现在拆成单独一个只跑 Flyway、
+# 跑完就退出的容器，`docker compose up -d` 会先跑完它、确认退出码是 0 才起长驻的
+# enterprise-hub，长驻服务本身的环境变量里完全不出现 root 密码）。一个被攻破的、只处理
+# 业务请求的进程连接的是限权账号，改不了表结构、建不了新账号、拿不到 mysql.user 之类的
+# 系统表。
 #
 # 老部署升级：之前 DB_USER=root 的部署要先在 .env 里补上 MYSQL_ROOT_PASSWORD（哪怕跟旧的
 # DB_PASSWORD 相同也先能跑，之后务必改成不同的值），把 DB_USER/DB_PASSWORD、
@@ -167,6 +170,32 @@ services:
       chroma:
         condition: service_healthy
 
+  # 企业业务中心的一次性迁移容器（第五轮审计 P1-3）：跟长驻的 enterprise-hub
+  # 用同一个镜像，只是把 spring.main.web-application-type 设成 none（不起
+  # Web 服务器，Flyway 迁移跑在 ApplicationContext 初始化过程中，跑完
+  # main() 就正常返回、JVM 自己退出——本机验证过：真实 MySQL + 真实 Flyway
+  # 迁移，跑完进程退出码是 0，不需要额外写退出逻辑）。MYSQL_ROOT_PASSWORD/
+  # FLYWAY_DB_* 只出现在这一个跑完就退出的容器里；长驻的 enterprise-hub
+  # 完全不持有这些凭据，被攻破也读不到 root 密码。
+  enterprise-hub-migrate:
+    build:
+      context: ./enterprise-business-hub
+    restart: "no"
+    environment:
+      SPRING_MAIN_WEB_APPLICATION_TYPE: none
+      ENTERPRISE_DB_HOST: db
+      ENTERPRISE_DB_PORT: "3306"
+      ENTERPRISE_DB_NAME: enterprise_business
+      # 迁移容器直接用 root——它唯一的工作就是建表，用完就退出，不处理任何
+      # 外部业务请求，没有必要再单独配一个"有 DDL 权限但受限"的中间账号。
+      ENTERPRISE_DB_USER: root
+      ENTERPRISE_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
+      FLYWAY_DB_USER: root
+      FLYWAY_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+
   # 企业业务中心（Phase 5，docs/enterprise-business-hub-plan.md）：OA/采购/CRM
   # 三个业务域，跟 api 共用同一个 db 容器但是独立的库（enterprise_business，
   # 上面 db 的 init 脚本建的）。ENTERPRISE_HUB_HMAC_SECRET 必须和 .env 里
@@ -184,12 +213,11 @@ services:
       # deploy/mysql-init/03-create-app-runtime-users.sh 建的。
       ENTERPRISE_DB_USER: ${ENTERPRISE_DB_USER:-app_runtime_java}
       ENTERPRISE_DB_PASSWORD: ${ENTERPRISE_DB_PASSWORD:?请在 .env 设置 ENTERPRISE_DB_PASSWORD}
-      # Flyway 建表迁移单独用 root——这是 Spring Boot 原生支持的分离配置
-      # （application.yml 里 spring.flyway.url/user/password），迁移只在容器
-      # 启动那一刻跑一次，之后处理业务请求全部走上面的限权账号，不会长期拿着
-      # root 权限处理外部输入。
-      FLYWAY_DB_USER: root
-      FLYWAY_DB_PASSWORD: ${MYSQL_ROOT_PASSWORD:?请在 .env 设置 MYSQL_ROOT_PASSWORD}
+      # 迁移交给上面的 enterprise-hub-migrate 一次性容器，这个长驻容器不再
+      # 自己跑 Flyway——所以完全不需要 FLYWAY_DB_USER/FLYWAY_DB_PASSWORD/
+      # MYSQL_ROOT_PASSWORD 这几个变量，环境变量里不会出现 root 密码，
+      # 被攻破也读不到。
+      SPRING_FLYWAY_ENABLED: "false"
       ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:?请在 .env 设置 ENTERPRISE_HUB_HMAC_SECRET}
       # 审计事件写入专用最小权限账号（只给 audit_event 表 INSERT/SELECT），
       # 跟 db 服务里建号脚本用的是同一对账号密码，见上面 db.environment 的注释。
@@ -198,6 +226,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      # 必须等迁移容器真的跑完且退出码是 0（不是"启动了"，是"成功跑完退出"）——
+      # 长驻服务不再自己建表，业务运行时账号也没有 DDL 权限，先起 enterprise-hub
+      # 会直接因为表不存在而报错。
+      enterprise-hub-migrate:
+        condition: service_completed_successfully
     ports:
       # 只绑本机回环，跟 api 一样不直接对公网暴露；FastAPI 通过
       # ENTERPRISE_HUB_BASE_URL=http://enterprise-hub:8090 在容器网络内部访问。
