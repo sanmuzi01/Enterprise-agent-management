@@ -5,6 +5,7 @@
 tests/test_organization_admin_service.py 同一套写法：直接调 service 函数。
 """
 import unittest
+from unittest.mock import AsyncMock, patch
 
 from sqlalchemy import text
 
@@ -181,6 +182,42 @@ class ManagedAgentCrudTest(unittest.TestCase):
             _run_db(lambda db: svc.update_managed_agent(
                 db, agent_id, self.admin["id"], expected_row_version=0, task="第二次改任务，过期版本",
             ))
+
+    def test_prompt_file_restored_when_db_commit_fails(self):
+        """第五轮审计 P1-7：Prompt 文件和 DB 是两个不同的存储，没法用一个事务
+        同时保证两边都成功。file 先原子替换、DB 最后才 commit——commit 失败时
+        必须把文件写回编辑前的内容，不能留下一个内容比 DB 记录的版本还新的
+        文件（否则下次 build_prompt 读到的是从没被数据库确认过的内容）。"""
+        import service.agent_admin_service as svc
+        from prompt.prompt_manager import read_prompt_file
+
+        created = _run_db(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-test-restore", "central",
+            role="旧角色", task="旧任务", constraints="旧约束", output="旧输出",
+        ))
+        agent_id = created["id"]
+
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+
+            async with AsyncSessionLocal() as db:
+                with patch.object(db, "commit", AsyncMock(side_effect=RuntimeError("模拟提交失败"))):
+                    with self.assertRaises(RuntimeError):
+                        await svc.update_managed_agent(db, agent_id, self.admin["id"], role="新角色")
+        _run(_do())
+
+        prompt_data = read_prompt_file(agent_id)
+        self.assertEqual(prompt_data["role"], "旧角色")
+        self.assertEqual(prompt_data["task"], "旧任务")
+
+        # DB 那一侧的 row_version 也确实没被提交上去（跟文件恢复成旧内容一致）。
+        check_db = SessionLocal()
+        try:
+            from models.init_db import Agent
+            row = check_db.get(Agent, agent_id)
+            self.assertEqual(row.row_version, 0)
+        finally:
+            check_db.close()
 
     def test_invalid_lifecycle_status_raises_invalid_input(self):
         import service.agent_admin_service as svc

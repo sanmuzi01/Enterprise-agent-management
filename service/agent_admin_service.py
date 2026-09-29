@@ -30,6 +30,9 @@ from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 from service.lifecycle import VALID_LIFECYCLE_STATUSES
 from service.runtime.central_router import VALID_DEPARTMENT_CODES
+from utils.logger_handler import get_logger
+
+logger = get_logger("agent_admin_service")
 
 VALID_MANAGED_AGENT_TYPES = {"central", "department"}
 
@@ -214,7 +217,25 @@ async def update_managed_agent(
             output=output if output is not None else existing.get("output"),
         )
 
-    await db.commit()
+    # 第五轮审计 P1-7：Prompt 文件和 DB 是两个不同的存储，没法用一个事务同时
+    # 保证两边都成功。file 先原子替换、DB 最后才 commit——这样如果 commit
+    # 失败，文件已经是"新内容"但 DB 的 row_version 还是旧的，不一致但至少
+    # 文件内容本身是完整、有效的（不是本次修复要解决的截断/损坏问题）。这里
+    # 再进一步：commit 失败时把文件写回编辑前的内容，让文件跟"没有真正提交
+    # 成功"这件事保持一致，不留下一个内容比 DB 记录的版本还新的文件。
+    try:
+        await db.commit()
+    except Exception:
+        if touching_prompt:
+            try:
+                update_prompt_file(
+                    agent_id,
+                    role=existing.get("role"), task=existing.get("task"),
+                    constraints=existing.get("constraints"), output=existing.get("output"),
+                )
+            except Exception:  # noqa: BLE001 —— 恢复失败也不能盖掉原始异常
+                logger.warning(f"DB 提交失败后恢复 Prompt 文件也失败: agent_id={agent_id}", exc_info=True)
+        raise
     await db.refresh(agent)
     team_name = None
     if agent.team_id:

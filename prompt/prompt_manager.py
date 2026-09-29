@@ -1,3 +1,5 @@
+import os
+import tempfile
 import yaml
 from pathlib import Path
 
@@ -5,6 +7,31 @@ from utils.logger_handler import get_logger
 logger = get_logger("prompt_manager")
 PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 PROMPT_DIR.mkdir(exist_ok=True)
+
+
+def _atomic_write_yaml(file_path: Path, data: dict) -> None:
+    """临时文件 + os.replace 原子替换（第五轮审计 P1-7）。
+
+    之前是直接 `open(file_path, 'w')`——这个调用本身就会先截断文件再写，
+    写到一半崩了（进程被杀、磁盘满）文件就留在被截断/损坏的状态，没有任何
+    办法恢复成写之前的内容。改成先写一份临时文件、写完整个成功了再
+    `os.replace` 原子换上去：写失败的话原文件完全没被动过，`os.replace`
+    这一步本身在同一个文件系统内是原子操作，不会出现"换了一半"的中间状态。
+    """
+    directory = file_path.parent
+    fd, temp_path = tempfile.mkstemp(prefix=".prompt-", suffix=".yaml.tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+        os.replace(temp_path, file_path)
+    except Exception:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+        raise
+
+
 #创建yml
 def create_prompt_file(agent_id,role,task,constraints,output):
     """创建智能体的提示词 YAML 文件"""
@@ -13,8 +40,7 @@ def create_prompt_file(agent_id,role,task,constraints,output):
             "task": task,
             "constraints": constraints,
             "output": output}
-    with open(file_path, 'w', encoding='utf-8') as f:
-        yaml.dump(data, f,allow_unicode=True,default_flow_style=False)
+    _atomic_write_yaml(file_path, data)
     logger.info(f"创建提示词文件成功: agent_id={agent_id}, path={file_path}")
     return str(file_path)
 #读取system——prompt
@@ -36,8 +62,7 @@ def update_prompt_file(agent_id, role, task, constraints, output):
         logger.warning(f"更新失败，文件不存在: agent_id={agent_id}")
         return None
     data = {"role": role, "task": task, "constraints": constraints, "output": output}
-    with open(file_path, 'w', encoding='utf-8') as f:
-        yaml.dump(data, f, allow_unicode=True, default_flow_style=False)
+    _atomic_write_yaml(file_path, data)
     logger.info(f"更新提示词文件成功: agent_id={agent_id}")
     return str(file_path)
 #删除yml

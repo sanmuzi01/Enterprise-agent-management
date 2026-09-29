@@ -1626,3 +1626,55 @@ password=, host=, port=, database=).render_as_string(hide_password=False)`，
 
 全量 911 个测试通过（907 基线 + 新增 4），ruff/compileall 干净，
 `release_check.py` 全量跑通。
+
+## 33. 第五轮审计 P1-7：Prompt/Skill 文件跟数据库不在同一事务（2026-09-29）
+
+审计报告指出：Agent 的 Prompt 内容（role/task/constraints/output）只存在
+YAML 文件里（`prompt/prompt_manager.py`），数据库（`Agent.prompt_file`/
+`row_version`）只记路径和版本号，两者不是同一个存储，没法用一个数据库事务
+同时保证"文件写对了"和"DB 提交了"这两件事都成功或都失败。之前更严重的问题
+是：`update_prompt_file` 直接 `open(file_path, 'w')`——这个调用本身就先把
+文件截断成空文件再写，写到一半失败（磁盘满、进程被杀）文件就永久留在被
+截断/损坏的状态，比"跟 DB 不一致"更差，是真的丢数据。Skill 那边
+（`service/skills_core/config_io.py::atomic_write_validated`）已经是
+临时文件 + `os.replace` 原子替换，不会有这个截断问题，审计报告里提到它
+"仍无法和数据库提交保持一致"指的是同一类"file 和 DB commit 顺序"问题，
+不是文件本身会损坏。
+
+**修复范围的取舍**：审计建议"短期至少使用临时文件、原子替换和失败恢复
+旧内容"。这次只改了 Prompt 这一侧（问题更严重、修复成本也低——旧内容已经
+现成地摆在 `existing = read_prompt_file(...)` 里，不需要额外改造调用链）：
+
+- `prompt/prompt_manager.py` 新增 `_atomic_write_yaml`：临时文件 +
+  `os.replace`，`create_prompt_file`/`update_prompt_file` 都改用它——写失败
+  时原文件完全没被动过，不会再出现截断/损坏。
+- `service/agent_admin_service.py::update_managed_agent`：`await db.commit()`
+  包一层 try/except，失败时把 Prompt 文件写回编辑前的内容（`existing`）——
+  避免"文件已经是新内容，但 DB 的 row_version 还是旧的"这种文件领先于已提交
+  DB 状态的不一致，让文件的状态始终跟"DB 真正确认过的最后一次成功提交"对齐。
+
+Skill 那侧（`service/skills_core/crud.py::update_skill_with_config`）没有
+同样加"提交失败恢复旧内容"——它已经是原子写入，不会损坏，剩下的只是同一类
+"file 领先于 DB 一小步"的温和不一致（内容本身是对的，只是 row_version 这个
+计数器暂时没跟上），跟这次没有额外加固的 `create_managed_agent`（创建失败
+顶多留一个没被任何 Agent 引用的孤儿文件）是同一档风险，没有再往 Skill 那条
+调用链（`update_skill_with_config` → `update_skill_config` → 
+`_write_skill_config`）里塞"传递旧配置用于回滚"的额外复杂度——按这轮一直
+坚持的"不为了理论上更完美去承担不成比例的复杂度"的判断标准处理，不是漏改。
+
+**真实验证**（两次都先在旧代码上验证测试真的会失败，不是凭经验直接判断
+"应该修好了"）：
+- `tests/test_prompt_manager.py` 新增 3 个测试，其中
+  `test_update_survives_a_failed_write_without_corrupting_existing_file`
+  用 mock 让 `yaml.dump` 在写文件中途抛异常，模拟"磁盘满/进程被杀"；先在
+  旧的 `open(file_path, 'w')` 写法上跑一遍，实测复现了"写失败后文件变成
+  `None`（被截断成空文件）"，改完之后再跑确认原文件完全不变。
+- `tests/test_agent_admin_service.py` 新增
+  `test_prompt_file_restored_when_db_commit_fails`，用
+  `patch.object(db, "commit", AsyncMock(side_effect=...))` 模拟提交失败；
+  先在只加了原子写、还没加"提交失败恢复旧内容"的中间状态跑一遍，实测复现
+  "文件保留了新角色而不是恢复成旧角色"，加上恢复逻辑后再跑确认文件和
+  DB 的 row_version 都回到了编辑前的状态。
+
+全量 915 个测试通过（911 基线 + 新增 4），ruff/compileall 干净，
+`release_check.py` 全量跑通。
