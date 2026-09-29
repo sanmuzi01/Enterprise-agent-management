@@ -8,6 +8,7 @@
 import importlib.util
 from typing import AsyncGenerator
 
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from models.init_db import (
@@ -25,9 +26,14 @@ from models.init_db import (
 
 
 ASYNC_DB_DRIVER = "asyncmy"
-ASYNC_DATABASE_URL = (
-    f"mysql+{ASYNC_DB_DRIVER}://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+# 第五轮审计 P1-6：不能用 f-string 直接拼——密码里如果有 @ : / % 之类的字符，
+# 会被误解析成主机名/路径的一部分。URL.create() 负责正确的百分号编码，
+# render_as_string(hide_password=False) 拿到编码后的完整连接串（这里需要真密码
+# 去连库，不是给人看的日志，所以不能用默认的 hide_password=True）。
+ASYNC_DATABASE_URL = URL.create(
+    f"mysql+{ASYNC_DB_DRIVER}", username=DB_USER, password=DB_PASSWORD,
+    host=DB_HOST, port=int(DB_PORT), database=DB_NAME,
+).render_as_string(hide_password=False)
 
 
 def async_database_available() -> bool:

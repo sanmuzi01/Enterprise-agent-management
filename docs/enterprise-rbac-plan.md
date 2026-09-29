@@ -1588,3 +1588,41 @@ commit 之后，测试里"赢家"必须自己补一次 commit 才算完整模拟
 同一条审批单，反而破坏了原来要测的"只有一个赢家"这个断言。全量 907 个
 测试通过（905 基线 + 新增 2），ruff/compileall 干净，`release_check.py`
 全量跑通。
+
+## 32. 第五轮审计 P1-6：数据库连接串在强密码含特殊字符时可能失效（2026-09-29）
+
+同步/异步/审计/Alembic 四处数据库连接串（`models/init_db.py`、
+`models/async_db.py`、`models/audit_db.py`、`migrations/env.py`）之前都是
+裸 f-string 拼接 `f"mysql+pymysql://{user}:{password}@{host}:{port}/{db}"`。
+密码如果含 `@`/`:`/`/`/`%` 等字符，会被误解析成主机名/路径的一部分——实测
+复现：密码里有第二个 `@` 时，SQLAlchemy 直接解析失败（端口段被错切成非
+数字字符串，报 `ValueError`）；密码里只有一个 `@` 时，解析"成功"但结果
+是错的（`@` 被当成"用户信息和主机的分隔符"，密码后半段被错当成主机名，
+不会报错，是那种更危险的"看起来能连、连的其实是错误的账号密码组合"）。
+
+**修复**：四处全部改成 `sqlalchemy.engine.URL.create(drivername, username=,
+password=, host=, port=, database=).render_as_string(hide_password=False)`，
+由 SQLAlchemy 负责正确的百分号编码/解码；`hide_password=False` 是因为这里
+要拿真密码去连库，不是给人看的日志，默认的 `hide_password=True` 会把
+密码整段替换成 `***`。
+
+**真实验证**：`tests/test_database_url_encoding.py` 新增 4 个测试：
+- 两个不依赖 DB 的模式测试——`URL.create()` 正确编码/回读同一个含特殊字符
+  的密码；顺手真实复现了旧写法的两种坑（密码含第二个 `@` 直接解析报错；
+  密码只含一个 `@` 时解析"成功"但 host/password 都是错的），不是纸面推测。
+- 一个真实子进程测试：`models/init_db.py`、`models/async_db.py`、
+  `models/audit_db.py` 三处的 `DB_USER`/`DB_PASSWORD` 都是模块级常量
+  （`init_db.py` 定义了全部 ORM 类，同进程内 `importlib.reload` 会撞
+  "Table already defined"；`async_db.py`/`audit_db.py` 的 `DB_USER`/
+  `DB_PASSWORD` 又是直接从 `init_db` 的模块属性 import 过来的缓存值，
+  reload 它们自己也测不出真实效果），所以另起一个真实 Python 子进程，
+  从环境变量层面注入一个含特殊字符的 `DB_PASSWORD`，一次性验证三个模块
+  产出的连接串都能正确解析回原密码——不需要真的连上 MySQL（`create_engine`/
+  `create_async_engine` 都是懒连接，构造 URL 阶段就已经能证明对错）。
+  `migrations/env.py` 的 `_database_url()` 因为模块顶层 import 时就会跑
+  真实的 alembic 迁移逻辑，不适合同样起子进程测，改用 `alembic current`/
+  `upgrade head` 真实手动验证（用本机现有的正常密码，确认改动没有破坏
+  正常场景的连接）——两者结合覆盖了这处没法直接单测的文件。
+
+全量 911 个测试通过（907 基线 + 新增 4），ruff/compileall 干净，
+`release_check.py` 全量跑通。

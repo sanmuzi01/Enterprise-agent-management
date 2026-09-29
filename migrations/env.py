@@ -6,6 +6,7 @@ from logging.config import fileConfig
 from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
+from sqlalchemy.engine import URL
 
 
 config = context.config
@@ -39,10 +40,18 @@ def _database_url() -> str:
     if missing:
         raise RuntimeError("缺少数据库环境变量: " + ", ".join(missing))
 
-    return (
-        f"mysql+pymysql://{required['DB_USER']}:{required['DB_PASSWORD']}"
-        f"@{required['DB_HOST']}:{required['DB_PORT']}/{required['DB_NAME']}"
-    )
+    # 第五轮审计 P1-6：不能用 f-string 直接拼——密码里如果有 @ : / % 之类的字符，
+    # 会被误解析成主机名/路径的一部分。URL.create() 负责正确的百分号编码，
+    # render_as_string(hide_password=False) 拿到编码后的完整连接串（这里需要
+    # 真密码，不是给人看的日志，所以不能用默认的 hide_password=True）。
+    return URL.create(
+        "mysql+pymysql",
+        username=required["DB_USER"],
+        password=required["DB_PASSWORD"],
+        host=required["DB_HOST"],
+        port=int(required["DB_PORT"]),
+        database=required["DB_NAME"],
+    ).render_as_string(hide_password=False)
 
 
 def run_migrations_offline() -> None:

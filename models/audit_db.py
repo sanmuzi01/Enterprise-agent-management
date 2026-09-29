@@ -20,6 +20,7 @@ os.getenv，必须先取值再用 `or` 判断"空也算没有"，才能在这种
 import os
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -36,12 +37,18 @@ from models.init_db import (
 AUDIT_DB_USER = os.getenv("AUDIT_DB_USER") or DB_USER
 AUDIT_DB_PASSWORD = os.getenv("AUDIT_DB_PASSWORD") or DB_PASSWORD
 
-AUDIT_DATABASE_URL = (
-    f"mysql+pymysql://{AUDIT_DB_USER}:{AUDIT_DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
-AUDIT_ASYNC_DATABASE_URL = (
-    f"mysql+asyncmy://{AUDIT_DB_USER}:{AUDIT_DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-)
+# 第五轮审计 P1-6：不能用 f-string 直接拼——密码里如果有 @ : / % 之类的字符，
+# 会被误解析成主机名/路径的一部分。URL.create() 负责正确的百分号编码，
+# render_as_string(hide_password=False) 拿到编码后的完整连接串（这里需要真密码
+# 去连库，不是给人看的日志，所以不能用默认的 hide_password=True）。
+AUDIT_DATABASE_URL = URL.create(
+    "mysql+pymysql", username=AUDIT_DB_USER, password=AUDIT_DB_PASSWORD,
+    host=DB_HOST, port=int(DB_PORT), database=DB_NAME,
+).render_as_string(hide_password=False)
+AUDIT_ASYNC_DATABASE_URL = URL.create(
+    "mysql+asyncmy", username=AUDIT_DB_USER, password=AUDIT_DB_PASSWORD,
+    host=DB_HOST, port=int(DB_PORT), database=DB_NAME,
+).render_as_string(hide_password=False)
 
 # 审计写入量小、只追加，不需要跟主业务连接池一样大。
 _AUDIT_POOL_SIZE = 2

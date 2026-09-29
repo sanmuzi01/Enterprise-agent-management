@@ -3,6 +3,7 @@ from typing import List
 from typing import Generator
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Table, Index, Float, UniqueConstraint
 from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy.engine import URL
 from sqlalchemy.orm import declarative_base, sessionmaker, Mapped, relationship
 from dotenv import load_dotenv
 import os
@@ -45,7 +46,14 @@ missing_db_config = [
 ]
 if missing_db_config:
     raise RuntimeError(f"缺少数据库环境变量: {', '.join(missing_db_config)}")
-DATABASE_URL = f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+# 第五轮审计 P1-6：不能用 f-string 直接拼——密码里如果有 @ : / % 之类的字符，
+# 会被误解析成主机名/路径的一部分。URL.create() 负责正确的百分号编码，
+# render_as_string(hide_password=False) 拿到编码后的完整连接串（这里需要真密码
+# 去连库，不是给人看的日志，所以不能用默认的 hide_password=True）。
+DATABASE_URL = URL.create(
+    "mysql+pymysql", username=DB_USER, password=DB_PASSWORD,
+    host=DB_HOST, port=int(DB_PORT), database=DB_NAME,
+).render_as_string(hide_password=False)
 DB_POOL_SIZE = _env_int("DB_POOL_SIZE", 10)
 DB_MAX_OVERFLOW = _env_int("DB_MAX_OVERFLOW", 20)
 DB_POOL_TIMEOUT = _env_int("DB_POOL_TIMEOUT", 30)
