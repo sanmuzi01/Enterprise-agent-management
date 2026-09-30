@@ -20,28 +20,25 @@ from utils.logger_handler import get_logger
 logger = get_logger("central_router")
 
 VALID_AGENT_TYPES = {"central", "department", "personal"}
+# finance/it 是预留但还没有真实业务闭环的部门代码——只在这里占位用于 Agent 创建时
+# 的输入校验，没有对应的模板/routing_keywords，match_department 匹配不到它们。
 VALID_DEPARTMENT_CODES = {"hr", "procurement", "sales", "finance", "it"}
-
-# 关键词 → 部门代码。设计稿原文的对应关系（docs/enterprise-business-hub-plan.md 第6节）：
-# 请假/入职/制度 → HR；库存/供应商/采购 → 采购；客户/联系人/商机 → 销售；
-# 预算/报销 → 财务；账号/故障/工单 → IT。按顺序匹配，第一个命中的部门生效。
-_ROUTING_RULES = (
-    ("hr", ("请假", "入职", "制度", "考勤", "离职", "转正")),
-    ("procurement", ("库存", "供应商", "采购", "订单", "补货")),
-    ("sales", ("客户", "联系人", "商机", "跟进", "报价")),
-    ("finance", ("预算", "报销", "发票", "付款", "费用")),
-    ("it", ("账号", "故障", "工单", "密码重置", "网络")),
-)
 
 
 def match_department(message: str) -> Optional[str]:
     """规则路由本体：message 里出现哪个部门的关键词就返回哪个部门代码，
-    都没命中返回 None（中央 Agent 自己回答）。"""
+    都没命中返回 None（中央 Agent 自己回答）。关键词跟着部门 Agent 模板走
+    （service/enterprise_agent_templates.py 的 routing_keywords 字段），不是这里
+    单独维护一份——新增一个真实部门业务闭环时，模板里加这个字段就自动生效，
+    不需要再改这个文件。按模板声明顺序遍历，第一个命中的部门生效。"""
     if not message:
         return None
-    for department_code, keywords in _ROUTING_RULES:
-        if any(kw in message for kw in keywords):
-            return department_code
+    from service.enterprise_agent_templates import TEMPLATES
+    for template in TEMPLATES.values():
+        if template["agent_type"] != "department":
+            continue
+        if any(kw in message for kw in template.get("routing_keywords", ())):
+            return template["department_code"]
     return None
 
 

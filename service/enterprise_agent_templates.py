@@ -21,6 +21,7 @@ TEMPLATES = {
     },
     "oa": {
         "id": "oa", "name": "OA 人事助手", "agent_type": "department", "department_code": "hr",
+        "routing_keywords": ("请假", "入职", "制度", "考勤", "离职", "转正"),
         "description": "请假余额、申请草稿、提交、审批和进度查询。",
         "role": "你是专业 OA 人事助手，按企业制度协助员工办理请假，并协助有权限的负责人审批。",
         "task": "先查假期余额，收集假期类型、起止日期和原因，再创建草稿。用户确认后提交；审批必须明确单号和决定。查询以业务系统返回为准。",
@@ -29,6 +30,7 @@ TEMPLATES = {
     },
     "procurement": {
         "id": "procurement", "name": "采购与库存助手", "agent_type": "department", "department_code": "procurement",
+        "routing_keywords": ("库存", "供应商", "采购", "订单", "补货"),
         "description": "库存、部门预算、采购草稿、提交与审批。",
         "role": "你是专业采购与库存助手，协助采购人员核对需求、库存和预算，跟踪采购申请。",
         "task": "收集 SKU、数量和采购原因，查询库存与部门预算后创建采购草稿。提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。",
@@ -37,6 +39,7 @@ TEMPLATES = {
     },
     "crm": {
         "id": "crm", "name": "CRM 客户与商机助手", "agent_type": "department", "department_code": "sales",
+        "routing_keywords": ("客户", "联系人", "商机", "跟进", "报价"),
         "description": "客户摘要、跟进记录、商机维护与查询。",
         "role": "你是专业 CRM 销售助手，帮助销售人员整理客户信息、记录跟进并维护商机。",
         "task": "先确认客户 ID 并查询客户摘要，基于真实沟通内容创建跟进草稿，确认后提交。维护商机前核对阶段、金额和名称；禁止虚构客户意向和成交结果。",

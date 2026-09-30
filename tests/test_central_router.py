@@ -28,11 +28,11 @@ class MatchDepartmentTest(unittest.TestCase):
     def test_sales_keywords(self):
         self.assertEqual(central_router.match_department("帮我查一下这个客户的商机"), "sales")
 
-    def test_finance_keywords(self):
-        self.assertEqual(central_router.match_department("这笔报销预算超了吗"), "finance")
-
-    def test_it_keywords(self):
-        self.assertEqual(central_router.match_department("我的账号登不上去，报故障"), "it")
+    def test_department_without_template_has_no_keywords(self):
+        # finance/it 只在 VALID_DEPARTMENT_CODES 里占了个位置，没有模板、没有
+        # routing_keywords，命中不了——这是能力目录化改造要验证的新行为。
+        self.assertIsNone(central_router.match_department("这笔报销预算超了吗"))
+        self.assertIsNone(central_router.match_department("我的账号登不上去，报故障"))
 
     def test_no_match_returns_none(self):
         self.assertIsNone(central_router.match_department("今天天气怎么样"))
@@ -60,17 +60,18 @@ class ResolveTargetAgentTest(unittest.TestCase):
             personal = Agent(user_id=cls.owner["id"], name="router-personal")  # 默认 personal
             hr_dept = Agent(user_id=cls.owner["id"], name="router-hr-dept",
                              agent_type="department", department_code="hr", lifecycle_status="published")
-            unowned_hr_dept = Agent(user_id=cls.outsider["id"], name="router-hr-dept-other-owner",
-                                     agent_type="department", department_code="it", lifecycle_status="published")
-            draft_dept = Agent(user_id=cls.owner["id"], name="router-finance-draft",
-                                agent_type="department", department_code="finance", lifecycle_status="draft")
-            db.add_all([central, personal, hr_dept, unowned_hr_dept, draft_dept])
+            unowned_procurement_dept = Agent(user_id=cls.outsider["id"], name="router-procurement-dept-other-owner",
+                                              agent_type="department", department_code="procurement",
+                                              lifecycle_status="published")
+            draft_sales_dept = Agent(user_id=cls.owner["id"], name="router-sales-draft",
+                                      agent_type="department", department_code="sales", lifecycle_status="draft")
+            db.add_all([central, personal, hr_dept, unowned_procurement_dept, draft_sales_dept])
             db.commit()
             cls.central_id = central.id
             cls.personal_id = personal.id
             cls.hr_dept_id = hr_dept.id
-            cls.unowned_it_dept_id = unowned_hr_dept.id
-            cls.draft_finance_dept_id = draft_dept.id
+            cls.unowned_procurement_dept_id = unowned_procurement_dept.id
+            cls.draft_sales_dept_id = draft_sales_dept.id
 
             conv = Conversation(user_id=cls.owner["id"], agent_id=cls.central_id, title="existing")
             db.add(conv)
@@ -87,7 +88,7 @@ class ResolveTargetAgentTest(unittest.TestCase):
             db.execute(text("DELETE FROM conversation WHERE id=:i"), {"i": cls.existing_conversation_id})
             db.execute(text("DELETE FROM agent WHERE id IN (:a,:b,:c,:d,:e)"),
                        {"a": cls.central_id, "b": cls.personal_id, "c": cls.hr_dept_id,
-                        "d": cls.unowned_it_dept_id, "e": cls.draft_finance_dept_id})
+                        "d": cls.unowned_procurement_dept_id, "e": cls.draft_sales_dept_id})
             db.commit()
         except Exception:
             db.rollback()
@@ -107,12 +108,13 @@ class ResolveTargetAgentTest(unittest.TestCase):
         finally:
             db.close()
 
-    def test_central_agent_falls_back_when_no_department_agent_exists(self):
+    def test_central_agent_answers_itself_when_department_has_no_routing_keywords(self):
         db = SessionLocal()
         try:
-            # sales 关键词命中，但没有任何 department_code="sales" 的 Agent
+            # finance 没有模板/routing_keywords（能力目录化改造后的新行为）——
+            # match_department 直接返回 None，根本不会触发部门 Agent 查询。
             target = central_router.resolve_target_agent(
-                db, self.owner["id"], self.central_id, "查一下这个客户的商机", None,
+                db, self.owner["id"], self.central_id, "这笔报销预算超了吗", None,
             )
             self.assertEqual(target, self.central_id)
         finally:
@@ -121,10 +123,11 @@ class ResolveTargetAgentTest(unittest.TestCase):
     def test_central_agent_falls_back_when_department_agent_not_usable(self):
         db = SessionLocal()
         try:
-            # it 关键词命中，存在 department_code="it" 的 Agent，但属于另一个不相关的用户
-            # （personal 默认 scope，没共享），owner 用不了它——应该退回中央 Agent 自己回答。
+            # procurement 关键词命中，存在 department_code="procurement" 的 Agent，
+            # 但属于另一个不相关的用户（personal 默认 scope，没共享），owner 用不了
+            # 它——应该退回中央 Agent 自己回答。
             target = central_router.resolve_target_agent(
-                db, self.owner["id"], self.central_id, "我的账号登不上去", None,
+                db, self.owner["id"], self.central_id, "这个供应商的库存够吗", None,
             )
             self.assertEqual(target, self.central_id)
         finally:
@@ -166,13 +169,13 @@ class ResolveTargetAgentTest(unittest.TestCase):
             db.close()
 
     def test_draft_department_agent_is_not_matched_even_if_usable(self):
-        # finance 部门 Agent 存在、owner 用得了它，但还是草稿状态——路由只认已发布的
+        # sales 部门 Agent 存在、owner 用得了它，但还是草稿状态——路由只认已发布的
         # 部门 Agent，应该退回中央 Agent 自己回答，不是"没找到部门 Agent"那种日志，
         # 是"找到了但没发布"。
         db = SessionLocal()
         try:
             target = central_router.resolve_target_agent(
-                db, self.owner["id"], self.central_id, "这笔预算超了吗", None,
+                db, self.owner["id"], self.central_id, "帮我查一下这个客户的商机", None,
             )
             self.assertEqual(target, self.central_id)
         finally:
@@ -217,7 +220,7 @@ class ResolveTargetAgentTest(unittest.TestCase):
             from models.async_db import AsyncSessionLocal
             async with AsyncSessionLocal() as db:
                 target = await central_router.resolve_target_agent_async(
-                    db, self.owner["id"], self.central_id, "这笔预算超了吗", None,
+                    db, self.owner["id"], self.central_id, "帮我查一下这个客户的商机", None,
                 )
                 self.assertEqual(target, self.central_id)
         _run(_do())
