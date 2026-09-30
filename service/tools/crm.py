@@ -30,6 +30,36 @@ def _error_json(exc: hub.EnterpriseHubError) -> str:
 
 
 @ToolRegistry.register
+class ListTeamCustomersTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "list_team_customers"
+
+    def get_description(self) -> str:
+        return "查询当前用户所在部门的客户列表。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        try:
+            user_id, auth = _require_user_and_auth(self._ctx)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        try:
+            result = hub.call(
+                "GET", "/crm/customers", user_id, auth["team_id"],
+                ["crm.read"], "list_team_customers",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)
+
+
+@ToolRegistry.register
 class GetCustomerSummaryTool(BaseTool):
     requires_context = True
     risk_level = "read"

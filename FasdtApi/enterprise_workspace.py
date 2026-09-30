@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from models.async_db import get_async_db
 from models.init_db import User
+from service import crm_workspace_service as crm_workspace
 from service import department_workspace_service as dept_workspace
 from service import procurement_workspace_service as procurement_workspace
 from service.dependencies import get_current_user_async
@@ -127,4 +128,59 @@ async def decide_purchase_request(
 ):
     return await procurement_workspace.decide_purchase_request_async(
         db, user.id, request_id, body.team_id, body.action, body.note,
+    )
+
+
+# ============================================================================
+# 部门工作台：CRM 客户跟进/商机闭环（里程碑3）。跟请假/采购不同，CRM 没有审批
+# 环节，权限只判断"是不是本部门成员"。
+# ============================================================================
+
+class CreateFollowupBody(BaseModel):
+    team_id: int
+    content: str = Field(min_length=1, max_length=1000)
+
+
+class UpsertOpportunityBody(BaseModel):
+    team_id: int
+    opportunity_id: Optional[int] = None
+    stage: str
+    amount: float = Field(gt=0)
+
+
+@router.get("/crm/customers")
+async def team_customers(
+        team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await crm_workspace.list_team_customers_async(db, user.id, team_id)
+
+
+@router.get("/crm/customers/{customer_id}")
+async def customer_summary(
+        customer_id: int, team_id: int,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await crm_workspace.get_customer_summary_async(db, user.id, team_id, customer_id)
+
+
+@router.post("/crm/customers/{customer_id}/followups")
+async def create_followup(
+        customer_id: int, body: CreateFollowupBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await crm_workspace.create_followup_draft_async(db, user.id, body.team_id, customer_id, body.content)
+
+
+@router.post("/crm/followups/{followup_id}/confirm")
+async def confirm_followup(followup_id: int, user: User = Depends(get_current_user_async)):
+    return await crm_workspace.confirm_followup_async(user.id, followup_id)
+
+
+@router.post("/crm/customers/{customer_id}/opportunities")
+async def upsert_opportunity(
+        customer_id: int, body: UpsertOpportunityBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await crm_workspace.upsert_opportunity_async(
+        db, user.id, body.team_id, customer_id, body.opportunity_id, body.stage, body.amount,
     )

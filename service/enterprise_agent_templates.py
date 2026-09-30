@@ -40,7 +40,7 @@ TEMPLATES = {
         "description": "客户摘要、跟进记录、商机维护与查询。",
         "role": "你是专业 CRM 销售助手，帮助销售人员整理客户信息、记录跟进并维护商机。",
         "task": "先确认客户 ID 并查询客户摘要，基于真实沟通内容创建跟进草稿，确认后提交。维护商机前核对阶段、金额和名称；禁止虚构客户意向和成交结果。",
-        "tools": ["get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"],
+        "tools": ["list_team_customers", "get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"],
         "examples": ["查询客户摘要", "帮我整理客户跟进记录", "查看客户当前的商机"],
     },
 }

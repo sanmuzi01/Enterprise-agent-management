@@ -1,6 +1,7 @@
 package com.enterprisehub.crm;
 
 import com.enterprisehub.audit.AuditService;
+import com.enterprisehub.crm.dto.CustomerDto;
 import com.enterprisehub.crm.dto.CustomerSummaryDto;
 import com.enterprisehub.crm.dto.FollowUpDto;
 import com.enterprisehub.crm.dto.OpportunityDto;
@@ -113,6 +114,12 @@ public class CrmService {
     public List<OpportunityDto> listOpportunities(long customerId, long requestTeamId) {
         getCustomerInTeam(customerId, requestTeamId);
         return opportunityRepository.findByCustomerId(customerId).stream().map(OpportunityDto::from).toList();
+    }
+
+    /** 部门工作台里程碑3新增：本部门客户列表。跟审批类操作不同，CRM 里任何部门
+     * 成员都能看本部门客户，不需要额外判断负责人角色。 */
+    public List<CustomerDto> listCustomers(long teamId) {
+        return customerRepository.findByTeamIdOrderByCreatedAtDesc(teamId).stream().map(CustomerDto::from).toList();
     }
 
     private Customer getCustomerInTeam(long customerId, long requestTeamId) {
