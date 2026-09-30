@@ -7,6 +7,7 @@ from models.async_db import get_async_db
 from models.init_db import User
 from service import crm_workspace_service as crm_workspace
 from service import department_workspace_service as dept_workspace
+from service import finance_workspace_service as finance_workspace
 from service import procurement_workspace_service as procurement_workspace
 from service.dependencies import get_current_user_async
 from service.enterprise_workspace_service import get_workspace
@@ -183,4 +184,67 @@ async def upsert_opportunity(
 ):
     return await crm_workspace.upsert_opportunity_async(
         db, user.id, body.team_id, customer_id, body.opportunity_id, body.stage, body.amount,
+    )
+
+
+# ============================================================================
+# 部门工作台：财务报销闭环（里程碑4）。跟请假/采购同一套权限模型——审批类操作
+# 要求"部门负责人或企业管理员"，不是像 CRM 那样只判断"本部门成员"。
+# ============================================================================
+
+class ExpenseLineItem(BaseModel):
+    category: str = Field(min_length=1, max_length=40)
+    amount: float = Field(gt=0)
+    description: Optional[str] = Field(default=None, max_length=200)
+    invoice_no: Optional[str] = Field(default=None, max_length=80)
+
+
+class CreateExpenseDraftBody(BaseModel):
+    team_id: int
+    lines: List[ExpenseLineItem]
+
+
+class ExpenseDecisionBody(BaseModel):
+    team_id: int
+    action: str = Field(pattern="^(approve|reject)$")
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.get("/finance/mine")
+async def my_expense_claims(user: User = Depends(get_current_user_async)):
+    return await finance_workspace.list_my_expense_claims_async(user.id)
+
+
+@router.post("/finance/mine")
+async def create_my_expense_draft(
+        body: CreateExpenseDraftBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    lines: List[Dict[str, Any]] = [
+        {"category": line.category, "amount": line.amount, "description": line.description,
+         "invoiceNo": line.invoice_no}
+        for line in body.lines
+    ]
+    return await finance_workspace.create_my_expense_draft_async(db, user.id, body.team_id, lines)
+
+
+@router.post("/finance/{request_id}/submit")
+async def submit_my_expense_claim(request_id: int, user: User = Depends(get_current_user_async)):
+    return await finance_workspace.submit_my_expense_claim_async(user.id, request_id)
+
+
+@router.get("/finance/team-pending")
+async def team_pending_expense_claims(
+        team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await finance_workspace.list_team_pending_expense_claims_async(db, user.id, team_id)
+
+
+@router.post("/finance/{request_id}/decide")
+async def decide_expense_claim(
+        request_id: int, body: ExpenseDecisionBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await finance_workspace.decide_expense_claim_async(
+        db, user.id, request_id, body.team_id, body.action, body.note,
     )

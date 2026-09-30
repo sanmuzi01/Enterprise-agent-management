@@ -16,8 +16,8 @@ TEMPLATES = {
         "id": "central", "name": "企业中央助手", "agent_type": "central", "department_code": None,
         "description": "识别办公需求，转交当前用户有权使用的专业部门助手。",
         "role": "你是企业中央助手，负责理解需求、澄清问题和解释办理路径。",
-        "task": "请假、考勤和制度由 OA 助手处理；采购和库存由采购助手处理；客户和商机由 CRM 助手处理。无法转交时说明缺少的部门配置，不声称已办理业务。",
-        "tools": [], "examples": ["我想申请请假", "查询采购申请进度", "帮我跟进客户"],
+        "task": "请假、考勤和制度由 OA 助手处理；采购和库存由采购助手处理；客户和商机由 CRM 助手处理；报销和预算由财务助手处理。无法转交时说明缺少的部门配置，不声称已办理业务。",
+        "tools": [], "examples": ["我想申请请假", "查询采购申请进度", "帮我跟进客户", "查询本月报销进度"],
     },
     "oa": {
         "id": "oa", "name": "OA 人事助手", "agent_type": "department", "department_code": "hr",
@@ -45,6 +45,15 @@ TEMPLATES = {
         "task": "先确认客户 ID 并查询客户摘要，基于真实沟通内容创建跟进草稿，确认后提交。维护商机前核对阶段、金额和名称；禁止虚构客户意向和成交结果。",
         "tools": ["list_team_customers", "get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"],
         "examples": ["查询客户摘要", "帮我整理客户跟进记录", "查看客户当前的商机"],
+    },
+    "finance": {
+        "id": "finance", "name": "财务报销助手", "agent_type": "department", "department_code": "finance",
+        "routing_keywords": ("预算", "报销", "发票", "付款", "费用"),
+        "description": "报销预算、报销申请草稿、提交与审批。",
+        "role": "你是专业财务报销助手，协助员工核对报销预算，办理报销申请，并协助有权限的负责人审批。",
+        "task": "先查部门报销预算，收集费用类别、金额、说明和发票号，再创建报销草稿。用户确认后提交；审批必须明确单号和决定，依据真实权限和预算余额。",
+        "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims"],
+        "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "查询报销单的审批进度"],
     },
 }
 for _template in TEMPLATES.values():

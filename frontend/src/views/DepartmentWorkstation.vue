@@ -40,6 +40,7 @@
       <LeaveModule v-if="moduleCode === 'hr'" :team-id="deptStore.currentTeamId!" />
       <ProcurementModule v-else-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
       <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
+      <FinanceModule v-else-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
       <div v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
         <p class="text-sm text-slate-500">该部门暂无可用的业务模块。</p>
       </div>
@@ -63,6 +64,7 @@ import { useCurrentDepartmentStore } from '../stores/currentDepartment'
 import { getErrorMessage } from '../utils/request'
 import CrmModule from '../components/CrmModule.vue'
 import EmbeddedAgentChatPanel from '../components/EmbeddedAgentChatPanel.vue'
+import FinanceModule from '../components/FinanceModule.vue'
 import LeaveModule from '../components/LeaveModule.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
 

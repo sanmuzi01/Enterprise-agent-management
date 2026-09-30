@@ -28,10 +28,13 @@ class MatchDepartmentTest(unittest.TestCase):
     def test_sales_keywords(self):
         self.assertEqual(central_router.match_department("帮我查一下这个客户的商机"), "sales")
 
+    def test_finance_keywords(self):
+        # 里程碑4新增了真实的财务报销闭环 + 模板，finance 现在也有 routing_keywords 了。
+        self.assertEqual(central_router.match_department("这笔报销预算超了吗"), "finance")
+
     def test_department_without_template_has_no_keywords(self):
-        # finance/it 只在 VALID_DEPARTMENT_CODES 里占了个位置，没有模板、没有
-        # routing_keywords，命中不了——这是能力目录化改造要验证的新行为。
-        self.assertIsNone(central_router.match_department("这笔报销预算超了吗"))
+        # it 目前是唯一一个只在 VALID_DEPARTMENT_CODES 里占位、没有模板、没有
+        # routing_keywords 的部门代码——这是能力目录化改造要验证的行为。
         self.assertIsNone(central_router.match_department("我的账号登不上去，报故障"))
 
     def test_no_match_returns_none(self):
@@ -111,10 +114,11 @@ class ResolveTargetAgentTest(unittest.TestCase):
     def test_central_agent_answers_itself_when_department_has_no_routing_keywords(self):
         db = SessionLocal()
         try:
-            # finance 没有模板/routing_keywords（能力目录化改造后的新行为）——
-            # match_department 直接返回 None，根本不会触发部门 Agent 查询。
+            # it 没有模板/routing_keywords（能力目录化改造后的新行为，里程碑4给
+            # finance 建了真实闭环后，it 是唯一还没有的）——match_department 直接
+            # 返回 None，根本不会触发部门 Agent 查询。
             target = central_router.resolve_target_agent(
-                db, self.owner["id"], self.central_id, "这笔报销预算超了吗", None,
+                db, self.owner["id"], self.central_id, "我的账号登不上去，报故障", None,
             )
             self.assertEqual(target, self.central_id)
         finally:
