@@ -298,3 +298,65 @@ class GetPurchaseStatusTool(BaseTool):
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
         return json.dumps(result, ensure_ascii=False)
+
+
+@ToolRegistry.register
+class GetMyPurchaseRequestsTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "get_my_purchase_requests"
+
+    def get_description(self) -> str:
+        return "查询当前用户自己提交过的所有采购申请（不分状态）。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        try:
+            user_id, auth = _require_user_and_auth(self._ctx)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        try:
+            result = hub.call(
+                "GET", "/procurement/requests/mine", user_id, auth["team_id"],
+                ["procurement.read"], "get_my_purchase_requests",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)
+
+
+@ToolRegistry.register
+class GetTeamPendingPurchaseRequestsTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "get_team_pending_purchase_requests"
+
+    def get_description(self) -> str:
+        return "查询本部门待审批的采购申请（只有部门负责人/企业管理员视角的对话该调用这个工具）。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        try:
+            user_id, auth = _require_user_and_auth(self._ctx)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权查看待审批列表"}, ensure_ascii=False)
+        try:
+            result = hub.call(
+                "GET", f"/procurement/requests/team-pending?teamId={int(auth['team_id'])}",
+                user_id, auth["team_id"], ["procurement.read"], "get_team_pending_purchase_requests",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)

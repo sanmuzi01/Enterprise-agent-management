@@ -1,9 +1,12 @@
-"""部门工作台里程碑1：本地/演示环境用的便利脚本，幂等地建好一个人事部 + OA 请假
-Agent 并发布，省得每次手动在管理后台点几遍。生产环境走管理员在
-`AdminOrganization.vue` 里手动建，这个脚本不是必须的生产路径。
+"""部门工作台本地/演示环境用的便利脚本，幂等地建好一个部门 + 对应业务模板的 Agent
+并发布，省得每次手动在管理后台点几遍。生产环境走管理员在 `AdminOrganization.vue`
+里手动建，这个脚本不是必须的生产路径。默认建人事部（里程碑1），传
+`--department-code procurement --template-id procurement` 就能建采购部（里程碑2）。
 
 用法：
     .venv/Scripts/python.exe scripts/seed_department_oa_agent.py --user <user_id> [--team-name 人事部]
+    .venv/Scripts/python.exe scripts/seed_department_oa_agent.py --user <user_id> \
+        --team-name 采购部 --department-code procurement --template-id procurement --agent-name "采购与库存助手"
 
 `--user` 是一个已存在的用户 id，会被加进新建/已有的这个部门当负责人（如果还
 不是的话）——不会创建新用户，也不会动其它任何用户的数据。
@@ -16,7 +19,8 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 
-async def _run(user_id: int, team_name: str, org_name: str) -> None:
+async def _run(user_id: int, team_name: str, org_name: str, department_code: str, template_id: str,
+                agent_name: str) -> None:
     from sqlalchemy import select
 
     from models.async_db import AsyncSessionLocal
@@ -81,12 +85,12 @@ async def _run(user_id: int, team_name: str, org_name: str) -> None:
 
         agent = (await db.execute(
             select(Agent).where(Agent.team_id == team.id, Agent.agent_type == "department",
-                                 Agent.department_code == "hr")
+                                 Agent.department_code == department_code)
         )).scalars().first()
         if agent is None:
             created = await agent_admin_service.create_managed_agent(
-                db, user_id, "人事 OA 助手", "department",
-                department_code="hr", team_id=team.id, template_id="oa",
+                db, user_id, agent_name, "department",
+                department_code=department_code, team_id=team.id, template_id=template_id,
             )
             print(f"[建 Agent] {created['name']} (id={created['id']})")
             agent_id = created["id"]
@@ -109,8 +113,12 @@ def main() -> None:
     parser.add_argument("--user", type=int, required=True, help="作为部门负责人/企业管理员的用户 id")
     parser.add_argument("--team-name", default="人事部")
     parser.add_argument("--org-name", default="演示企业")
+    parser.add_argument("--department-code", default="hr")
+    parser.add_argument("--template-id", default="oa")
+    parser.add_argument("--agent-name", default="人事 OA 助手")
     args = parser.parse_args()
-    asyncio.run(_run(args.user, args.team_name, args.org_name))
+    asyncio.run(_run(args.user, args.team_name, args.org_name, args.department_code, args.template_id,
+                      args.agent_name))
 
 
 if __name__ == "__main__":

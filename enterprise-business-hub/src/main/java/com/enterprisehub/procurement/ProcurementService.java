@@ -142,6 +142,22 @@ public class ProcurementService {
         return toDto(request);
     }
 
+    /** "我的采购申请"列表——天然按 requesterUserId 过滤，不存在跨用户泄露的可能，
+     * 不需要额外的归属校验，跟 LeaveService.listMine 是同一个道理。 */
+    public List<PurchaseRequestDto> listMine(long requesterUserId) {
+        return requestRepository.findByRequesterUserIdOrderByCreatedAtDesc(requesterUserId).stream()
+                .map(this::toDto).toList();
+    }
+
+    /** "部门待审批"列表——跟 approve/reject 用同一个 TeamAccessGuard 检查，只有这个
+     * 部门的负责人或企业管理员能看，权限判断口径跟审批时完全一致。 */
+    public List<PurchaseRequestDto> listTeamPending(long teamId, Long callerTeamId, boolean isOrgAdmin,
+                                                     boolean isTeamAdmin) {
+        TeamAccessGuard.requireTeamAccess(callerTeamId, isOrgAdmin, isTeamAdmin, teamId);
+        return requestRepository.findByTeamIdAndStatusOrderByCreatedAtDesc(teamId, PurchaseStatus.SUBMITTED).stream()
+                .map(this::toDto).toList();
+    }
+
     private void createPurchaseOrder(PurchaseRequest request) {
         String supplierCode = lineRepository.findByPurchaseRequestId(request.getId()).stream()
                 .map(line -> productRepository.findById(line.getProductId()).orElse(null))

@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 from models.async_db import get_async_db
 from models.init_db import User
 from service import department_workspace_service as dept_workspace
+from service import procurement_workspace_service as procurement_workspace
 from service.dependencies import get_current_user_async
 from service.enterprise_workspace_service import get_workspace
 
@@ -69,5 +70,61 @@ async def decide_leave_request(
         db=Depends(get_async_db), user: User = Depends(get_current_user_async),
 ):
     return await dept_workspace.decide_leave_request_async(
+        db, user.id, request_id, body.team_id, body.action, body.note,
+    )
+
+
+# ============================================================================
+# 部门工作台：采购闭环（里程碑2）。跟请假路由同一套设计，权限判断在 service 层做。
+# ============================================================================
+
+class PurchaseLineItem(BaseModel):
+    sku: str = Field(min_length=1, max_length=64)
+    quantity: int = Field(gt=0)
+
+
+class CreatePurchaseDraftBody(BaseModel):
+    team_id: int
+    lines: List[PurchaseLineItem]
+
+
+class PurchaseDecisionBody(BaseModel):
+    team_id: int
+    action: str = Field(pattern="^(approve|reject)$")
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+@router.get("/procurement/mine")
+async def my_purchase_requests(user: User = Depends(get_current_user_async)):
+    return await procurement_workspace.list_my_purchase_requests_async(user.id)
+
+
+@router.post("/procurement/mine")
+async def create_my_purchase_draft(
+        body: CreatePurchaseDraftBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    lines: List[Dict[str, Any]] = [line.model_dump() for line in body.lines]
+    return await procurement_workspace.create_my_purchase_draft_async(db, user.id, body.team_id, lines)
+
+
+@router.post("/procurement/{request_id}/submit")
+async def submit_my_purchase_request(request_id: int, user: User = Depends(get_current_user_async)):
+    return await procurement_workspace.submit_my_purchase_request_async(user.id, request_id)
+
+
+@router.get("/procurement/team-pending")
+async def team_pending_purchase_requests(
+        team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await procurement_workspace.list_team_pending_purchase_requests_async(db, user.id, team_id)
+
+
+@router.post("/procurement/{request_id}/decide")
+async def decide_purchase_request(
+        request_id: int, body: PurchaseDecisionBody,
+        db=Depends(get_async_db), user: User = Depends(get_current_user_async),
+):
+    return await procurement_workspace.decide_purchase_request_async(
         db, user.id, request_id, body.team_id, body.action, body.note,
     )

@@ -32,7 +32,7 @@ TEMPLATES = {
         "description": "库存、部门预算、采购草稿、提交与审批。",
         "role": "你是专业采购与库存助手，协助采购人员核对需求、库存和预算，跟踪采购申请。",
         "task": "收集 SKU、数量和采购原因，查询库存与部门预算后创建采购草稿。提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。",
-        "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status"],
+        "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"],
         "examples": ["查询本部门今年的采购预算", "帮我起草采购申请", "查询某个 SKU 的库存"],
     },
     "crm": {

@@ -3,6 +3,7 @@ package com.enterprisehub.procurement;
 import com.enterprisehub.idempotency.IdempotencyService;
 import com.enterprisehub.procurement.dto.CreatePurchaseDraftRequest;
 import com.enterprisehub.procurement.dto.PurchaseDecisionRequest;
+import com.enterprisehub.procurement.dto.PurchaseRequestDto;
 import com.enterprisehub.security.RequestContext;
 import com.enterprisehub.security.RequestContextHolder;
 import com.enterprisehub.security.ScopeGuard;
@@ -11,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.Year;
+import java.util.List;
 
 /** 库存与采购闭环的 REST 接口，供 FastAPI 侧的采购 Agent 工具调用
  * （service/tools/procurement.py，跟 oa_leave.py 是同一种薄工具层）。 */
@@ -98,6 +100,25 @@ public class ProcurementController {
         ScopeGuard.require("procurement.read");
         RequestContext ctx = RequestContextHolder.current();
         return procurementService.getStatus(id, ctx.userId(), ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
+    }
+
+    /** "我的采购申请"——部门工作台的列表视图，里程碑2新增。 */
+    @GetMapping("/requests/mine")
+    public List<PurchaseRequestDto> myRequests() {
+        ScopeGuard.require("procurement.read");
+        RequestContext ctx = RequestContextHolder.current();
+        return procurementService.listMine(ctx.userId());
+    }
+
+    /** "待我审批"——部门负责人/企业管理员查看某个部门的待审批采购申请。teamId 是显式
+     * 查询参数，不是从 ctx.teamId() 直接取——FastAPI 那边已经决定了"当前在看哪个部门"，
+     * 这里的 TeamAccessGuard 检查（在 ProcurementService.listTeamPending 内部）是第二道
+     * 纵深防御，跟 LeaveController.teamPending 是同一种模式。 */
+    @GetMapping("/requests/team-pending")
+    public List<PurchaseRequestDto> teamPending(@RequestParam long teamId) {
+        ScopeGuard.require("procurement.read");
+        RequestContext ctx = RequestContextHolder.current();
+        return procurementService.listTeamPending(teamId, ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
     }
 
     private long requireTeamId(RequestContext ctx) {
