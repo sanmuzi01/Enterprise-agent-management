@@ -10,6 +10,7 @@ export interface WorkspaceDepartment {
   id: number
   name: string
   role_name: string
+  department_code: string | null
 }
 
 export interface WorkspaceAgent {

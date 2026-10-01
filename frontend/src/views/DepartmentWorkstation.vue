@@ -37,12 +37,12 @@
     </div>
 
     <div v-else class="space-y-5">
-      <LeaveModule v-if="moduleCode === 'hr'" :team-id="deptStore.currentTeamId!" />
-      <ProcurementModule v-else-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
+      <LeaveModule :team-id="deptStore.currentTeamId!" />
+      <ProcurementModule v-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
       <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
       <FinanceModule v-else-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
       <div v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
-        <p class="text-sm text-slate-500">该部门暂无可用的业务模块。</p>
+        <p class="text-sm text-slate-500">该部门还没有配置专属业务类型。</p>
       </div>
 
       <!-- 部门助手 -->
@@ -79,10 +79,10 @@ const deptAgent = computed(() => {
   if (teamId == null) return null
   return deptStore.workspace?.agents.find((a) => a.agent_type === 'department' && a.team_id === teamId) || null
 })
-// 业务模块靠哪个部门 Agent 已发布来判断——department_code 只存在于 Agent 上，
-// 部门（Team）本身没有这个字段。没有已发布部门 Agent 的部门自然落进"暂无
-// 业务模块"的兜底分支，不当错误处理。
-const moduleCode = computed(() => deptAgent.value?.department_code ?? null)
+// 业务模块显示与否是部门自己的属性（Team.department_code），跟"有没有已发布
+// 的部门 Agent"是两个独立的可用性判断——没有发布 Agent 时业务表单仍然可用，
+// 只是下方"部门助手"聊天区块不出现（那个区块才依赖 deptAgent）。
+const moduleCode = computed(() => currentDept.value?.department_code ?? null)
 
 async function reload(force = false) {
   loading.value = true

@@ -60,7 +60,7 @@
 </template>
 
 <script setup lang="ts">
-import { nextTick, ref } from 'vue'
+import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'
 
@@ -72,6 +72,15 @@ const inputText = ref('')
 const loading = ref(false)
 const conversationId = ref<number | null>(null)
 const listRef = ref<HTMLElement | null>(null)
+
+// 部门工作台切换部门时这个组件会被复用（同一个实例换 agentId），不会重新挂载——
+// 不重置的话上一个部门的聊天记录会原样留在面板里，看起来像串号。
+watch(() => props.agentId, () => {
+  messages.value = []
+  eventTraces.value = []
+  conversationId.value = null
+  inputText.value = ''
+})
 
 const short = (s: string, n: number) => {
   const s2 = s || ''

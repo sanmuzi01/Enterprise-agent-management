@@ -20,14 +20,17 @@ async def get_workspace(db, user_id):
     if not org_ids:
         return payload
     rows = (await db.execute(
-        select(Team.id, Team.name, EnterpriseRole.name)
+        select(Team.id, Team.name, EnterpriseRole.name, Team.department_code)
         .join(TeamMember, TeamMember.team_id == Team.id)
         .join(EnterpriseRole, EnterpriseRole.id == TeamMember.role_id)
         .where(Team.organization_id.in_(org_ids), Team.status == "active",
                TeamMember.user_id == user_id, TeamMember.status == "active")
         .order_by(Team.id)
     )).all()
-    payload["departments"] = [{"id": tid, "name": name, "role_name": role} for tid, name, role in rows]
+    payload["departments"] = [
+        {"id": tid, "name": name, "role_name": role, "department_code": dept_code}
+        for tid, name, role, dept_code in rows
+    ]
     models = set((await db.execute(select(LLMConfig.model_name).where(
         LLMConfig.user_id == user_id, LLMConfig.is_active == 1))).scalars().all())
     candidates = (await db.execute(

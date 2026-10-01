@@ -59,6 +59,7 @@
               {{ t.member_count }} 名成员
               <span v-if="t.leads.length"> · 负责人 {{ t.leads.map(l => l.name).join('、') }}</span>
               <span v-else class="text-amber-600"> · 未设负责人</span>
+              <span v-if="t.department_code"> · {{ DEPARTMENT_CODE_OPTIONS.find(o => o.value === t.department_code)?.label }}</span>
             </p>
           </li>
           <li v-if="!teams.length" class="px-4 py-8 text-center text-sm text-slate-400">还没有创建任何部门</li>
@@ -169,6 +170,7 @@
         <thead class="border-b border-slate-100 bg-slate-50 text-xs text-slate-500">
           <tr>
             <th class="px-4 py-2.5 font-medium">姓名</th>
+            <th class="px-4 py-2.5 font-medium">所属部门</th>
             <th class="px-4 py-2.5 font-medium">企业角色</th>
             <th class="px-4 py-2.5 font-medium">状态</th>
             <th class="px-4 py-2.5 font-medium">操作</th>
@@ -177,6 +179,10 @@
         <tbody>
           <tr v-for="m in orgMembers" :key="m.user_id" class="border-b border-slate-100">
             <td class="px-4 py-2.5 text-slate-900">{{ m.name }}<span class="ml-1 text-xs text-slate-400">#{{ m.user_id }}</span></td>
+            <td class="px-4 py-2.5 text-xs text-slate-500">
+              <span v-if="m.departments.length">{{ m.departments.map(d => d.name).join('、') }}</span>
+              <span v-else class="text-slate-300">—</span>
+            </td>
             <td class="px-4 py-2.5">
               <select
                 :value="m.role_code"
@@ -201,7 +207,7 @@
               </button>
             </td>
           </tr>
-          <tr v-if="!orgMembers.length"><td colspan="4" class="px-4 py-8 text-center text-slate-400">还没有企业成员</td></tr>
+          <tr v-if="!orgMembers.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有企业成员</td></tr>
         </tbody>
       </table>
     </div>
@@ -290,6 +296,14 @@
             </select>
           </div>
           <template v-if="agentDialog.form.agent_type === 'department'">
+            <div v-if="!agentDialog.editing && templatesForType('department').length">
+              <label class="mb-1 block text-xs text-slate-500">使用预置模板（可选）</label>
+              <select :value="agentDialog.form.template_id" @change="onApplyTemplate(($event.target as HTMLSelectElement).value)"
+                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                <option value="">不使用模板，手动填写</option>
+                <option v-for="tpl in templatesForType('department')" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
+              </select>
+            </div>
             <div>
               <label class="mb-1 block text-xs text-slate-500">部门代码</label>
               <select v-model="agentDialog.form.department_code" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
@@ -348,6 +362,14 @@
           class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
           @keyup.enter="submitTeamDialog"
         />
+        <label class="mt-3 block text-xs font-medium text-slate-600">业务类型</label>
+        <p class="mb-1 text-[11px] text-slate-400">决定部门工作台显示哪个业务模块，不影响是否已发布 Agent</p>
+        <select
+          v-model="teamDialog.departmentCode"
+          class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
+        >
+          <option v-for="o in DEPARTMENT_CODE_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+        </select>
         <div class="mt-5 flex justify-end gap-2">
           <button @click="teamDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
           <button
@@ -462,7 +484,7 @@ const reloadAll = async () => {
   errorMsg.value = ''
   try {
     roleCatalog.value = await orgApi.getEnterpriseRoles()
-    await Promise.all([loadTeams(), loadOrgMembers(), loadManagedAgents()])
+    await Promise.all([loadTeams(), loadOrgMembers(), loadManagedAgents(), loadAgentTemplates()])
     if (selectedTeam.value) {
       const stillThere = teams.value.find(t => t.id === selectedTeam.value!.id)
       if (stillThere) await selectTeam(stillThere)
@@ -491,25 +513,37 @@ const selectTeam = async (t: OrgTeam) => {
 
 // ---- 部门 ----
 
-const teamDialog = ref<{ visible: boolean; editing: OrgTeam | null; name: string }>({
-  visible: false, editing: null, name: '',
+const DEPARTMENT_CODE_OPTIONS = [
+  { value: '', label: '未分配业务类型' },
+  { value: 'hr', label: '人事' },
+  { value: 'procurement', label: '采购' },
+  { value: 'sales', label: '销售' },
+  { value: 'finance', label: '财务' },
+  { value: 'it', label: 'IT' },
+]
+
+const teamDialog = ref<{ visible: boolean; editing: OrgTeam | null; name: string; departmentCode: string }>({
+  visible: false, editing: null, name: '', departmentCode: '',
 })
 
 const openCreateTeam = () => {
-  teamDialog.value = { visible: true, editing: null, name: '' }
+  teamDialog.value = { visible: true, editing: null, name: '', departmentCode: '' }
 }
 
 const openRenameTeam = (t: OrgTeam) => {
-  teamDialog.value = { visible: true, editing: t, name: t.name }
+  teamDialog.value = { visible: true, editing: t, name: t.name, departmentCode: t.department_code || '' }
 }
 
 const submitTeamDialog = async () => {
   acting.value = true
   try {
+    const departmentCode = teamDialog.value.departmentCode || null
     if (teamDialog.value.editing) {
-      await orgApi.updateOrgTeam(teamDialog.value.editing.id, { name: teamDialog.value.name.trim() })
+      await orgApi.updateOrgTeam(teamDialog.value.editing.id, {
+        name: teamDialog.value.name.trim(), department_code: departmentCode,
+      })
     } else {
-      await orgApi.createOrgTeam(teamDialog.value.name.trim())
+      await orgApi.createOrgTeam(teamDialog.value.name.trim(), departmentCode)
     }
     teamDialog.value.visible = false
     await loadTeams()
@@ -651,6 +685,12 @@ const lifecycleBadgeClass = (status: LifecycleStatus) => ({
   retired: 'bg-red-50 text-red-700',
 }[status])
 
+const agentTemplates = ref<orgApi.AgentTemplate[]>([])
+const loadAgentTemplates = async () => {
+  agentTemplates.value = await orgApi.getAgentTemplates()
+}
+const templatesForType = (type: ManagedAgentType) => agentTemplates.value.filter(t => t.agent_type === type)
+
 const agentDialog = ref<{
   visible: boolean
   editing: ManagedAgent | null
@@ -662,19 +702,34 @@ const agentDialog = ref<{
     model_name: string
     role: string
     task: string
+    template_id: string
   }
 }>({
   visible: false,
   editing: null,
-  form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '' },
+  form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
 })
 
 const openCreateAgent = () => {
   agentDialog.value = {
     visible: true,
     editing: null,
-    form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '' },
+    form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
   }
+}
+
+// 选模板只负责"帮用户填一遍初始值"，不是锁定不让改——选完之后 role/task/
+// department_code 都还是普通的受控输入，用户可以接着手动调整。department_code
+// 必须跟着模板一起改：Java 那边 create_managed_agent 会校验"模板跟 department_code
+// 必须一致"，不同步会导致提交时后端报错。
+const onApplyTemplate = (templateId: string) => {
+  agentDialog.value.form.template_id = templateId
+  if (!templateId) return
+  const tpl = agentTemplates.value.find(t => t.id === templateId)
+  if (!tpl) return
+  if (tpl.department_code) agentDialog.value.form.department_code = tpl.department_code
+  agentDialog.value.form.role = tpl.role
+  agentDialog.value.form.task = tpl.task
 }
 
 const openEditAgent = (a: ManagedAgent) => {
@@ -683,7 +738,7 @@ const openEditAgent = (a: ManagedAgent) => {
     editing: a,
     form: {
       name: a.name, agent_type: a.agent_type, department_code: a.department_code || 'hr',
-      team_id: a.team_id, model_name: a.model_name, role: '', task: '',
+      team_id: a.team_id, model_name: a.model_name, role: '', task: '', template_id: '',
     },
   }
 }
@@ -710,6 +765,7 @@ const submitAgentDialog = async () => {
         model_name: agentDialog.value.form.model_name || undefined,
         role: agentDialog.value.form.role || undefined,
         task: agentDialog.value.form.task || undefined,
+        template_id: agentDialog.value.form.template_id || undefined,
       })
     }
     agentDialog.value.visible = false

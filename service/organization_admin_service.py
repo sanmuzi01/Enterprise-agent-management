@@ -104,6 +104,7 @@ async def list_teams(db) -> List[Dict]:
             "id": t.id,
             "name": t.name,
             "status": t.status,
+            "department_code": t.department_code,
             "member_count": member_counts.get(t.id, 0),
             "leads": leads_by_team.get(t.id, []),
             "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -112,29 +113,45 @@ async def list_teams(db) -> List[Dict]:
     ]
 
 
-async def create_team(db, name: str, owner_user_id: int) -> Dict:
+def _validate_department_code(department_code: Optional[str]) -> None:
+    if department_code is None:
+        return
+    from service.runtime.central_router import VALID_DEPARTMENT_CODES
+    if department_code not in VALID_DEPARTMENT_CODES:
+        raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一或不填")
+
+
+async def create_team(db, name: str, owner_user_id: int, department_code: Optional[str] = None) -> Dict:
     name = (name or "").strip()
     if not name:
         raise InvalidInput("部门名称不能为空")
+    _validate_department_code(department_code)
     org = await _get_default_organization(db)
     existing = await db.execute(
         select(Team.id).where(Team.organization_id == org.id, Team.name == name)
     )
     if existing.scalar_one_or_none() is not None:
         raise Conflict("同名部门已存在")
-    team = Team(organization_id=org.id, name=name, owner_user_id=owner_user_id, status="active")
+    team = Team(organization_id=org.id, name=name, owner_user_id=owner_user_id, status="active",
+                department_code=department_code)
     db.add(team)
     await db.flush()
     await db.commit()
     await audit_service.record_async(
         owner_user_id, "org.team_created", resource_type="team", resource_id=team.id,
-        detail={"name": team.name},
+        detail={"name": team.name, "department_code": department_code},
     )
-    return {"id": team.id, "name": team.name, "status": team.status, "member_count": 0, "leads": []}
+    return {"id": team.id, "name": team.name, "status": team.status, "department_code": team.department_code,
+            "member_count": 0, "leads": []}
+
+
+# sentinel：区分"没传这个参数（不改）"和"显式传了 None（清空业务类型）"——
+# department_code 本身的合法取值就包含 None（未分配业务类型的部门）。
+_UNSET = object()
 
 
 async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = None,
-                       status: Optional[str] = None) -> Dict:
+                       status: Optional[str] = None, department_code: Any = _UNSET) -> Dict:
     team = await _get_team_or_404(db, team_id)
     changes: Dict[str, Any] = {}
     if name is not None:
@@ -150,12 +167,17 @@ async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = 
         if status != team.status:
             changes["status"] = {"from": team.status, "to": status}
         team.status = status
+    if department_code is not _UNSET:
+        _validate_department_code(department_code)
+        if department_code != team.department_code:
+            changes["department_code"] = {"from": team.department_code, "to": department_code}
+        team.department_code = department_code
     await db.commit()
     if changes:
         await audit_service.record_async(
             operator_id, "org.team_updated", resource_type="team", resource_id=team.id, detail=changes,
         )
-    return {"id": team.id, "name": team.name, "status": team.status}
+    return {"id": team.id, "name": team.name, "status": team.status, "department_code": team.department_code}
 
 
 async def _get_team_or_404(db, team_id: int) -> Team:

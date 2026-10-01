@@ -20,6 +20,7 @@ export interface OrgTeam {
   id: number
   name: string
   status: string
+  department_code: string | null
   member_count: number
   leads: OrgTeamLead[]
   created_at: string | null
@@ -33,12 +34,22 @@ export interface OrgTeamMember {
   status: string
 }
 
+export interface OrgMemberDepartment {
+  id: number
+  name: string
+  status: string
+  role_code: string
+  role_name: string
+  membership_status: string
+}
+
 export interface OrgMember {
   user_id: number
   name: string
   role_code: string
   role_name: string
   status: string
+  departments: OrgMemberDepartment[]
 }
 
 export interface TeamPermissions {
@@ -58,15 +69,15 @@ export async function listOrgTeams(): Promise<OrgTeam[]> {
   return data as OrgTeam[]
 }
 
-export async function createOrgTeam(name: string): Promise<OrgTeam> {
-  const { data } = await request.post('/admin/org/teams', { name })
+export async function createOrgTeam(name: string, departmentCode?: string | null): Promise<OrgTeam> {
+  const { data } = await request.post('/admin/org/teams', { name, department_code: departmentCode })
   return data as OrgTeam
 }
 
 export async function updateOrgTeam(
   teamId: number,
-  patch: { name?: string; status?: string },
-): Promise<{ id: number; name: string; status: string }> {
+  patch: { name?: string; status?: string; department_code?: string | null },
+): Promise<{ id: number; name: string; status: string; department_code: string | null }> {
   const { data } = await request.patch(`/admin/org/teams/${teamId}`, patch)
   return data
 }
@@ -141,6 +152,23 @@ export async function listManagedAgents(): Promise<ManagedAgent[]> {
   return data as ManagedAgent[]
 }
 
+export interface AgentTemplate {
+  id: string
+  name: string
+  agent_type: ManagedAgentType
+  department_code: string | null
+  description: string
+  role: string
+  task: string
+  tools: string[]
+  examples: string[]
+}
+
+export async function getAgentTemplates(): Promise<AgentTemplate[]> {
+  const { data } = await request.get('/admin/org/agent-templates')
+  return data as AgentTemplate[]
+}
+
 export async function createManagedAgent(payload: {
   name: string
   agent_type: ManagedAgentType
@@ -151,6 +179,7 @@ export async function createManagedAgent(payload: {
   task?: string
   constraints?: string
   output?: string
+  template_id?: string
 }): Promise<ManagedAgent> {
   const { data } = await request.post('/admin/org/agents', payload)
   return data as ManagedAgent

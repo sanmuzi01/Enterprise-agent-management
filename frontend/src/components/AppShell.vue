@@ -124,7 +124,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, LogOut, Menu, MessageSquare, Settings, Sparkles, Workflow, Zap } from 'lucide-vue-next'
+import { Building2, ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, LogOut, Menu, MessageSquare, Settings, Sparkles, Workflow, Zap } from 'lucide-vue-next'
 import { useUserStore } from '../stores/user'
 import { useAgentSessionStore } from '../stores/agentSession'
 import ThemeToggle from './ThemeToggle.vue'
@@ -153,6 +153,7 @@ const activeAgentId = computed(() => {
 
 const primaryItems = computed(() => [
   { label: '工作台', path: '/agents', icon: Layers3, active: route.path === '/agents' },
+  { label: '部门工作台', path: '/department', icon: Building2, active: route.path.startsWith('/department') },
   { label: '知识库中心', path: '/knowledge-spaces', icon: Library, active: route.path.startsWith('/knowledge-spaces') },
 ])
 

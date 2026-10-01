@@ -436,6 +436,10 @@ class Team(Base):
     name = Column(String(120), nullable=False)
     owner_user_id = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="active", server_default="active")  # active/disabled
+    # 部门业务类型（hr/procurement/sales/finance/it，见 service/runtime/central_router.py
+    # 的 VALID_DEPARTMENT_CODES）——部门工作台用这个字段决定显示哪个业务模块，不再靠
+    # "这个部门有没有已发布的对应 Agent"反推，两者是独立的可用性判断。
+    department_code = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
 

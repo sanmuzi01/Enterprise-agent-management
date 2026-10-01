@@ -21,11 +21,13 @@ router = APIRouter(prefix="/admin/org", tags=["企业组织管理"])
 
 class TeamCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    department_code: Optional[str] = Field(default=None, description="部门业务类型：hr/procurement/sales/finance/it")
 
 
 class TeamUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     status: Optional[str] = Field(default=None, description="active/disabled")
+    department_code: Optional[str] = Field(default=None, description="部门业务类型，不传则不改；传空字符串表示清空")
 
 
 class TeamMemberCreate(BaseModel):
@@ -98,17 +100,23 @@ async def create_team(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.create_team(async_db, data.name, current_user.id)
+    return await svc.create_team(async_db, data.name, current_user.id, department_code=data.department_code)
 
 
-@router.patch("/teams/{team_id}", summary="重命名/启用/停用部门")
+@router.patch("/teams/{team_id}", summary="重命名/启用/停用/设置业务类型")
 async def update_team(
         team_id: int,
         data: TeamUpdate,
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.update_team(async_db, team_id, current_user.id, name=data.name, status=data.status)
+    # department_code 没传就不改（跟 name/status 当前都传了才改不是一回事——
+    # department_code 的合法取值本身包含 None，"没传"和"传了 null 清空"要能区分，
+    # 用 model_fields_set 判断请求体里有没有这个 key，不能只看值是不是 None。
+    kwargs = {}
+    if "department_code" in data.model_fields_set:
+        kwargs["department_code"] = data.department_code
+    return await svc.update_team(async_db, team_id, current_user.id, name=data.name, status=data.status, **kwargs)
 
 
 @router.get("/teams/{team_id}/permissions", summary="部门权限关系总览：成员+角色/绑定知识库空间/绑定部门Agent")
