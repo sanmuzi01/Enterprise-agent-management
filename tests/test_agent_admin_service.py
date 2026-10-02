@@ -256,9 +256,8 @@ class ManagedAgentCrudTest(unittest.TestCase):
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
 class DepartmentPublishUniquenessTest(unittest.TestCase):
-    """P1 修复：同一个 department_code 同时只能有一个 published 的部门 Agent
-    （docs/enterprise-rbac-plan.md 相关记录）。不依赖"本机默认企业是不是这个
-    测试建的那个"——直接 patch `_get_default_organization_id` 指向本测试建的
+    """同一个部门（team）同时只能有一个 published 的部门 Agent；不同部门可以各自发布
+    同一业务方向的 Agent。直接 patch `_get_default_organization_id` 指向本测试建的
     专属企业，任何机器上都能跑，不用 skip。"""
 
     @classmethod
@@ -267,11 +266,12 @@ class DepartmentPublishUniquenessTest(unittest.TestCase):
         cls.admin = rc.create_user("aa-deptpub")
         cls.org_id = _create_org(cls.db, "aa-deptpub-org", cls.admin["id"])
         cls.team_id = _create_team(cls.db, cls.org_id, "aa-deptpub-team", cls.admin["id"])
+        cls.team2_id = _create_team(cls.db, cls.org_id, "aa-deptpub-team2", cls.admin["id"])
 
     @classmethod
     def tearDownClass(cls):
         cls.db.execute(text("DELETE FROM agent WHERE name LIKE 'aa-dp-%'"))
-        cls.db.execute(text("DELETE FROM teams WHERE id=:i"), {"i": cls.team_id})
+        cls.db.execute(text("DELETE FROM teams WHERE id IN (:a, :b)"), {"a": cls.team_id, "b": cls.team2_id})
         cls.db.execute(text("DELETE FROM organizations WHERE id=:i"), {"i": cls.org_id})
         cls.db.commit()
         rc.cleanup()
@@ -326,26 +326,67 @@ class DepartmentPublishUniquenessTest(unittest.TestCase):
         ))
         self.assertEqual(published_second["lifecycle_status"], "published")
 
-    def test_two_different_department_codes_can_both_be_published(self):
-        # 用跟另一个测试方法不同的 department_code（finance/sales，不是
-        # hr/it）——unittest 不保证方法执行顺序，另一个测试方法结束时会故意
-        # 留一个 published 的 hr Agent 在数据库里，两个测试方法不能抢同一个
-        # department_code，不然会互相污染。
+    def test_same_department_code_in_two_teams_can_both_be_published(self):
+        # 销售一部、销售二部各自发布自己的 CRM Agent。
+        import service.agent_admin_service as svc
+
+        first = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-sales1", "department", department_code="sales", team_id=self.team_id,
+        ))
+        second = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-sales2", "department", department_code="sales", team_id=self.team2_id,
+        ))
+        for agent in (first, second):
+            result = self._run_with_org(lambda db: svc.update_managed_agent(
+                db, agent["id"], self.admin["id"], lifecycle_status="published",
+            ))
+            self.assertEqual(result["lifecycle_status"], "published")
+
+    def test_different_codes_in_same_team_conflict(self):
         import service.agent_admin_service as svc
 
         finance_agent = self._run_with_org(lambda db: svc.create_managed_agent(
-            db, self.admin["id"], "aa-dp-finance", "department", department_code="finance", team_id=self.team_id,
+            db, self.admin["id"], "aa-dp-finance", "department", department_code="finance", team_id=self.team2_id,
         ))
         sales_agent = self._run_with_org(lambda db: svc.create_managed_agent(
-            db, self.admin["id"], "aa-dp-sales", "department", department_code="sales", team_id=self.team_id,
+            db, self.admin["id"], "aa-dp-other", "department", department_code="procurement", team_id=self.team2_id,
         ))
         self._run_with_org(lambda db: svc.update_managed_agent(
             db, finance_agent["id"], self.admin["id"], lifecycle_status="published",
         ))
-        result = self._run_with_org(lambda db: svc.update_managed_agent(
-            db, sales_agent["id"], self.admin["id"], lifecycle_status="published",
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.update_managed_agent(
+                db, sales_agent["id"], self.admin["id"], lifecycle_status="published",
+            ))
+
+    def test_publish_rejects_agent_not_matching_team_business_type(self):
+        import service.agent_admin_service as svc
+
+        self.db.execute(text("UPDATE teams SET department_code='sales' WHERE id=:t"), {"t": self.team_id})
+        self.db.commit()
+        try:
+            agent = self._run_with_org(lambda db: svc.create_managed_agent(
+                db, self.admin["id"], "aa-dp-wrongtype", "department", department_code="finance", team_id=self.team_id,
+            ))
+            with self.assertRaises(InvalidInput):
+                self._run_with_org(lambda db: svc.update_managed_agent(
+                    db, agent["id"], self.admin["id"], lifecycle_status="published",
+                ))
+        finally:
+            self.db.execute(text("UPDATE teams SET department_code=NULL WHERE id=:t"), {"t": self.team_id})
+            self.db.commit()
+
+    def test_publish_rejects_non_chat_model(self):
+        import service.agent_admin_service as svc
+
+        agent = self._run_with_org(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-dp-badmodel", "department", department_code="hr", team_id=self.team2_id,
+            model_name="BAAI/bge-small-zh-v1.5",
         ))
-        self.assertEqual(result["lifecycle_status"], "published")
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.update_managed_agent(
+                db, agent["id"], self.admin["id"], lifecycle_status="published",
+            ))
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")

@@ -182,17 +182,10 @@ class Agent(Base):
     # 不在这里加 CHECK——跟 EnterpriseRole 的 role_id 校验放在 service 层是同一个理由。
     agent_type = Column(String(20), nullable=False, default="personal")
     department_code = Column(String(20), nullable=True)
-    # P1 并发/正确性修复（docs/enterprise-rbac-plan.md 相关记录）：同一个
-    # department_code 同时只能有一个 published 的部门 Agent——不然
-    # central_router._find_department_agent 查出多条 published 的候选，选哪个
-    # 是未定义行为（没有唯一约束/优先级/稳定排序），路由结果撞运气，可能出现
-    # "同一个部门有两个 Agent 都在抢着回答"。这一列由
-    # service/agent_admin_service.py 显式维护：agent_type='department' 且
-    # lifecycle_status='published' 时写成 department_code 本身，其余任何状态
-    # （draft/reviewing/retired）都清成 NULL。MySQL 唯一索引允许多个 NULL
-    # 共存，只在非 NULL 值之间强制唯一，天然适合"只对已发布的那一个做唯一
-    # 约束"——一旦约束生效，同一个部门永远最多只有一条 published 记录，
-    # _find_department_agent 也就不再需要纠结"选哪个"，因为根本不会有多个候选。
+    # 同一个部门（team）同时只能有一个 published 的部门 Agent。由
+    # service/agent_admin_service.py 维护：published 时写成 "t{team_id}"，其余状态清成 NULL；
+    # MySQL 唯一索引允许多个 NULL，只对已发布的那一个做唯一约束。不同部门可以各自发布
+    # 同一业务方向的 Agent（销售一部、二部各有 CRM Agent），见迁移 20261002_0001。
     department_publish_key = Column(String(20), nullable=True)
     skills: Mapped[List["Skill"]] = relationship(
         secondary="agent_skill", lazy=False, back_populates="agents"

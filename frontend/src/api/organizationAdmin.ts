@@ -82,6 +82,35 @@ export async function updateOrgTeam(
   return data
 }
 
+export type DepartmentAgentState = 'ready' | 'pending_publish' | 'needs_repair' | 'team_disabled'
+
+export interface DepartmentAgentStatus {
+  team_id: number
+  team_name: string
+  department_code: string | null
+  template_id: string
+  template_name: string
+  state: DepartmentAgentState
+  state_label: string
+  issues: string[]
+  agent: { id: number; name: string; lifecycle_status: LifecycleStatus; model_name: string; row_version: number } | null
+}
+
+export async function getTeamAgentStatus(teamId: number): Promise<DepartmentAgentStatus> {
+  const { data } = await request.get(`/admin/org/teams/${teamId}/agent-status`)
+  return data as DepartmentAgentStatus
+}
+
+export async function repairTeamAgent(teamId: number): Promise<DepartmentAgentStatus> {
+  const { data } = await request.post(`/admin/org/teams/${teamId}/agent-repair`)
+  return data as DepartmentAgentStatus
+}
+
+export async function publishTeamAgent(teamId: number): Promise<DepartmentAgentStatus> {
+  const { data } = await request.post(`/admin/org/teams/${teamId}/agent-publish`)
+  return data as DepartmentAgentStatus
+}
+
 export async function getTeamPermissions(teamId: number): Promise<TeamPermissions> {
   const { data } = await request.get(`/admin/org/teams/${teamId}/permissions`)
   return data as TeamPermissions

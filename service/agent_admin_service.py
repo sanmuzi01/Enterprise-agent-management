@@ -69,6 +69,20 @@ async def _get_active_team_or_404(db, team_id: int, organization_id: int) -> Tea
     return team
 
 
+async def _check_publishable(db, team_id: Optional[int], department_code: Optional[str], model_name: str) -> None:
+    """发布前的配置检查：模型必须是可用的聊天模型；部门必须启用；部门配置了业务类型时，
+    Agent 的业务方向必须与之一致（不能给销售部发布一个采购 Agent）。"""
+    from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
+    if normalize_model_name(model_name or "") not in CHAT_MODELS:
+        raise InvalidInput(f"模型「{model_name}」不是可用的聊天模型，请先修改模型再发布")
+    team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
+    if team is None or team.status != "active":
+        raise InvalidInput("部门不存在或已停用，不能发布部门 Agent")
+    if team.department_code is not None and department_code != team.department_code:
+        raise InvalidInput(f"Agent 的业务方向（{department_code or '通用办公'}）与部门「{team.name}」"
+                           f"的业务类型（{team.department_code}）不一致，请使用「一键修复」生成匹配的 Agent")
+
+
 async def list_managed_agents(db) -> List[Dict[str, Any]]:
     """列出所有中央/部门 Agent（不含普通用户自己的 personal Agent）。"""
     result = await db.execute(
@@ -83,13 +97,45 @@ async def list_managed_agents(db) -> List[Dict[str, Any]]:
     return [_agent_to_dict(agent, team_name) for agent, team_name in result.unique().all()]
 
 
+def publish_key_for_team(team_id: Optional[int]) -> Optional[str]:
+    """一个部门（Team）同时只能有一个已发布的部门 Agent。键按部门而不是按业务类型：
+    "销售一部""销售二部"各自都能发布自己的 CRM Agent；同一个部门里不会出现两个
+    互相冲突的已发布主 Agent（由 uq_agent_department_publish 唯一约束保证）。"""
+    return None if team_id is None else f"t{team_id}"
+
+
+async def bind_template_skill(db, agent: Agent, template: Dict[str, Any], owner_user_id: int) -> None:
+    """给 Agent 生成一份独立的专业 Skill 配置并绑定。每个 Agent 单独一份，不共享——
+    不然以后改其中一个 Agent 的工具权限会连带影响所有用同一模板建的其他 Agent。"""
+    if not template["tools"]:
+        return
+    import yaml
+    from service.skills_core.config_io import atomic_write_validated
+    config_file = f"enterprise/agent_{agent.id}.yml"
+    validation = atomic_write_validated(config_file, yaml.safe_dump({
+        "name": template["name"], "description": template["description"], "version": "1.0",
+        "tools": [{"name": tool} for tool in template["tools"]],
+        "system_prompt": template["constraints"],
+    }, allow_unicode=True))
+    if not validation["ok"]:
+        await db.rollback()
+        raise InvalidInput("专业技能配置校验失败")
+    skill = Skill(user_id=owner_user_id, name=f"{agent.name} · 专业业务技能",
+                  description=template["description"], config_file=config_file,
+                  organization_id=agent.organization_id, team_id=agent.team_id, scope_type=agent.scope_type,
+                  lifecycle_status="published", is_public=0)
+    db.add(skill)
+    await db.flush()
+    await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill.id))
+
+
 async def create_managed_agent(
         db, creator_user_id: int, name: str, agent_type: str,
         department_code: Optional[str] = None, team_id: Optional[int] = None,
         model_name: str = "glm-4",
         role: Optional[str] = None, task: Optional[str] = None,
         constraints: Optional[str] = None, output: Optional[str] = None,
-        template_id: Optional[str] = None,
+        template_id: Optional[str] = None, organization_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     template = None
     if template_id:
@@ -107,12 +153,13 @@ async def create_managed_agent(
     if agent_type not in VALID_MANAGED_AGENT_TYPES:
         raise InvalidInput(f"agent_type 只能是 {sorted(VALID_MANAGED_AGENT_TYPES)} 之一")
 
-    org_id = await _get_default_organization_id(db)
+    org_id = organization_id or await _get_default_organization_id(db)
 
     team_name = None
     if agent_type == "department":
-        if department_code not in VALID_DEPARTMENT_CODES:
-            raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一")
+        # department_code 为空表示"部门办公助手"（没有配置专属业务类型的部门用）。
+        if department_code is not None and department_code not in VALID_DEPARTMENT_CODES:
+            raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一或不填")
         if team_id is None:
             raise InvalidInput("部门 Agent 必须绑定一个部门（team_id）")
         team = await _get_active_team_or_404(db, team_id, org_id)
@@ -135,27 +182,8 @@ async def create_managed_agent(
     from prompt.prompt_manager import create_prompt_file
     agent.prompt_file = create_prompt_file(agent.id, role, task, constraints, output)
 
-    # 每个用模板建的 Agent 都单独生成一份自己的 Skill 配置文件，不共享同一份——
-    # 不然以后改其中一个 Agent 的工具权限会连带影响所有用同一模板建的其他 Agent。
-    if template and template["tools"]:
-        import yaml
-        from service.skills_core.config_io import atomic_write_validated
-        config_file = f"enterprise/agent_{agent.id}.yml"
-        validation = atomic_write_validated(config_file, yaml.safe_dump({
-            "name": template["name"], "description": template["description"], "version": "1.0",
-            "tools": [{"name": tool} for tool in template["tools"]],
-            "system_prompt": template["constraints"],
-        }, allow_unicode=True))
-        if not validation["ok"]:
-            await db.rollback()
-            raise InvalidInput("专业技能配置校验失败")
-        skill = Skill(user_id=creator_user_id, name=f"{name} · 专业业务技能",
-                      description=template["description"], config_file=config_file,
-                      organization_id=org_id, team_id=team_id, scope_type=scope_type,
-                      lifecycle_status="published", is_public=0)
-        db.add(skill)
-        await db.flush()
-        await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill.id))
+    if template:
+        await bind_template_skill(db, agent, template, creator_user_id)
     await db.commit()
     await audit_service.record_async(
         creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,
@@ -192,23 +220,24 @@ async def update_managed_agent(
     if agent.agent_type == "department" and (department_code is not None or team_id is not None):
         new_code = department_code if department_code is not None else agent.department_code
         new_team_id = team_id if team_id is not None else agent.team_id
-        if new_code not in VALID_DEPARTMENT_CODES:
+        if new_code is not None and new_code not in VALID_DEPARTMENT_CODES:
             raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一")
         await _get_active_team_or_404(db, new_team_id, agent.organization_id)
         values["department_code"] = new_code
         values["team_id"] = new_team_id
 
-    if agent.agent_type == "department" and ("lifecycle_status" in values or "department_code" in values):
-        # P1 修复：同一个 department_code 同时只能有一个 published 的部门
-        # Agent——不然 central_router._find_department_agent 查出多条候选，
-        # 选哪个是未定义行为。`department_publish_key` 只在 published 时等于
-        # department_code 本身，其余状态一律清空；真正的互斥由
-        # models/init_db.py::Agent 上的唯一约束保证，这里只负责维护这一列跟
-        # "最终会变成什么状态"保持一致（用 values.get(...) 兜底还没被这次请求
-        # 改动的字段，取 agent 当前值）。
+    if agent.agent_type == "department" and (
+            "lifecycle_status" in values or "department_code" in values or "team_id" in values):
+        # 同一个部门（team）同时只能有一个 published 的部门 Agent：
+        # `department_publish_key` 只在 published 时等于 "t{team_id}"，其余状态清空，
+        # 互斥由 uq_agent_department_publish 唯一约束保证。用 values.get(...) 兜底
+        # 本次请求没改的字段，取 agent 当前值。
         final_status = values.get("lifecycle_status", agent.lifecycle_status)
         final_code = values.get("department_code", agent.department_code)
-        values["department_publish_key"] = final_code if final_status == "published" else None
+        final_team_id = values.get("team_id", agent.team_id)
+        if final_status == "published":
+            await _check_publishable(db, final_team_id, final_code, values.get("model_name", agent.model_name))
+        values["department_publish_key"] = publish_key_for_team(final_team_id) if final_status == "published" else None
 
     touching_prompt = any(v is not None for v in (role, task, constraints, output))
     if values or touching_prompt:
@@ -227,15 +256,11 @@ async def update_managed_agent(
         # 里这种"裸属性访问"没办法正确 await，会直接报
         # `MissingGreenlet`——不是"检查失败"，是访问本身就出错，绝对不能在
         # except 块里再碰 `agent` 的任何列属性。
-        department_code_for_error = values.get("department_code", agent.department_code)
         try:
             result = await db.execute(stmt.values(**values))
         except IntegrityError:
             await db.rollback()
-            raise InvalidInput(
-                f"部门「{department_code_for_error}」"
-                "已经有一个已发布的 Agent 了，请先把旧的退役再发布这一个"
-            )
+            raise InvalidInput("该部门已经有一个已发布的部门 Agent，请先把旧的退役再发布这一个")
         if result.rowcount == 0:
             await db.refresh(agent)
             raise Conflict(f"Agent 已被其他人修改（当前版本 {agent.row_version}），请刷新后重试")

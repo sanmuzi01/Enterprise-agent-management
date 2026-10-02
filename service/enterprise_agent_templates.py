@@ -10,6 +10,12 @@ _CONSTRAINTS = (
     "工具失败必须如实报告，不能把草稿描述成已提交或已审批。"
 )
 _OUTPUT = "先给出处理结果，再列关键字段、业务单号、当前状态和下一步；区分建议、草稿与已执行操作。"
+# 各部门都能办理的通用办公事务（请假 + 报销）；审批工具仍由服务端按部门负责人权限把关。
+_GENERAL_TOOLS = ["get_leave_balance", "create_leave_draft", "submit_leave_request", "get_leave_status",
+                  "get_my_leave_requests", "approve_leave_request", "reject_leave_request",
+                  "get_team_pending_leave_requests", "get_expense_budget", "create_expense_draft",
+                  "submit_expense_claim", "get_expense_status", "get_my_expense_claims",
+                  "approve_expense_claim", "reject_expense_claim", "get_team_pending_expense_claims"]
 
 TEMPLATES = {
     "central": {
@@ -55,9 +61,34 @@ TEMPLATES = {
         "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims"],
         "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "查询报销单的审批进度"],
     },
+    # IT 工单/账号权限/设备模块还没有业务闭环：先只给通用办公能力，并且不声明
+    # routing_keywords——中央 Agent 不能把 IT 故障转给一个办不了 IT 业务的助手。
+    "it": {
+        "id": "it", "name": "IT 服务助手", "agent_type": "department", "department_code": "it",
+        "description": "IT 部门的办公助手；IT 工单、账号权限与设备申请模块尚未上线，目前可办理请假与报销。",
+        "role": "你是 IT 部门的办公助手，协助部门成员办理请假和报销等日常事务。",
+        "task": "IT 工单、账号权限和设备申请的业务系统尚未接入，遇到这类请求时如实说明并建议走现有线下流程。请假与报销按业务系统规则办理。",
+        "tools": _GENERAL_TOOLS, "examples": ["查询我今年的年假余额", "帮我起草一份报销申请"],
+    },
+    # 没有配置专属业务类型的部门（Team.department_code 为空）使用的通用助手。
+    "office": {
+        "id": "office", "name": "部门办公助手", "agent_type": "department", "department_code": None,
+        "description": "请假、报销等各部门通用的办公事务。",
+        "role": "你是部门办公助手，协助部门成员办理请假和报销等日常事务。",
+        "task": "请假先查余额再起草；报销先查部门预算再起草。提交前复述关键字段并等待用户确认；审批依据真实权限。",
+        "tools": _GENERAL_TOOLS, "examples": ["查询我今年的年假余额", "帮我起草一份报销申请", "查询我的报销进度"],
+    },
 }
 for _template in TEMPLATES.values():
     _template.update(constraints=_CONSTRAINTS, output=_OUTPUT)
+
+# 部门业务类型 → 自动配置时使用的模板。
+DEPARTMENT_TEMPLATE_IDS = {"hr": "oa", "procurement": "procurement", "sales": "crm",
+                           "finance": "finance", "it": "it", None: "office"}
+
+
+def template_id_for_department(department_code):
+    return DEPARTMENT_TEMPLATE_IDS[department_code]
 
 
 def list_templates():

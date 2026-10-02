@@ -44,8 +44,8 @@
       <FinanceModule :team-id="deptStore.currentTeamId!" />
       <ProcurementModule v-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
       <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
-      <div v-else-if="!['hr', 'finance'].includes(moduleCode || '')" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
-        <p class="text-sm text-slate-500">该部门还没有配置专属业务类型。</p>
+      <div v-else-if="!moduleCode" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
+        <p class="text-sm text-slate-500">该部门还没有配置专属业务类型，可使用请假、报销等通用办公事务。</p>
       </div>
       </div>
 
@@ -54,9 +54,15 @@
         <div class="border-b border-slate-200 px-4 py-3">
           <h2 class="text-sm font-semibold text-slate-900">部门助手 · {{ deptAgent.name }}</h2>
           <p class="text-xs text-slate-400 mt-0.5">{{ deptAgent.description }}</p>
+          <p v-if="!deptAgent.model_configured" class="mt-1 text-xs text-amber-700">
+            需要先在「设置 → 模型连接」连接 {{ deptAgent.model_name }} 模型，部门助手才能回答。
+          </p>
         </div>
         <EmbeddedAgentChatPanel :agent-id="deptAgent.id" />
       </section>
+      <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+        部门助手尚未发布：企业管理员完成配置并发布后，会出现在这里。
+      </p>
     </div>
   </div>
 </template>

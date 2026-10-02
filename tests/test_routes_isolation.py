@@ -687,6 +687,11 @@ class RouteIsolationTest(unittest.TestCase):
         self.assertEqual(created.status_code, 200, created.text)
         team_id = created.json()["id"]
         try:
+            # 建部门即自动生成草稿状态的部门办公助手（未设业务类型）。
+            status = created.json()["agent_status"]
+            self.assertEqual((status["state"], status["template_id"]), ("pending_publish", "office"))
+            self.assertEqual(self.client.get(f"/admin/org/teams/{team_id}/agent-status", headers=h).json()["state"],
+                             "pending_publish")
             listed = self.client.get("/admin/org/teams", headers=h)
             self.assertIn(team_id, [t["id"] for t in listed.json()])
 
@@ -709,8 +714,10 @@ class RouteIsolationTest(unittest.TestCase):
         finally:
             from sqlalchemy import text as _sql
             from models.init_db import SessionLocal
+            from tests._dept_agent_cleanup import purge_team_agents
             db = SessionLocal()
             try:
+                purge_team_agents(db, [team_id])
                 db.execute(_sql("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
                 db.execute(_sql("DELETE FROM teams WHERE id=:t"), {"t": team_id})
                 db.commit()

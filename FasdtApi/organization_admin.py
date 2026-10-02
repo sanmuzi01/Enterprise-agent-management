@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from models.async_db import get_async_db
 from models.init_db import User
-from service import agent_admin_service
+from service import agent_admin_service, department_agent_service
 from service import organization_admin_service as svc
 from service.dependencies import get_current_admin_user_async
 
@@ -100,7 +100,10 @@ async def create_team(
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await svc.create_team(async_db, data.name, current_user.id, department_code=data.department_code)
+    team = await svc.create_team(async_db, data.name, current_user.id, department_code=data.department_code)
+    team["agent_status"] = await department_agent_service.on_team_saved(
+        async_db, team["id"], current_user.id, created=True)
+    return team
 
 
 @router.patch("/teams/{team_id}", summary="重命名/启用/停用/设置业务类型")
@@ -116,7 +119,38 @@ async def update_team(
     kwargs = {}
     if "department_code" in data.model_fields_set:
         kwargs["department_code"] = data.department_code
-    return await svc.update_team(async_db, team_id, current_user.id, name=data.name, status=data.status, **kwargs)
+    team = await svc.update_team(async_db, team_id, current_user.id, name=data.name, status=data.status, **kwargs)
+    team["agent_status"] = await department_agent_service.on_team_saved(
+        async_db, team_id, current_user.id,
+        department_code_changed="department_code" in kwargs, status=data.status)
+    return team
+
+
+@router.get("/teams/{team_id}/agent-status", summary="部门专业 Agent 的配置状态与缺失原因")
+async def get_team_agent_status(
+        team_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await department_agent_service.agent_status(async_db, team_id)
+
+
+@router.post("/teams/{team_id}/agent-repair", summary="一键修复：按业务类型补齐部门 Agent、绑定专业技能、退役冲突 Agent")
+async def repair_team_agent(
+        team_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await department_agent_service.repair(async_db, team_id, current_user.id)
+
+
+@router.post("/teams/{team_id}/agent-publish", summary="一键发布部门主 Agent（配置完整时）")
+async def publish_team_agent(
+        team_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await department_agent_service.publish(async_db, team_id, current_user.id)
 
 
 @router.get("/teams/{team_id}/permissions", summary="部门权限关系总览：成员+角色/绑定知识库空间/绑定部门Agent")

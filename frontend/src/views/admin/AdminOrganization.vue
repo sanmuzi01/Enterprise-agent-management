@@ -85,6 +85,28 @@
           </div>
         </div>
 
+        <div v-if="agentStatus" class="rounded-lg border border-slate-200 bg-white p-4" data-testid="dept-agent-status">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h4 class="text-sm font-semibold text-slate-900">部门专业 Agent</h4>
+              <p class="mt-0.5 text-xs text-slate-500">按业务类型自动配置：{{ agentStatus.template_name }}</p>
+            </div>
+            <span class="rounded px-2 py-0.5 text-xs" :class="agentStateClass(agentStatus.state)">{{ agentStatus.state_label }}</span>
+          </div>
+          <p v-if="agentStatus.agent" class="mt-2 text-sm text-slate-700">
+            {{ agentStatus.agent.name }}<span class="ml-1 text-xs text-slate-400">#{{ agentStatus.agent.id }} · {{ agentStatus.agent.model_name }}</span>
+          </p>
+          <ul v-if="agentStatus.issues.length" class="mt-2 list-inside list-disc text-xs text-amber-700">
+            <li v-for="(issue, i) in agentStatus.issues" :key="i">{{ issue }}</li>
+          </ul>
+          <div v-if="agentStatus.state !== 'team_disabled'" class="mt-3 flex gap-2">
+            <button v-if="agentStatus.state === 'needs_repair'" @click="onRepairAgent" :disabled="acting"
+              class="rounded bg-amber-600 px-2.5 py-1 text-xs text-white hover:bg-amber-700 disabled:opacity-50">一键修复</button>
+            <button v-if="agentStatus.state === 'pending_publish'" @click="onPublishAgent" :disabled="acting"
+              class="rounded bg-emerald-600 px-2.5 py-1 text-xs text-white hover:bg-emerald-700 disabled:opacity-50">发布给部门员工</button>
+          </div>
+        </div>
+
         <div class="rounded-lg border border-slate-200 bg-white">
           <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <h4 class="text-sm font-semibold text-slate-900">部门成员</h4>
@@ -363,7 +385,7 @@
           @keyup.enter="submitTeamDialog"
         />
         <label class="mt-3 block text-xs font-medium text-slate-600">业务类型</label>
-        <p class="mb-1 text-[11px] text-slate-400">决定部门工作台显示哪个业务模块，不影响是否已发布 Agent</p>
+        <p class="mb-1 text-[11px] text-slate-400">决定部门工作台的业务模块；保存后会按业务类型自动配置部门专业 Agent（草稿，发布后员工可用）</p>
         <select
           v-model="teamDialog.departmentCode"
           class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
@@ -500,16 +522,45 @@ const reloadAll = async () => {
 const selectTeam = async (t: OrgTeam) => {
   selectedTeam.value = t
   try {
-    const [members, perms] = await Promise.all([
+    const [members, perms, status] = await Promise.all([
       orgApi.listTeamMembers(t.id),
       orgApi.getTeamPermissions(t.id),
+      orgApi.getTeamAgentStatus(t.id),
     ])
     teamMembers.value = members
     permissions.value = perms
+    agentStatus.value = status
   } catch (e: any) {
     errorMsg.value = getErrorMessage(e, '加载部门详情失败')
   }
 }
+
+// ---- 部门专业 Agent ----
+
+const agentStatus = ref<orgApi.DepartmentAgentStatus | null>(null)
+
+const agentStateClass = (state: orgApi.DepartmentAgentState) => ({
+  ready: 'bg-emerald-50 text-emerald-700',
+  pending_publish: 'bg-sky-50 text-sky-700',
+  needs_repair: 'bg-amber-50 text-amber-700',
+  team_disabled: 'bg-slate-100 text-slate-500',
+}[state])
+
+const runAgentAction = async (action: (teamId: number) => Promise<orgApi.DepartmentAgentStatus>, fallback: string) => {
+  if (!selectedTeam.value) return
+  acting.value = true
+  try {
+    agentStatus.value = await action(selectedTeam.value.id)
+    await Promise.all([loadManagedAgents(), selectTeam(selectedTeam.value)])
+  } catch (e: any) {
+    alert(getErrorMessage(e, fallback))
+  } finally {
+    acting.value = false
+  }
+}
+
+const onRepairAgent = () => runAgentAction(orgApi.repairTeamAgent, '修复失败')
+const onPublishAgent = () => runAgentAction(orgApi.publishTeamAgent, '发布失败')
 
 // ---- 部门 ----
 
@@ -538,15 +589,19 @@ const submitTeamDialog = async () => {
   acting.value = true
   try {
     const departmentCode = teamDialog.value.departmentCode || null
+    let teamId: number
     if (teamDialog.value.editing) {
-      await orgApi.updateOrgTeam(teamDialog.value.editing.id, {
+      teamId = teamDialog.value.editing.id
+      await orgApi.updateOrgTeam(teamId, {
         name: teamDialog.value.name.trim(), department_code: departmentCode,
       })
     } else {
-      await orgApi.createOrgTeam(teamDialog.value.name.trim(), departmentCode)
+      teamId = (await orgApi.createOrgTeam(teamDialog.value.name.trim(), departmentCode)).id
     }
     teamDialog.value.visible = false
-    await loadTeams()
+    await Promise.all([loadTeams(), loadManagedAgents()])
+    const saved = teams.value.find(t => t.id === teamId)
+    if (saved) await selectTeam(saved)
   } catch (e: any) {
     alert(getErrorMessage(e, '保存失败'))
   } finally {
@@ -556,11 +611,12 @@ const submitTeamDialog = async () => {
 
 const toggleTeamStatus = async (t: OrgTeam) => {
   const next = t.status === 'active' ? 'disabled' : 'active'
-  if (next === 'disabled' && !confirm(`确认停用部门「${t.name}」？停用后该部门成员的部门相关操作会被拒绝。`)) return
+  if (next === 'disabled' && !confirm(`确认停用部门「${t.name}」？停用后该部门成员的部门相关操作会被拒绝，部门已发布的 Agent 会同步退役。`)) return
   try {
     await orgApi.updateOrgTeam(t.id, { status: next })
-    await loadTeams()
-    if (selectedTeam.value?.id === t.id) selectedTeam.value.status = next
+    await Promise.all([loadTeams(), loadManagedAgents()])
+    const saved = teams.value.find(x => x.id === t.id)
+    if (saved && selectedTeam.value?.id === t.id) await selectTeam(saved)
   } catch (e: any) {
     alert(getErrorMessage(e, '操作失败'))
   }

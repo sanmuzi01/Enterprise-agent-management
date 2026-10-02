@@ -100,7 +100,7 @@ def _find_department_agent(db, user_id: int, department_code: str) -> Optional[i
     rows = db.execute(
         text(
             "SELECT id, user_id, scope_type, team_id, organization_id FROM agent "
-            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published'"
+            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published' ORDER BY id"
         ),
         {"code": department_code},
     ).all()
@@ -113,7 +113,7 @@ async def _find_department_agent_async(db, user_id: int, department_code: str) -
     result = await db.execute(
         text(
             "SELECT id, user_id, scope_type, team_id, organization_id FROM agent "
-            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published'"
+            "WHERE agent_type='department' AND department_code=:code AND lifecycle_status='published' ORDER BY id"
         ),
         {"code": department_code},
     )
