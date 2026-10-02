@@ -150,5 +150,35 @@ class ResolveCallerContextMultiTeamTest(unittest.TestCase):
             self.db.commit()
 
 
+class ErrorDetailTest(unittest.TestCase):
+    def response(self, status, body=None, text=""):
+        resp = Mock(status_code=status, text=text, content=b"x")
+        if body is None:
+            resp.json.side_effect = ValueError
+        else:
+            resp.json.return_value = body
+        return resp
+
+    def raised(self, resp):
+        with patch.object(hub, "request_with_retry", return_value=resp), \
+             self.assertRaises(hub.EnterpriseHubError) as ctx:
+            hub.call("POST", "/procurement/requests", 1, 2, ["procurement.write"], "x", json_body={})
+        return ctx.exception
+
+    def test_business_message_is_surfaced(self):
+        exc = self.raised(self.response(400, {"status": 400, "message": "预算不足：还剩 10，申请了 20"}))
+        self.assertEqual((exc.status_code, exc.detail), (400, "预算不足：还剩 10，申请了 20"))
+
+    def test_spring_default_body_is_not_leaked(self):
+        body = {"timestamp": "2026-10-01T00:00:00Z", "status": 404, "error": "Not Found", "path": "/internal/x"}
+        exc = self.raised(self.response(404, body))
+        self.assertNotIn("/internal/x", exc.detail)
+        self.assertIn("404", exc.detail)
+
+    def test_non_json_body_is_not_leaked(self):
+        exc = self.raised(self.response(502, text="<html>stack trace</html>"))
+        self.assertNotIn("stack", exc.detail)
+
+
 if __name__ == "__main__":
     unittest.main()

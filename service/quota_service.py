@@ -10,7 +10,7 @@ from typing import Dict, Optional
 
 from sqlalchemy import func, select
 
-from models.init_db import Agent, AgentRun
+from models.init_db import Agent, AgentRun, AutomationWork
 from models.plan_async_dao import get_effective_plan_async
 from service.exceptions import QuotaExceeded
 from utils.timeutil import utcnow
@@ -27,7 +27,12 @@ async def get_monthly_token_usage_async(db, user_id: int, since: Optional[dateti
         select(func.coalesce(func.sum(AgentRun.total_tokens), 0))
         .where(AgentRun.user_id == user_id, AgentRun.started_at >= since)
     )
-    return int(result.scalar() or 0)
+    agent_tokens = int(result.scalar() or 0)
+    automation_result = await db.execute(
+        select(func.coalesce(func.sum(AutomationWork.total_tokens), 0))
+        .where(AutomationWork.user_id == user_id, AutomationWork.created_at >= since)
+    )
+    return agent_tokens + int(automation_result.scalar() or 0)
 
 
 async def get_quota_status_async(db, user_id: int) -> Dict:

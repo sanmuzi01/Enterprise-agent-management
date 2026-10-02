@@ -208,6 +208,35 @@ class Role(Base):
     #1对1的关系
     #user = relationship("User",lazy=False,back_populates="role")
 #llm的apikey
+class AutomationWork(Base):
+    """Persisted AI work products. Business writes remain in the Java service."""
+    __tablename__ = "automation_work"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_key", name="uq_automation_request"),
+        Index("idx_automation_owner_team", "user_id", "team_id", "created_at"),
+    )
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    kind = Column(String(30), nullable=False)
+    model_name = Column(String(100), nullable=False)
+    sensitivity = Column(String(20), nullable=False, default="internal")
+    source_text = Column(Text, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="processing")
+    proposal_json = Column(Text, nullable=True)
+    accepted_json = Column(Text, nullable=True)
+    business_result_json = Column(Text, nullable=True)
+    completed_tasks_json = Column(Text, nullable=False, default="[]")
+    error_message = Column(String(300), nullable=True)
+    elapsed_ms = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=True)
+    edited = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class LLMConfig(Base):
     __tablename__ = "llm_config"
     __table_args__ = (

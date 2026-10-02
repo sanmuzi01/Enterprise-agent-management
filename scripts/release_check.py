@@ -102,6 +102,20 @@ WIDGET_FILES = [
     "docs/widget-platform.md",
 ]
 
+# 部门工作台 AI 工作成果（材料整理 → 人工核对 → 业务草稿）
+AUTOMATION_FILES = [
+    "FasdtApi/automation_work.py",
+    "service/automation_spec.py",
+    "service/automation_work_service.py",
+    "migrations/versions/20261001_0002_automation_work.py",
+    "frontend/src/api/automationWork.ts",
+    "frontend/src/components/AutomationWorkPanel.vue",
+    "scripts/check_automation_browser.py",
+    "scripts/e2e_automation_workflows.py",
+    "docs/agent-productivity-workflows.md",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/web/ApiExceptionHandler.java",
+]
+
 YAML_CONFIGS = [
     "deploy/prometheus.yml",
     "deploy/prometheus-rules.yml",
@@ -115,7 +129,7 @@ JSON_CONFIGS = [
 
 def check_required_files() -> None:
     print("\n检查上线关键文件...")
-    required = REQUIRED_FILES + WIDGET_FILES
+    required = REQUIRED_FILES + WIDGET_FILES + AUTOMATION_FILES
     missing = [name for name in required if not (ROOT / name).exists()]
     if missing:
         raise SystemExit("缺少上线关键文件: " + ", ".join(missing))
@@ -157,12 +171,28 @@ def check_widget_scheduler_wired() -> None:
     print("OK 组件调度已接入 background_worker")
 
 
+def check_automation_wired() -> None:
+    """工作成果接口必须挂到主应用，四种工作类型的前后端枚举必须一致。"""
+    print("\n检查 AI 工作成果接口已接入...")
+    main_py = (ROOT / "FasdtApi/main.py").read_text(encoding="utf-8")
+    if "app.include_router(automation_work_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
+    sys.path.insert(0, str(ROOT))
+    from service.automation_spec import SCHEMAS
+    api_ts = (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8")
+    missing = [kind for kind in SCHEMAS if f"'{kind}'" not in api_ts]
+    if missing:
+        raise SystemExit("前端 automationWork.ts 缺少工作类型: " + ", ".join(missing))
+    print(f"OK 已挂载，工作类型 {sorted(SCHEMAS)} 前后端一致")
+
+
 def main() -> None:
     python = sys.executable
     check_required_files()
     parse_configs()
     check_no_container_hostnames()
     check_widget_scheduler_wired()
+    check_automation_wired()
     run([python, "-m", "compileall", "FasdtApi", "service", "models", "utils", "scripts", "tests"])
     run([python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
     run(["npm.cmd" if sys.platform.startswith("win") else "npm", "run", "frontend:build"])

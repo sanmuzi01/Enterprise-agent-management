@@ -96,6 +96,8 @@ npm run seed:demo        # 建 demo/demo12345 + 示例助手 + 一份已入库�
 
 详见 [`docs/startup-guide.md`](docs/startup-guide.md)。
 
+部门工作台的 AI 工作成果（CRM 跟进、报销、请假、采购四类材料整理 → 人工核对 → 业务草稿）与本地验收，见 [`docs/agent-productivity-workflows.md`](docs/agent-productivity-workflows.md)。
+
 ---
 
 ## 测试

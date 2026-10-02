@@ -241,6 +241,34 @@ class ProcurementControllerIntegrationTest {
         ResponseEntity<String> resp = rest.exchange(url(submitPath),
                 HttpMethod.POST, new HttpEntity<>(submitHeaders), String.class);
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).contains("预算不足").doesNotContain("\"path\"");
+    }
+
+    @Test
+    void rejectedDraft_rollsBackIdempotencyKey_soCorrectedBodyCanReuseIt() {
+        // FastAPI 的 AI 工作成果在业务拒绝后允许用户修改内容、沿用同一个幂等键重新保存，
+        // 依赖的正是这里：业务异常让占位记录随事务回滚，这个键下没有任何残留。
+        String requestsPath = "/procurement/requests";
+        String key = UUID.randomUUID().toString();
+        String badBody = writeJson(Map.of("lines", List.of(Map.of("sku", "NO-SUCH-SKU", "quantity", 1))));
+        HttpHeaders badHeaders = signedHeaders(HttpMethod.POST, requestsPath, badBody, userId,
+                List.of("procurement.write"), "create_purchase_draft");
+        badHeaders.set("Idempotency-Key", key);
+        ResponseEntity<String> rejected = rest.exchange(url(requestsPath), HttpMethod.POST,
+                new HttpEntity<>(badBody, badHeaders), String.class);
+        assertThat(rejected.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(rejected.getBody()).contains("未知产品: NO-SUCH-SKU");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM idempotency_record WHERE idempotency_key = ?",
+                Integer.class, key)).isZero();
+
+        String goodBody = writeJson(Map.of("lines", List.of(Map.of("sku", sku, "quantity", 1))));
+        HttpHeaders goodHeaders = signedHeaders(HttpMethod.POST, requestsPath, goodBody, userId,
+                List.of("procurement.write"), "create_purchase_draft");
+        goodHeaders.set("Idempotency-Key", key);
+        ResponseEntity<Map> created = rest.exchange(url(requestsPath), HttpMethod.POST,
+                new HttpEntity<>(goodBody, goodHeaders), Map.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(created.getBody().get("status")).isEqualTo("DRAFT");
     }
 
     @Test

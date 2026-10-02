@@ -37,12 +37,16 @@
     </div>
 
     <div v-else class="space-y-5">
+      <AutomationWorkPanel :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
+        :department-code="moduleCode" @saved="businessRevision++" />
+      <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
       <LeaveModule :team-id="deptStore.currentTeamId!" />
+      <FinanceModule :team-id="deptStore.currentTeamId!" />
       <ProcurementModule v-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
       <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
-      <FinanceModule v-else-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
-      <div v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
+      <div v-else-if="!['hr', 'finance'].includes(moduleCode || '')" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
         <p class="text-sm text-slate-500">该部门还没有配置专属业务类型。</p>
+      </div>
       </div>
 
       <!-- 部门助手 -->
@@ -66,11 +70,13 @@ import CrmModule from '../components/CrmModule.vue'
 import EmbeddedAgentChatPanel from '../components/EmbeddedAgentChatPanel.vue'
 import FinanceModule from '../components/FinanceModule.vue'
 import LeaveModule from '../components/LeaveModule.vue'
+import AutomationWorkPanel from '../components/AutomationWorkPanel.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
 
 const deptStore = useCurrentDepartmentStore()
 
 const loading = ref(true)
+const businessRevision = ref(0)
 const errorMsg = ref('')
 
 const currentDept = computed(() => deptStore.currentDepartment)

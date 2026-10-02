@@ -142,6 +142,21 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
         db.close()
 
 
+def _error_detail(response: requests.Response) -> str:
+    # 只取 Java 有意给用户看的 message/detail；拿不到就给通用说明，不把原始响应体
+    # （时间戳、内部路径之类）原样转给最终用户。
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        for key in ("message", "detail"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:300]
+    return f"企业业务服务拒绝了请求（HTTP {response.status_code}）"
+
+
 def call(
         method: str,
         path: str,
@@ -183,12 +198,7 @@ def call(
         timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
     )
     if response.status_code >= 400:
-        detail = response.text
-        try:
-            detail = response.json().get("detail", detail) or response.json().get("message", detail)
-        except (ValueError, AttributeError):
-            pass
-        raise EnterpriseHubError(response.status_code, detail)
+        raise EnterpriseHubError(response.status_code, _error_detail(response))
     if not response.content:
         return None
     return response.json()
