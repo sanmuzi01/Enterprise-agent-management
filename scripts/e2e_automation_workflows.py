@@ -37,9 +37,11 @@ MODEL = "glm-4"
 SUFFIX = uuid.uuid4().hex[:8].upper()
 SKU = f"E2E-{SUFFIX}"
 BAD_SKU = f"NO-SUCH-{SUFFIX}"
+INVOICE_A, INVOICE_B = f"A{SUFFIX}", f"B{SUFFIX}"
 SOURCES = {
     "crm": "2026年10月1日与客户沟通，对方希望先试用。约定2026年10月8日发送方案；预算尚未确定。",
-    "expense": "10月1日出差高铁票260元，发票号G001；出租车48元，暂无发票。",
+    "expense": f"10月1日出差高铁票260元，发票号{INVOICE_A}；出租车48元，暂无发票。",
+    "expense_b": f"10月2日出差高铁票260元，发票号{INVOICE_B}；出租车48元，暂无发票。",
     "leave": "我要申请年假，2026年10月12日至2026年10月14日，原因是家庭事务。",
     "procurement": f"行政部需要采购 {SKU} 共3件；另需 {BAD_SKU} 共2件。",
 }
@@ -50,10 +52,11 @@ def proposal_for(kind, source):
         return {"content": "客户希望先试用，待发送方案；预算未定。", "evidence": "对方希望先试用",
                 "tasks": [{"title": "发送方案", "due_date": "2026-10-08", "evidence": "约定2026年10月8日发送方案"}],
                 "warnings": ["预算尚未确定"]}
-    if kind == "expense":
+    if kind in ("expense", "expense_b"):
+        invoice = INVOICE_A if kind == "expense" else INVOICE_B
         return {"lines": [
-            {"category": "TRAVEL", "amount": "260.00", "description": "高铁票", "invoice_no": "G001",
-             "evidence": "出差高铁票260元，发票号G001"},
+            {"category": "TRAVEL", "amount": "260.00", "description": "高铁票", "invoice_no": invoice,
+             "evidence": f"出差高铁票260元，发票号{invoice}"},
             {"category": "TRANSPORT", "amount": "48.00", "description": "出租车", "invoice_no": None,
              "evidence": "出租车48元，暂无发票"}], "warnings": ["出租车暂无发票"]}
     if kind == "leave":
@@ -129,9 +132,9 @@ def main():
         with ent.connect() as conn:
             return conn.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {column}=:u"), {"u": owner["id"]}).scalar()
 
-    def generate(kind, team_code, customer=None):
+    def generate(kind, team_code, customer=None, source_key=None):
         req = GenerateRequest(request_key=uuid.uuid4(), team_id=teams[team_code], kind=kind, model_name=MODEL,
-                              source_text=SOURCES[kind], customer_id=customer)
+                              source_text=SOURCES[source_key or kind], customer_id=customer)
         work = session(lambda s: svc.generate(s, owner["id"], req))
         work_ids.append(work["id"])
         return work
@@ -170,6 +173,10 @@ def main():
             print("\n[2] 采购：错误 SKU 被 Java 拒绝 → 退回可修改 → 改正后用同一幂等键保存")
             before = count("purchase_request", "requester_user_id")
             work = generate("procurement", "procurement")
+            checks = {c["level"]: c["text"] for c in reversed(work["business_checks"])}
+            check.ok(BAD_SKU in checks.get("blocker", ""), "procurement: 业务系统核对提前标出不存在的 SKU（会被拒绝）")
+            check.ok(any(SKU in c["text"] and "库存 100" in c["text"] for c in work["business_checks"]),
+                     "procurement: 核对带出真实库存与单价")
             rejected = apply(work, work["proposal"])
             check.ok(rejected["status"] == "ready" and BAD_SKU in (rejected["error_message"] or ""),
                      "procurement: 未知产品退回可修改，并带回业务原因")
@@ -184,7 +191,7 @@ def main():
 
             print("\n[3] 响应丢失：Java 已写入但 Python 没收到结果 → 按原内容重试不产生重复草稿")
             before = count("expense_claim", "applicant_user_id")
-            work = generate("expense", "sales")
+            work = generate("expense", "sales", source_key="expense_b")
             real_call, calls = hub.call, []
 
             def lose_first_response(*args, **kwargs):
@@ -199,6 +206,16 @@ def main():
                 second = apply(work, work["proposal"])
             check.ok(second["status"] == "applied" and calls[0] == calls[1], "expense: 重试沿用同一幂等键")
             check.ok(count("expense_claim", "applicant_user_id") == before + 1, "expense: 业务库只有 1 条草稿")
+
+            print("\n[3b] 跨单重复发票：核对提前标出，保存时被 Java 拒绝并退回可修改")
+            before = count("expense_claim", "applicant_user_id")
+            dup = generate("expense", "hr")
+            blockers = [c["text"] for c in dup["business_checks"] if c["level"] == "blocker"]
+            check.ok(any(INVOICE_A in t and "已在报销单" in t for t in blockers), "expense: 核对标出发票已被另一张报销单使用")
+            rejected = apply(dup, dup["proposal"])
+            check.ok(rejected["status"] == "ready" and "已在报销单" in (rejected["error_message"] or ""),
+                     "expense: Java 拒绝重复发票，成果退回可修改并带回原因")
+            check.ok(count("expense_claim", "applicant_user_id") == before, "expense: 重复发票未产生新报销单")
 
             print("\n[4] 权限与数据边界")
             bad_customer = GenerateRequest(request_key=uuid.uuid4(), team_id=teams["sales"], kind="crm",
@@ -235,7 +252,7 @@ def main():
 
             print("\n[5] 持久化：新会话中历史成果与统计仍在")
             hist = session(lambda s: svc.history(s, owner["id"], teams["hr"]))
-            check.ok(hist["stats"]["applied"] == 2 and hist["stats"]["edited"] >= 1 and len(hist["items"]) == 3,
+            check.ok(hist["stats"]["applied"] == 2 and hist["stats"]["edited"] >= 1 and len(hist["items"]) == 4,
                      f"hr 部门统计：{hist['stats']}")
         print(f"\nE2E PASS：{len(check.passed)} 项检查通过（模型为替身，Python/MySQL/Java 为真实服务）")
     finally:

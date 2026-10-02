@@ -175,6 +175,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         with patch.object(svc, "async_get_api_config", AsyncMock(return_value={"api_key": "test"})), \
              patch.object(svc, "enforce_quota_async", AsyncMock()), \
              patch.object(svc, "async_chat_with_usage", AsyncMock(return_value=(json.dumps(response), {"total_tokens": 100}))), \
+             patch.object(svc, "run_checks", AsyncMock(return_value=[])), \
              patch("service.crm_workspace_service.get_customer_summary_async", AsyncMock(return_value={"id": 42})):
             return run_db(lambda db: svc.generate(db, self.owner["id"], request))
 
@@ -290,6 +291,30 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         with patch.object(svc.hub, "call", return_value={"id": 123}):
             result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
         self.assertEqual(result["status"], "applied")
+
+    def test_business_checks_are_stored_and_recheck_uses_edited_draft(self):
+        work = self.generate(self.request("procurement"))
+        first = [{"level": "blocker", "text": "SKU CHAIR-01 不在产品目录中"}]
+        seen = []
+
+        async def fake_checks(workflow, user_id, team_id, data, w):
+            seen.append([i["sku"] for i in data["items"]])
+            return first if len(seen) == 1 else []
+        with patch.object(svc, "run_checks", side_effect=fake_checks):
+            checked = run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], PURCHASE))
+            self.assertEqual(checked["business_checks"], first)
+            fixed = {"items": [PURCHASE["items"][0]], "warnings": []}
+            again = run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], fixed))
+        self.assertEqual(again["business_checks"], [])
+        self.assertEqual(seen, [["PAPER-A4", "CHAIR-01"], ["PAPER-A4"]])
+        stored = run_db(lambda db: svc.get_work(db, self.owner["id"], work["id"]))
+        self.assertEqual(stored.business_checks_json, "[]")
+
+    def test_recheck_rejects_fabricated_evidence(self):
+        work = self.generate(self.request("procurement"))
+        bad = {"items": [{"sku": "X", "quantity": 1, "evidence": "原文里没有这句"}], "warnings": []}
+        with self.assertRaises(InvalidInput):
+            run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], bad))
 
     def apply(self, work, proposal, **hub_kwargs):
         with patch.object(svc.hub, "call", **hub_kwargs) as call:

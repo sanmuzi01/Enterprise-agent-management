@@ -17,6 +17,11 @@ async def main():
     errors = []
     dept = {"code": "sales"}
 
+    def checks_for(proposal):
+        bad = [i['sku'] for i in proposal.get('items', []) if i.get('sku') == 'BAD-SKU']
+        return ([{"level": "blocker", "text": "SKU BAD-SKU 不在产品目录中，保存会被拒绝，请改为真实 SKU"}] if bad
+                else [{"level": "info", "text": "库存与预算核对通过"}])
+
     async def api(route):
         request = route.request
         path = urlparse(request.url).path
@@ -47,13 +52,16 @@ async def main():
                 "procurement": {"items": [{"sku": "BAD-SKU", "quantity": 10, "evidence": src}], "warnings": []},
             }[body['kind']]
             result = {**body, "id": str(len(works) + 1), "status": "ready", "proposal": proposal,
+                      "business_checks": checks_for(proposal),
                       "elapsed_ms": 1200, "completed_tasks": [], "created_at": "2026-10-01T00:00:00Z",
                       "business_result": None, "error_message": None}
             works.insert(0, result)
         else:
             work_id = path.split('/automation/')[1].split('/')[0]
             result = next(w for w in works if w['id'] == work_id)
-            if path.endswith('/apply') and any(i.get('sku') == 'BAD-SKU' for i in body['proposal'].get('items', [])):
+            if path.endswith('/checks'):
+                result['business_checks'] = checks_for(body['proposal'])
+            elif path.endswith('/apply') and any(i.get('sku') == 'BAD-SKU' for i in body['proposal'].get('items', [])):
                 # 与后端一致：业务系统明确拒绝后退回可修改状态，并带上业务原因。
                 result.update(status='ready', error_message='业务系统未接受：产品不存在: BAD-SKU。请修改后重新保存，或将原文带回重新整理')
             elif path.endswith('/apply'):
@@ -126,11 +134,18 @@ async def main():
         await expect(page.get_by_label('工作类型', exact=False)).to_have_value('procurement')
         await page.locator('#automation-source').fill('需要补货 BAD-SKU 共10件。')
         await page.get_by_role('button', name='开始整理', exact=True).click()
+        checks = page.get_by_test_id('business-checks')
+        await expect(checks.get_by_text('SKU BAD-SKU 不在产品目录中', exact=False)).to_be_visible()
+        await expect(checks.get_by_text('会被拒绝', exact=True)).to_be_visible()
         await page.get_by_label('我已核对原文', exact=False).check()
         await save.click()
         await expect(page.get_by_text('产品不存在: BAD-SKU', exact=False)).to_be_visible()
         await expect(page.get_by_role('button', name='将原文带回重新整理')).to_be_visible()
         await page.get_by_label('产品 SKU', exact=True).fill('PAPER-A4')
+        await expect(page.get_by_text('内容已修改，以下结论可能已过期', exact=False)).to_be_visible()
+        await page.get_by_role('button', name='重新核对业务数据').click()
+        await expect(checks.get_by_text('库存与预算核对通过')).to_be_visible()
+        await expect(checks.get_by_text('SKU BAD-SKU 不在产品目录中', exact=False)).to_have_count(0)
         await page.get_by_label('我已核对原文', exact=False).check()
         await save.click()
         await expect(page.get_by_text('已保存采购草稿 #123', exact=False)).to_be_visible()
@@ -144,7 +159,8 @@ async def main():
         # 非采购部门看不到采购入口，销售部门才有 CRM 入口。
         assert await page.locator('option[value="crm"]').count() == 0
         assert not errors, errors
-        print('PASS: CRM, expense, OA leave (incomplete -> fixed), procurement (rejected SKU -> fixed), '
+        print('PASS: CRM, expense, OA leave (incomplete -> fixed), procurement (blocker check -> rejected SKU -> '
+              'edit -> recheck -> fixed), '
               'history reload, mobile layout; mocked APIs')
         await browser.close()
 

@@ -26,6 +26,32 @@ def _check(proposal, for_save):
         raise InvalidInput("请补全假期类型、开始日期和结束日期")
 
 
+async def _business_checks(user_id, team_id, data, work):
+    from service.workflows.business_checks import info, read, warning
+
+    code, start, end = data.get("leave_type_code"), data.get("start_date"), data.get("end_date")
+    if not (code and start and end):
+        return [info("补全假期类型和起止日期后，可重新核对余额与时间冲突")]
+    results = []
+    days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1
+    year = date.fromisoformat(start).year
+    balances = await read("/oa/leave/balance", user_id, team_id, "oa.leave.read", "get_leave_balance", {"year": year})
+    balance = next((b for b in balances if b["leaveTypeCode"] == code), None)
+    name = LEAVE_TYPES[code]
+    if balance is None:
+        results.append(warning(f"没有 {year} 年度的{name}余额记录，提交时会被拒绝，请联系人事"))
+    elif balance["remainingDays"] < days:
+        results.append(warning(f"{name}余额 {balance['remainingDays']:g} 天，本次 {days} 天，提交时会被拒绝"))
+    else:
+        results.append(info(f"{name}余额 {balance['remainingDays']:g} 天，本次 {days} 天，批准后剩 "
+                            f"{balance['remainingDays'] - days:g} 天"))
+    mine = await read("/oa/leave/requests/mine", user_id, None, "oa.leave.read", "get_my_leave_requests")
+    overlap = [r for r in mine if r["status"] != "REJECTED" and r["startDate"] <= end and r["endDate"] >= start]
+    for r in overlap[:3]:
+        results.append(warning(f"与已有请假单 #{r['id']}（{r['startDate']} 至 {r['endDate']}，{r['status']}）时间重叠"))
+    return results
+
+
 def _write(data, work):
     return WriteRequest("/oa/leave/requests", "oa.leave.write", "create_leave_draft", {
         "leaveTypeCode": data["leave_type_code"], "startDate": data["start_date"],
@@ -52,7 +78,7 @@ WORKFLOW = WorkflowDefinition(
     example="我要申请年假，2026年10月12日至2026年10月14日，原因是家庭事务。",
     hint="提取假期类型与日期；未明确的年份、日期不会自行推算。",
     preferred_for=frozenset({"hr"}),
-    check=_check, order=20,
+    check=_check, business_checks=_business_checks, order=20,
     extra={"rules": [{"type": "date_order", "start": "start_date", "end": "end_date",
                       "message": "结束日期不能早于开始日期。"}]},
 )

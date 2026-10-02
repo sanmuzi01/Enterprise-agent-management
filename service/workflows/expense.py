@@ -32,6 +32,36 @@ def _check(proposal, for_save):
             seen.add(line.invoice_no)
 
 
+async def _business_checks(user_id, team_id, data, work):
+    from service import enterprise_hub_client as hub
+    from service.workflows.business_checks import blocker, info, money, read, warning
+
+    results = []
+    numbers = sorted({line["invoice_no"].strip() for line in data["lines"] if line.get("invoice_no")})
+    if numbers:
+        used = await read("/finance/invoices/usage", user_id, team_id, "finance.read", "check_invoice_usage",
+                          {"numbers": ",".join(numbers)})
+        for row in used:
+            results.append(blocker(f"发票号 {row['invoiceNo']} 已在报销单 #{row['claimId']} 中使用，"
+                                   "保存会被拒绝，请删除这条费用或更正发票号"))
+    missing = sum(1 for line in data["lines"] if not line.get("invoice_no"))
+    if missing:
+        results.append(warning(f"{missing} 条费用没有发票号，审批时可能需要补充票据"))
+    total = sum(float(line["amount"]) for line in data["lines"])
+    try:
+        budget = await read("/finance/budget", user_id, team_id, "finance.read", "get_expense_budget")
+        remaining = float(budget["remainingAmount"])
+        if total > remaining:
+            results.append(warning(f"报销合计 {money(total)} 超出部门剩余报销预算 {money(remaining)}，审批时会被拒绝"))
+        else:
+            results.append(info(f"报销合计 {money(total)}，部门剩余报销预算 {money(remaining)}"))
+    except hub.EnterpriseHubError as exc:
+        if exc.status_code != 400:
+            raise
+        results.append(warning("本部门没有今年的报销预算记录，审批时会被拒绝，请联系管理员配置预算"))
+    return results
+
+
 def _write(data, work):
     return WriteRequest("/finance/expenses", "finance.write", "create_expense_draft", {"lines": [
         {"category": line["category"], "amount": line["amount"], "description": line["description"],
@@ -60,5 +90,5 @@ WORKFLOW = WorkflowDefinition(
     example="10月1日出差高铁票260元，发票号G001；出租车48元，暂无发票。",
     hint="提取费用分类、金额与发票号，核对后生成报销草稿。",
     preferred_for=frozenset({"finance", "it", None}),
-    check=_check, order=10,
+    check=_check, business_checks=_business_checks, order=10,
 )

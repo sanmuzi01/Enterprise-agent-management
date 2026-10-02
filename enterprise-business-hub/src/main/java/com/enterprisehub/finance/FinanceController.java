@@ -37,6 +37,12 @@ public class FinanceController {
         return financeService.getBudget(teamId, y);
     }
 
+    @GetMapping("/invoices/usage")
+    public Object invoiceUsage(@RequestParam("numbers") java.util.List<String> numbers) {
+        ScopeGuard.require("finance.read");
+        return financeService.invoiceUsages(numbers);
+    }
+
     @PostMapping("/expenses")
     public ResponseEntity<Object> createDraft(@Valid @RequestBody CreateExpenseClaimRequest body,
                                                @RequestHeader(value = IDEMPOTENCY_HEADER, required = false) String idempotencyKey) {

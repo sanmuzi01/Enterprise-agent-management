@@ -259,6 +259,60 @@ class FinanceControllerIntegrationTest {
         assertThat(((Number) afterBudget.getBody().get("remainingAmount")).doubleValue()).isEqualTo(1000.00);
     }
 
+    private ResponseEntity<String> draftWithInvoices(String... invoiceNos) {
+        String path = "/finance/expenses";
+        List<Map<String, Object>> lines = new java.util.ArrayList<>();
+        for (String no : invoiceNos) {
+            lines.add(Map.of("category", "TRAVEL", "amount", 10, "description", "测试", "invoiceNo", no));
+        }
+        String body = writeJson(Map.of("lines", lines));
+        HttpHeaders headers = signedHeaders(HttpMethod.POST, path, body, userId, List.of("finance.write"),
+                "create_expense_draft");
+        headers.set("Idempotency-Key", UUID.randomUUID().toString());
+        return rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+    }
+
+    @Test
+    void sameInvoiceCannotBeClaimedTwice_untilFirstClaimIsRejected() throws Exception {
+        String invoice = "INV-" + UUID.randomUUID().toString().substring(0, 8);
+        ResponseEntity<String> first = draftWithInvoices(invoice);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        long firstId = ((Number) MAPPER.readValue(first.getBody(), Map.class).get("id")).longValue();
+
+        ResponseEntity<String> duplicate = draftWithInvoices(invoice);
+        assertThat(duplicate.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(duplicate.getBody()).contains("发票号 " + invoice + " 已在报销单 #" + firstId);
+
+        String usagePath = "/finance/invoices/usage?numbers=" + invoice;
+        ResponseEntity<List> usage = rest.exchange(url(usagePath), HttpMethod.GET,
+                new HttpEntity<>(signedHeaders(HttpMethod.GET, usagePath, null, userId, List.of("finance.read"),
+                        "check_invoice_usage")), List.class);
+        assertThat(usage.getBody()).hasSize(1);
+        assertThat(((Map<?, ?>) usage.getBody().get(0)).get("status")).isEqualTo("DRAFT");
+
+        String submitPath = "/finance/expenses/" + firstId + "/submit";
+        HttpHeaders submitHeaders = signedHeaders(HttpMethod.POST, submitPath, null, userId,
+                List.of("finance.write"), "submit_expense_claim");
+        submitHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        rest.exchange(url(submitPath), HttpMethod.POST, new HttpEntity<>(submitHeaders), Map.class);
+        String rejectPath = "/finance/expenses/" + firstId + "/reject";
+        String rejectBody = writeJson(Map.of("note", "发票抬头错误"));
+        HttpHeaders rejectHeaders = signedHeaders(HttpMethod.POST, rejectPath, rejectBody, approverId, teamId,
+                List.of("finance.approve"), "reject_expense_claim", false, true);
+        rejectHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        rest.exchange(url(rejectPath), HttpMethod.POST, new HttpEntity<>(rejectBody, rejectHeaders), Map.class);
+
+        assertThat(draftWithInvoices(invoice).getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    @Test
+    void duplicateInvoiceWithinOneClaim_isRejected() {
+        String invoice = "INV-" + UUID.randomUUID().toString().substring(0, 8);
+        ResponseEntity<String> resp = draftWithInvoices(invoice, invoice);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).contains("同一报销单中发票号重复");
+    }
+
     @Test
     void replayingIdempotencyKey_doesNotCreateSecondDraft() {
         String requestsPath = "/finance/expenses";

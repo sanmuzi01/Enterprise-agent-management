@@ -42,6 +42,8 @@ class WorkflowDefinition:
     needs_customer: bool = False
     precheck: Optional[Callable[..., Awaitable[None]]] = None  # 调用模型前的真实业务数据预查询
     followups: Optional[Dict[str, str]] = None            # 后续待办：{"key", "title", "due"}
+    # 业务系统核对：(user_id, team_id, 整理结果, work) → [{"level": info|warning|blocker, "text"}]
+    business_checks: Optional[Callable[..., Awaitable[List[Dict[str, str]]]]] = None
     order: int = 100
     extra: Dict[str, Any] = field(default_factory=dict)
 

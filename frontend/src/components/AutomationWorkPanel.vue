@@ -70,6 +70,19 @@
         <ul v-if="draft.warnings.length" class="list-inside list-disc rounded bg-amber-50 p-3 text-sm text-amber-800">
           <li v-for="(w, i) in draft.warnings" :key="i">{{ w }}</li>
         </ul>
+        <div v-if="selected.business_checks?.length || editable" class="rounded border border-slate-200 p-3 text-sm space-y-2" data-testid="business-checks">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <h4 class="font-medium">业务系统核对</h4>
+            <button v-if="editable" type="button" class="text-xs text-blue-600" :disabled="busy" @click="recheck">重新核对业务数据</button>
+          </div>
+          <p v-if="checksStale" class="text-xs text-slate-500">内容已修改，以下结论可能已过期，可重新核对。</p>
+          <ul v-if="selected.business_checks?.length" class="space-y-1">
+            <li v-for="(c, i) in selected.business_checks" :key="i" class="rounded px-2 py-1" :class="checkClass[c.level]">
+              <span class="mr-1 font-medium">{{ checkLabel[c.level] }}</span>{{ c.text }}
+            </li>
+          </ul>
+          <p v-else class="text-xs text-slate-500">暂无核对结论。</p>
+        </div>
         <fieldset v-if="selectedWorkflow" :disabled="!editable || busy">
           <WorkflowForm :fields="selectedWorkflow.form" :model="draft" />
         </fieldset>
@@ -151,8 +164,30 @@ const followupCount = (work: api.Work) => {
   return fu ? (work.proposal?.[fu.key]?.length || 0) : 0
 }
 watch(draft, () => { reviewed.value = false }, { deep: true, flush: 'sync' })
+const checkLabel = { blocker: '会被拒绝', warning: '需确认', info: '参考' }
+const checkClass = { blocker: 'bg-red-50 text-red-700', warning: 'bg-amber-50 text-amber-800', info: 'bg-slate-50 text-slate-600' }
+// 核对结论对应的内容快照；员工改动后提示结论可能过期。
+const checkedSnapshot = ref('')
+const checksStale = computed(() => !!draft.value && !!checkedSnapshot.value && JSON.stringify(draft.value) !== checkedSnapshot.value)
+async function recheck() {
+  const wf = selectedWorkflow.value
+  if (!selected.value || !draft.value || !wf) return
+  loading.value = true; error.value = ''
+  const snapshot = JSON.stringify(draft.value)
+  try {
+    // 只更新核对结论，不能用服务端的原始整理结果覆盖员工正在修改的内容。
+    const latest = await api.recheckWork(selected.value.id, api.normalizeDraft(wf.form, draft.value))
+    selected.value = { ...selected.value, business_checks: latest.business_checks }
+    checkedSnapshot.value = snapshot
+  }
+  catch (e) { error.value = getErrorMessage(e, '核对失败，请检查内容后重试') }
+  finally { loading.value = false }
+}
 const statusName = (s: string) => ({ processing: '整理中', ready: '待核对', failed: '整理失败', applying: '保存中', retry: '保存待重试', applied: '已保存草稿' }[s] || s)
-function select(work: api.Work) { selected.value = work; draft.value = work.proposal ? JSON.parse(JSON.stringify(work.proposal)) : null; reviewed.value = false }
+function select(work: api.Work) {
+  selected.value = work; draft.value = work.proposal ? JSON.parse(JSON.stringify(work.proposal)) : null; reviewed.value = false
+  checkedSnapshot.value = draft.value ? JSON.stringify(draft.value) : ''
+}
 async function refresh() {
   try { const data = await api.listWork(props.teamId, offset.value); items.value = data.items; stats.value = data.stats
     if (selected.value && ['processing', 'applying'].includes(selected.value.status)) select(await api.getWork(selected.value.id))

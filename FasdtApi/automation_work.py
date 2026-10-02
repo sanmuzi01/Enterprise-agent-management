@@ -68,6 +68,12 @@ async def apply(work_id: UUID, data: ApplyRequest, db=Depends(get_async_db),
     return await svc.apply_work(db, user.id, str(work_id), data.proposal)
 
 
+@router.post("/{work_id}/checks")
+async def recheck(work_id: UUID, data: ApplyRequest, db=Depends(get_async_db),
+                  user: User = Depends(get_current_user_async)):
+    return await svc.recheck(db, user.id, str(work_id), data.proposal)
+
+
 @router.patch("/{work_id}/tasks/{index}")
 async def task(work_id: UUID, index: int, data: TaskRequest, db=Depends(get_async_db),
                user: User = Depends(get_current_user_async)):

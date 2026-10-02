@@ -33,7 +33,9 @@ export interface WorkflowInfo {
 }
 export interface WorkflowCatalog { workflows: WorkflowInfo[]; default_id: string | null }
 
+export interface BusinessCheck { level: 'info' | 'warning' | 'blocker'; text: string }
 export interface Work {
+  business_checks?: BusinessCheck[]
   id: string; team_id: number; kind: WorkKind; status: string; model_name: string; sensitivity: string
   customer_id: number | null; elapsed_ms: number; total_tokens: number | null; edited: boolean
   error_message: string | null; created_at: string; proposal: Proposal | null
@@ -57,6 +59,9 @@ export async function generateWork(data: {
 }) { return (await request.post<Work>('/enterprise/automation', data, { timeout: 120000 })).data }
 export async function applyWork(id: string, proposal: Proposal) {
   return (await request.post<Work>(`/enterprise/automation/${id}/apply`, { proposal }, { timeout: 60000 })).data
+}
+export async function recheckWork(id: string, proposal: Proposal) {
+  return (await request.post<Work>(`/enterprise/automation/${id}/checks`, { proposal }, { timeout: 60000 })).data
 }
 export async function setTask(id: string, index: number, done: boolean) {
   return (await request.patch<Work>(`/enterprise/automation/${id}/tasks/${index}`, { done })).data

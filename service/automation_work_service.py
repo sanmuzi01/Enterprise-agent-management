@@ -12,6 +12,7 @@ from models.init_db import AutomationWork, Team, Organization, OrganizationMembe
 from service import enterprise_hub_client as hub
 from service.automation_spec import extraction_prompt, parse_answer, validate_proposal
 from service.workflows import catalog as workflow_catalog, get_workflow
+from service.workflows.business_checks import run_checks
 from service.data_egress_policy import is_model_allowed
 from service.exceptions import Conflict, InvalidInput, NotFound, PermissionDenied
 from service.llm.llm_service import async_chat_with_usage
@@ -58,6 +59,7 @@ def payload(work, detail=True):
               "created_at": work.created_at.isoformat() + "Z",
               "proposal": json.loads(work.accepted_json or work.proposal_json or "null"),
               "business_result": json.loads(work.business_result_json or "null"),
+              "business_checks": json.loads(work.business_checks_json or "[]"),
               "completed_tasks": json.loads(work.completed_tasks_json or "[]")}
     if detail:
         result["source_text"] = work.source_text
@@ -130,6 +132,7 @@ async def generate(db, user_id, data):
             raise InvalidInput("整理结果过长，请拆分材料")
         work.proposal_json = serialized
         work.status = "ready"
+        work.business_checks_json = encode(await run_checks(get_workflow(data.kind), user_id, data.team_id, result, work))
     except InvalidInput as exc:
         work.status, work.error_message = "failed", exc.message
     except Exception:
@@ -222,6 +225,19 @@ async def apply_work(db, user_id, work_id, proposal):
         work.error_message = "业务服务未确认保存结果；可用同一内容重试，不会主动生成新的操作编号"
     work.updated_at = utcnow()
     await db.commit()
+    return payload(work)
+
+
+async def recheck(db, user_id, work_id, proposal):
+    """用员工修改后的内容重新做业务系统核对（只读），结论随成果保存。"""
+    work = await get_work(db, user_id, work_id)
+    await authorize(db, user_id, work.team_id, work.kind)
+    data = validate_proposal(work.kind, proposal, work.source_text)
+    checks = await run_checks(get_workflow(work.kind), user_id, work.team_id, data, work)
+    await db.execute(update(AutomationWork).where(AutomationWork.id == work.id)
+                     .values(business_checks_json=encode(checks)))
+    await db.commit()
+    await db.refresh(work)
     return payload(work)
 
 

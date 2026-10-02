@@ -12,7 +12,11 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.math.BigDecimal;
 import java.time.Year;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * 财务报销闭环（里程碑4）：员工提交报销单（含多条费用明细）→ 部门负责人批准/拒绝，
@@ -44,9 +48,23 @@ public class FinanceService {
         return ExpenseBudgetDto.from(budget);
     }
 
+    /** 发票号在未驳回报销单中的占用情况，供录入前核对。 */
+    public List<Map<String, Object>> invoiceUsages(Collection<String> numbers) {
+        List<String> normalized = numbers.stream().filter(n -> n != null && !n.isBlank())
+                .map(String::trim).distinct().limit(50).toList();
+        if (normalized.isEmpty()) {
+            return List.of();
+        }
+        return lineRepository.findActiveInvoiceUsages(normalized).stream()
+                .map(row -> Map.<String, Object>of("invoiceNo", row[0], "claimId", row[1],
+                        "status", ((ExpenseStatus) row[2]).name()))
+                .toList();
+    }
+
     @Transactional
     public ExpenseClaimDto createDraft(long applicantUserId, long teamId, CreateExpenseClaimRequest body,
                                         String traceId) {
+        rejectDuplicateInvoices(body);
         BigDecimal totalAmount = BigDecimal.ZERO;
         for (CreateExpenseClaimRequest.LineItem item : body.lines()) {
             totalAmount = totalAmount.add(item.amount());
@@ -63,6 +81,23 @@ public class FinanceService {
         auditService.record(applicantUserId, "finance.draft_created", "expense_claim", claim.getId(),
                 "{\"lineCount\":" + body.lines().size() + ",\"totalAmount\":" + totalAmount + "}", traceId);
         return toDto(claim);
+    }
+
+    /** 同一张发票不能被两张未驳回的报销单使用（无论哪个入口录入：报销模块、Agent 工具、AI 材料整理）。 */
+    private void rejectDuplicateInvoices(CreateExpenseClaimRequest body) {
+        Set<String> seen = new HashSet<>();
+        for (CreateExpenseClaimRequest.LineItem item : body.lines()) {
+            String no = item.invoiceNo() == null ? null : item.invoiceNo().trim();
+            if (no != null && !no.isEmpty() && !seen.add(no)) {
+                throw badRequest("同一报销单中发票号重复: " + no);
+            }
+        }
+        List<Map<String, Object>> used = invoiceUsages(seen);
+        if (!used.isEmpty()) {
+            Map<String, Object> first = used.get(0);
+            throw badRequest("发票号 " + first.get("invoiceNo") + " 已在报销单 #" + first.get("claimId")
+                    + " 中使用，不能重复报销");
+        }
     }
 
     @Transactional

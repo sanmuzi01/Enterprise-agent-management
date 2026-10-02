@@ -221,6 +221,7 @@ class AutomationWork(Base):
     proposal_json = Column(Text, nullable=True)
     accepted_json = Column(Text, nullable=True)
     business_result_json = Column(Text, nullable=True)
+    business_checks_json = Column(Text, nullable=True)
     completed_tasks_json = Column(Text, nullable=False, default="[]")
     error_message = Column(String(300), nullable=True)
     elapsed_ms = Column(Integer, nullable=False, default=0)
