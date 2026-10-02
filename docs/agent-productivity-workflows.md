@@ -11,6 +11,23 @@
 
 部门的业务类型在"管理后台 → 组织架构 → 部门管理 → 重命名"中设置。
 
+## 工作流注册机制（新增一类工作）
+
+每类工作是 `service/workflows/` 下的一份声明（`WorkflowDefinition`），状态机（整理中 / 待核对 / 保存中 / 保存待重试 / 已保存）、幂等键、权限、额度、统计、重试规则全部由 `service/automation_work_service.py` 统一提供。新增"合同审查""招聘简历整理"等工作流时只需要：
+
+1. 新建 `service/workflows/<名称>.py`，声明：
+   - `departments`：允许使用的部门业务类型（`None` 为所有部门），`preferred_for`：哪些部门默认选中；
+   - `schema`：模型输出的 Pydantic 模型（`StrictModel`，额外字段一律拒绝，必须含 `warnings`）；
+   - `instructions`：只属于这类工作的整理要求（通用的防注入、原文依据规则自动拼在前面）；
+   - `evidence`：哪些字段必须逐字出现在原文中；`check`：额外业务规则（`for_save=True` 时更严格）；
+   - `precheck`：调用模型前的真实业务数据预查询（如 CRM 校验客户属于本部门）；
+   - `form`：人工核对表单描述（text / textarea / date / select / integer / money / evidence / list / note / sum），前端 `WorkflowForm.vue` 按描述渲染并做保存前校验；
+   - `write`：核对后内容 → Java 草稿接口（路径、权限范围、操作名、请求体）；
+   - `followups`：可选，成果中的后续待办字段。
+2. 在 `service/workflows/__init__.py` 的 `_BUILTIN` 中登记。
+
+前端不需要改动：工作类型、表单、校验文案都来自 `GET /enterprise/automation/workflows?team_id=`。`tests/test_workflow_registry.py` 演示了运行时注册一个"合同审查"工作流并走完整理→核对→保存草稿全流程；同一文件的完整性测试会检查每个注册工作流的表单字段都存在于 schema 中。成果统计按工作流分别给出（`stats.by_kind`）。
+
 ## 部门专业 Agent 自动配置
 
 每个部门按业务类型自动拥有一个主 Agent，管理员不需要再手工创建：

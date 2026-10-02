@@ -18,7 +18,7 @@ class GenerateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     request_key: UUID
     team_id: int = Field(gt=0)
-    kind: Literal["crm", "expense", "procurement", "leave"]
+    kind: str = Field(min_length=1, max_length=30, description="工作流 ID，见 GET /enterprise/automation/workflows")
     model_name: str = Field(min_length=1, max_length=100)
     source_text: str = Field(min_length=10, max_length=15000)
     customer_id: int | None = Field(default=None, gt=0)
@@ -37,6 +37,11 @@ class TaskRequest(BaseModel):
 async def history(team_id: int, offset: int = Query(default=0, ge=0, le=100000),
                   db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
     return await svc.history(db, user.id, team_id, offset)
+
+
+@router.get("/workflows")
+async def workflows(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    return await svc.workflows_for_team(db, user.id, team_id)
 
 
 @router.post("")

@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from models.init_db import AutomationWork, Team, Organization, OrganizationMember, TeamMember
 from service import enterprise_hub_client as hub
 from service.automation_spec import extraction_prompt, parse_answer, validate_proposal
+from service.workflows import catalog as workflow_catalog, get_workflow
 from service.data_egress_policy import is_model_allowed
 from service.exceptions import Conflict, InvalidInput, NotFound, PermissionDenied
 from service.llm.llm_service import async_chat_with_usage
@@ -37,11 +38,16 @@ async def authorize(db, user_id, team_id, kind=None):
     )).scalar_one_or_none()
     if team is None:
         raise PermissionDenied("当前企业或部门身份无效，无法查看或处理工作成果")
-    if kind == "crm" and team.department_code != "sales":
-        raise PermissionDenied("CRM 材料整理仅对销售部门开放")
-    if kind == "procurement" and team.department_code != "procurement":
-        raise PermissionDenied("采购材料整理仅对采购部门开放")
+    if kind is not None:
+        workflow = get_workflow(kind)
+        if not workflow.available_for(team.department_code):
+            raise PermissionDenied(f"「{workflow.name}」仅对{workflow.availability_label()}开放")
     return team
+
+
+async def workflows_for_team(db, user_id, team_id):
+    team = await authorize(db, user_id, team_id)
+    return workflow_catalog(team.department_code)
 
 
 def payload(work, detail=True):
@@ -97,13 +103,11 @@ async def generate(db, user_id, data):
     if not await async_get_api_config(db, user_id, data.model_name):
         raise InvalidInput("请先在设置中连接并启用所选模型")
     await enforce_quota_async(db, user_id)
-    if data.kind == "crm":
-        if data.customer_id is None:
-            raise InvalidInput("请先选择当前部门的客户")
-        from service.crm_workspace_service import get_customer_summary_async
-        await get_customer_summary_async(db, user_id, data.team_id, data.customer_id)
-    elif data.customer_id is not None:
+    workflow = get_workflow(data.kind)
+    if not workflow.needs_customer and data.customer_id is not None:
         raise InvalidInput("当前工作类型不接受客户编号")
+    if workflow.precheck:
+        await workflow.precheck(db, user_id, data.team_id, data)
     work = AutomationWork(id=str(uuid.uuid4()), user_id=user_id, team_id=data.team_id,
                           request_key=str(data.request_key), kind=data.kind, model_name=data.model_name,
                           sensitivity=data.sensitivity, source_text=data.source_text,
@@ -155,8 +159,16 @@ async def history(db, user_id, team_id, offset=0):
         func.sum(AutomationWork.edited),
     ).select_from(AutomationWork).where(*scope))).one()
     keys = ["total", "applied", "ready", "failed", "elapsed_ms", "total_tokens", "edited"]
-    return {"items": [payload(w, detail=False) for w in rows],
-            "stats": dict(zip(keys, [int(c or 0) for c in counts]))}
+    by_kind = (await db.execute(select(
+        AutomationWork.kind, func.count(),
+        func.sum(case((AutomationWork.status == "applied", 1), else_=0)),
+        func.sum(case((AutomationWork.status == "failed", 1), else_=0)),
+        func.sum(AutomationWork.edited),
+    ).where(*scope).group_by(AutomationWork.kind))).all()
+    stats = dict(zip(keys, [int(c or 0) for c in counts]))
+    stats["by_kind"] = {kind: {"total": int(t or 0), "applied": int(a or 0), "failed": int(f or 0),
+                               "edited": int(e or 0)} for kind, t, a, f, e in by_kind}
+    return {"items": [payload(w, detail=False) for w in rows], "stats": stats}
 
 
 async def apply_work(db, user_id, work_id, proposal):
@@ -187,24 +199,9 @@ async def apply_work(db, user_id, work_id, proposal):
     await db.commit()
     # A retry always uses the persisted body and the SAME Java idempotency key.
     try:
-        data = json.loads(accepted)
-        if work.kind == "crm":
-            path, scope, operation = f"/crm/customers/{work.customer_id}/followups", "crm.write", "create_followup_draft"
-            body = {"content": data["content"]}
-        elif work.kind == "procurement":
-            path, scope, operation = "/procurement/requests", "procurement.write", "create_purchase_draft"
-            body = {"lines": [{"sku": item["sku"], "quantity": item["quantity"]} for item in data["items"]]}
-        elif work.kind == "leave":
-            path, scope, operation = "/oa/leave/requests", "oa.leave.write", "create_leave_draft"
-            body = {"leaveTypeCode": data["leave_type_code"], "startDate": data["start_date"],
-                    "endDate": data["end_date"], "reason": data["reason"]}
-        else:
-            path, scope, operation = "/finance/expenses", "finance.write", "create_expense_draft"
-            body = {"lines": [{"category": line["category"], "amount": line["amount"],
-                               "description": line["description"], "invoiceNo": line.get("invoice_no")}
-                              for line in data["lines"]]}
-        result = await asyncio.to_thread(hub.call, "POST", path, user_id, work.team_id,
-                                        [scope], operation, json_body=body,
+        target = get_workflow(work.kind).write(json.loads(accepted), work)
+        result = await asyncio.to_thread(hub.call, "POST", target.path, user_id, work.team_id,
+                                        [target.scope], target.operation, json_body=target.body,
                                         idempotency_key=f"automation-{work.id}")
         work.business_result_json = encode(result)
         work.status = "applied"
@@ -230,9 +227,12 @@ async def apply_work(db, user_id, work_id, proposal):
 
 async def complete_task(db, user_id, work_id, index, done):
     work = await get_work(db, user_id, work_id)
-    if work.status != "applied" or work.kind != "crm":
-        raise Conflict("请先保存 CRM 草稿再处理跟进待办")
-    tasks = json.loads(work.accepted_json)["tasks"]
+    followups = get_workflow(work.kind).followups
+    if followups is None:
+        raise InvalidInput("这类工作成果没有后续待办")
+    if work.status != "applied":
+        raise Conflict("请先保存业务草稿再处理后续待办")
+    tasks = json.loads(work.accepted_json)[followups["key"]]
     if not 0 <= index < len(tasks):
         raise InvalidInput("待办不存在")
     previous = work.completed_tasks_json

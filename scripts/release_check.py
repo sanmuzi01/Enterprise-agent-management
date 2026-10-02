@@ -107,6 +107,10 @@ AUTOMATION_FILES = [
     "FasdtApi/automation_work.py",
     "service/automation_spec.py",
     "service/automation_work_service.py",
+    "service/workflows/__init__.py",
+    "service/workflows/base.py",
+    "frontend/src/components/WorkflowForm.vue",
+    "frontend/src/components/WorkflowField.vue",
     "migrations/versions/20261001_0002_automation_work.py",
     "frontend/src/api/automationWork.ts",
     "frontend/src/components/AutomationWorkPanel.vue",
@@ -172,18 +176,20 @@ def check_widget_scheduler_wired() -> None:
 
 
 def check_automation_wired() -> None:
-    """工作成果接口必须挂到主应用，四种工作类型的前后端枚举必须一致。"""
+    """工作成果接口必须挂到主应用；注册的每个工作流都要有完整声明（前端表单由声明驱动）。"""
     print("\n检查 AI 工作成果接口已接入...")
     main_py = (ROOT / "FasdtApi/main.py").read_text(encoding="utf-8")
     if "app.include_router(automation_work_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
+    if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):
+        raise SystemExit("前端未从工作流目录接口加载工作类型")
     sys.path.insert(0, str(ROOT))
-    from service.automation_spec import SCHEMAS
-    api_ts = (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8")
-    missing = [kind for kind in SCHEMAS if f"'{kind}'" not in api_ts]
-    if missing:
-        raise SystemExit("前端 automationWork.ts 缺少工作类型: " + ", ".join(missing))
-    print(f"OK 已挂载，工作类型 {sorted(SCHEMAS)} 前后端一致")
+    from service.workflows import all_workflows
+    incomplete = [w.id for w in all_workflows()
+                  if not (w.form and w.instructions and w.source_label and callable(w.write) and callable(w.evidence))]
+    if incomplete:
+        raise SystemExit("工作流声明不完整: " + ", ".join(incomplete))
+    print(f"OK 已挂载，已注册工作流 {[w.id for w in all_workflows()]}")
 
 
 def main() -> None:

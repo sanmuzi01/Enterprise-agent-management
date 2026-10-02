@@ -4,12 +4,18 @@ import json
 import os
 from urllib.parse import urlparse
 
+import sys
+
 from playwright.async_api import async_playwright, expect
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from service.workflows import catalog  # noqa: E402  用真实的工作流注册表驱动页面
 
 
 async def main():
     works = []
     errors = []
+    dept = {"code": "sales"}
 
     async def api(route):
         request = route.request
@@ -18,7 +24,9 @@ async def main():
             await route.continue_()
             return
         body = request.post_data_json if request.post_data else {}
-        if path.endswith('/llm_config/list'):
+        if path.endswith('/automation/workflows'):
+            result = catalog(dept["code"])
+        elif path.endswith('/llm_config/list'):
             result = [{"id": 1, "model_name": "test-model", "kind": "chat", "is_active": 1}]
         elif path.endswith('/crm/customers'):
             result = [{"id": 42, "name": "测试客户"}]
@@ -103,7 +111,7 @@ async def main():
         await page.locator('#automation-source').fill('我想请年假到2026年10月14日，处理家庭事务。')
         await page.get_by_role('button', name='开始整理', exact=True).click()
         await expect(page.get_by_text('开始日期不明确，请补全')).to_be_visible()
-        await expect(page.get_by_text('请补全假期类型、开始日期和结束日期。')).to_be_visible()
+        await expect(page.get_by_text('请补全开始日期。')).to_be_visible()
         await page.get_by_label('我已核对原文', exact=False).check()
         await expect(save).to_be_disabled()
         await page.get_by_label('开始日期', exact=True).fill('2026-10-12')
@@ -113,6 +121,7 @@ async def main():
         assert works[0]['proposal']['start_date'] == '2026-10-12', works[0]['proposal']
 
         # 采购：错误 SKU 被业务系统拒绝 → 退回可修改 → 改正后保存。
+        dept["code"] = "procurement"
         await page.goto('http://127.0.0.1:5174/__automation-test?dept=procurement')
         await expect(page.get_by_label('工作类型', exact=False)).to_have_value('procurement')
         await page.locator('#automation-source').fill('需要补货 BAD-SKU 共10件。')
@@ -126,6 +135,12 @@ async def main():
         await save.click()
         await expect(page.get_by_text('已保存采购草稿 #123', exact=False)).to_be_visible()
         assert works[0]['proposal']['items'][0]['sku'] == 'PAPER-A4', works[0]['proposal']
+        # 通用校验：重复 SKU 与数量越界都按工作流声明拦截在前端。
+        await page.locator('#automation-source').fill('需要补货 BAD-SKU 共10件，再来一次。')
+        await page.get_by_role('button', name='开始整理', exact=True).click()
+        await page.get_by_label('产品 SKU', exact=True).fill('PAPER-A4')
+        await page.get_by_label('采购数量', exact=True).fill('0')
+        await expect(page.get_by_text('采购数量需为 1 至 1,000,000 的整数。')).to_be_visible()
         # 非采购部门看不到采购入口，销售部门才有 CRM 入口。
         assert await page.locator('option[value="crm"]').count() == 0
         assert not errors, errors

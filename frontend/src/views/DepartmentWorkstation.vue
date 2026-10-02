@@ -38,7 +38,7 @@
 
     <div v-else class="space-y-5">
       <AutomationWorkPanel :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
-        :department-code="moduleCode" @saved="businessRevision++" />
+        @saved="businessRevision++" />
       <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
       <LeaveModule :team-id="deptStore.currentTeamId!" />
       <FinanceModule :team-id="deptStore.currentTeamId!" />
