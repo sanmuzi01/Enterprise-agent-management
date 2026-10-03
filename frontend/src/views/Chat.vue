@@ -266,6 +266,21 @@
             </div>
             <div v-else class="font-sans text-gray-500">已取消，未执行</div>
           </div>
+          <div v-else-if="evt.type === 'route'" class="max-w-2xl w-full px-4 py-2.5 rounded-lg border border-sky-200 bg-sky-50 text-xs text-sky-900 space-y-1" data-testid="route-notice">
+            <p v-if="evt.reason === 'routed'">
+              已转交给「{{ evt.target_name }}」处理<span v-if="evt.matched_keywords?.length">（命中：{{ evt.matched_keywords.join('、') }}）</span>。
+            </p>
+            <p v-else-if="evt.reason === 'no_usable_agent'">
+              问题涉及「{{ departmentLabel(evt.department_code) }}」，但你所在的部门没有已发布的{{ departmentLabel(evt.department_code) }}助手，由中央助手直接回答；可联系企业管理员配置并发布。
+            </p>
+            <p v-if="evt.alternatives?.length">
+              这个问题还涉及：
+              <RouterLink v-for="alt in evt.alternatives" :key="alt.agent_id" :to="`/agents/${alt.agent_id}/chat`" class="mr-2 font-medium text-sky-700 underline">改问「{{ alt.name }}」</RouterLink>
+            </p>
+            <p v-if="evt.unavailable?.length && evt.reason === 'routed'" class="text-sky-700">
+              另外涉及{{ evt.unavailable.map((u: any) => departmentLabel(u.department_code)).join('、') }}，你所在的部门没有对应的已发布助手。
+            </p>
+          </div>
           <div v-else class="max-w-2xl w-full px-4 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-gray-500 font-mono space-y-1">
             <div v-if="evt.type === 'thinking'">
               <span class="text-purple-500 font-semibold">🤔 思考</span>
@@ -787,6 +802,8 @@ function onAnswerClick(e: MouseEvent, msg: any) {
   const idx = Number(el.dataset.cite)
   if (Number.isFinite(idx)) msg.citeOpen = idx
 }
+const DEPARTMENT_LABELS: Record<string, string> = { hr: '人事', procurement: '采购', sales: '销售', finance: '财务', it: 'IT' }
+const departmentLabel = (code?: string | null) => (code && DEPARTMENT_LABELS[code]) || code || '相关部门'
 const short = (s: string, n: number) => {
   const s2 = s || ''
   return s2.length > n ? s2.slice(0, n) + '...' : s2
@@ -829,6 +846,10 @@ const loadCurrentAgent = async () => {
   try {
     const agentList = await agentApi.listAgents()
     currentAgent.value = agentList.find((agent: any) => agent.id === agentId.value) || null
+    if (!currentAgent.value) {
+      // 列表只含自己创建的助手；企业中央助手、部门助手由管理员创建，有权使用时按 id 单独取。
+      try { currentAgent.value = await agentApi.getAgent(agentId.value) } catch { currentAgent.value = null }
+    }
   } catch (e: any) {
     console.error('加载助手信息失败:', e)
     toastError(getErrorMessage(e, '加载助手信息失败'))
@@ -1031,7 +1052,9 @@ const sendMessage = async () => {
       message: msg,
       attachmentIds: attached.map((a) => a.id),
       onEvent: async (evt) => {
-                if (evt.type === 'ready' && evt.run_id) {
+                if (evt.type === 'route') {
+          eventTraces.value.push({ ...evt })
+        } else if (evt.type === 'ready' && evt.run_id) {
           // 可选：记 run_id 供轨迹
         } else if (evt.type === 'retrieval') {
           eventTraces.value.push({ type: 'retrieval', hit_count: evt.hit_count, stats: evt.stats })

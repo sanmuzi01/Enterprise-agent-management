@@ -2,6 +2,7 @@ import request from '../utils/request'
 
 // SSE 事件类型（与 react_engine.py 中 sse_events.make_* 生成的一致）
 export type SseEventType =
+  | 'route'      // 中央 Agent 的转交决定 RouteInfo
   | 'ready'      // { run_id }
   | 'retrieval'  // { hit_count, content_preview, stats? }
   | 'citations'  // { citations: [{ index, knowledge_id, file_name, space_id, space_name }] }
@@ -33,7 +34,18 @@ export interface RagSavings {
   est_tokens_saved: number
 }
 
-export interface SseEvent {
+export interface RouteAlternative { agent_id: number; name: string; department_code: string; matched_keywords: string[] }
+export interface RouteInfo {
+  reason: 'routed' | 'no_match' | 'no_usable_agent'
+  department_code: string | null
+  target_agent_id: number
+  target_name: string | null
+  matched_keywords: string[]
+  alternatives: RouteAlternative[]
+  unavailable: { department_code: string; matched_keywords: string[] }[]
+}
+
+export interface SseEvent extends Partial<RouteInfo> {
   type: SseEventType
   run_id?: number
   hit_count?: number

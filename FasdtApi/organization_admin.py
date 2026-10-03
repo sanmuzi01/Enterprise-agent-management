@@ -246,6 +246,16 @@ async def get_managed_agents(
     return await agent_admin_service.list_managed_agents(async_db)
 
 
+@router.get("/handoffs", summary="中央 Agent 转交记录（转给了谁、为什么、输入摘要、备选部门）")
+async def get_handoffs(
+        limit: int = 100, department_code: Optional[str] = None, reason: Optional[str] = None,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    from service import handoff_service
+    return await handoff_service.list_handoffs(async_db, limit, department_code, reason)
+
+
 @router.get("/agent-templates", summary="企业专业 Agent 模板")
 async def get_managed_agent_templates(current_user: User = Depends(get_current_admin_user_async)):
     from service.enterprise_agent_templates import list_templates

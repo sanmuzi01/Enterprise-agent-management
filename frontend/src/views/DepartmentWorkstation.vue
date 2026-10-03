@@ -63,6 +63,11 @@
       <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
         部门助手尚未发布：企业管理员完成配置并发布后，会出现在这里。
       </p>
+      <RouterLink v-if="centralAgent" :to="`/agents/${centralAgent.id}/chat`" data-testid="central-entry"
+        class="flex items-center justify-between rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 hover:bg-sky-100">
+        <span><strong>不确定该找哪个部门？</strong>问「{{ centralAgent.name }}」，它会按问题转交给你有权使用的部门助手。</span>
+        <span class="shrink-0 text-xs text-sky-700">去提问 →</span>
+      </RouterLink>
     </div>
   </div>
 </template>
@@ -86,6 +91,7 @@ const businessRevision = ref(0)
 const errorMsg = ref('')
 
 const currentDept = computed(() => deptStore.currentDepartment)
+const centralAgent = computed(() => deptStore.workspace?.agents.find((a) => a.agent_type === 'central') || null)
 const deptAgent = computed(() => {
   const teamId = deptStore.currentTeamId
   if (teamId == null) return null

@@ -186,6 +186,7 @@ def _purge_users(where_users: str) -> int:
             # 第五轮审计 P0-2 新增，tool_confirmation.user_id 有 user.id 的外键，同理先删。
             f"DELETE FROM automation_work WHERE user_id IN {inc}",
             f"DELETE FROM work_item WHERE user_id IN {inc}",
+            f"DELETE FROM agent_handoff WHERE user_id IN {inc}",
             f"DELETE FROM notification WHERE user_id IN {inc}",
             f"DELETE FROM notification_preference WHERE user_id IN {inc}",
             f"DELETE FROM tool_confirmation WHERE user_id IN {inc}",

@@ -128,7 +128,7 @@ def delete_user(db, user_id: int, operator_id: int) -> Dict:
     #    都外键引用 agent.id，必须在删 Agent 之前先清掉，顺序反了会在下面 agent_service.delete()
     #    里报 FK 约束失败（这个坑真实踩过一次：写成放在 agent 循环后面，测试直接炸了）。
     db.execute(text("DELETE FROM automation_work WHERE user_id = :uid"), {"uid": user.id})
-    for table in ("work_item", "notification", "notification_preference"):
+    for table in ("work_item", "notification", "notification_preference", "agent_handoff"):
         db.execute(text(f"DELETE FROM {table} WHERE user_id = :uid"), {"uid": user.id})
     db.execute(text("DELETE FROM agent_api_connector WHERE user_id = :uid"), {"uid": user.id})
     db.execute(text(

@@ -233,6 +233,24 @@ class AutomationWork(Base):
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 
+class AgentHandoff(Base):
+    """中央 Agent 的转交记录：转给了谁、为什么（含"没转出去"的原因）、输入摘要、备选部门。"""
+    __tablename__ = "agent_handoff"
+    __table_args__ = (
+        Index("idx_agent_handoff_created", "created_at"),
+        Index("idx_agent_handoff_user", "user_id", "created_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_agent_handoff_user"), nullable=False)
+    central_agent_id = Column(Integer, nullable=True)
+    target_agent_id = Column(Integer, nullable=True)
+    reason = Column(String(24), nullable=False)       # routed / no_match / no_usable_agent
+    department_code = Column(String(20), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    message_excerpt = Column(String(500), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class WorkflowBaseline(Base):
     """管理员设定的各工作流"手工办理一次需要多少分钟"，用于和 AI 辅助后的实际耗时对比。"""
     __tablename__ = "workflow_baseline"
