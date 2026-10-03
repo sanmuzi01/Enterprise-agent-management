@@ -118,6 +118,15 @@ AUTOMATION_FILES = [
     "scripts/e2e_automation_workflows.py",
     "docs/agent-productivity-workflows.md",
     "enterprise-business-hub/src/main/java/com/enterprisehub/web/ApiExceptionHandler.java",
+    # 待办中心与主动提醒
+    "FasdtApi/work_center.py",
+    "service/work_item_service.py",
+    "service/notification_center.py",
+    "service/reminders/__init__.py",
+    "service/reminders/rules.py",
+    "migrations/versions/20261002_0003_work_items_notifications.py",
+    "frontend/src/views/TodoCenter.vue",
+    "frontend/src/components/NotificationBell.vue",
 ]
 
 YAML_CONFIGS = [
@@ -173,6 +182,9 @@ def check_widget_scheduler_wired() -> None:
     if "_run_widget_scheduler_tick" not in worker or "run_due_widgets" not in worker:
         raise SystemExit("service/background_worker.py 未接入组件定时调度")
     print("OK 组件调度已接入 background_worker")
+    if "_run_reminder_tick" not in worker or "run_due_rules" not in worker:
+        raise SystemExit("service/background_worker.py 未接入业务提醒规则")
+    print("OK 业务提醒规则已接入 background_worker")
 
 
 def check_automation_wired() -> None:

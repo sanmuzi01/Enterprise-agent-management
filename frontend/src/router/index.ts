@@ -50,6 +50,11 @@ const router = createRouter({
       component: () => import('../views/DepartmentWorkstation.vue'),
     },
     {
+      path: '/todos',
+      name: 'TodoCenter',
+      component: () => import('../views/TodoCenter.vue'),
+    },
+    {
       path: '/skills',
       name: 'Skills',
       component: () => import('../views/SkillList.vue'),
@@ -150,7 +155,7 @@ router.beforeEach((to, _from) => {
     if (!user?.is_admin) return '/agents'
   }
   // 管理员发布完部门 Agent 之后自己也要能进部门工作台看看效果，不能被强制弹回 /admin。
-  if (user?.is_admin && !to.path.startsWith('/admin') && to.path !== '/department') {
+  if (user?.is_admin && !to.path.startsWith('/admin') && !['/department', '/todos'].includes(to.path)) {
     return '/admin'
   }
   return true

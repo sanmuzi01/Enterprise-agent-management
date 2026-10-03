@@ -102,6 +102,37 @@
         </article>
       </div>
     </section>
+
+    <section class="mt-5 rounded-lg border border-slate-200 bg-white" data-testid="reminder-rules">
+      <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <p class="text-sm font-semibold text-slate-900">业务提醒规则</p>
+        <p class="text-xs text-slate-400">由后台 Worker 定时运行；连续失败 3 次会通知企业管理员</p>
+      </div>
+      <p v-if="reminderError" class="px-4 py-2 text-xs text-red-600">{{ reminderError }}</p>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[640px] text-left text-sm">
+          <thead class="bg-slate-50 text-xs text-slate-500">
+            <tr><th class="px-4 py-2 font-medium">规则</th><th class="px-4 py-2 font-medium">上次运行</th><th class="px-4 py-2 font-medium">结果</th><th class="px-4 py-2 font-medium">下次运行</th><th class="px-4 py-2 font-medium"></th></tr>
+          </thead>
+          <tbody class="divide-y divide-slate-100">
+            <tr v-for="r in reminderRules" :key="r.rule">
+              <td class="px-4 py-2.5"><p class="font-medium text-slate-800">{{ r.label }}</p><p class="text-xs text-slate-500">{{ r.description }} · 每 {{ r.interval_minutes }} 分钟</p></td>
+              <td class="px-4 py-2.5 text-xs text-slate-600">{{ fmt(r.last_finished_at) }}</td>
+              <td class="px-4 py-2.5 text-xs">
+                <span v-if="r.last_status === 'ok'" class="text-emerald-700">正常 · 新增 {{ r.last_created }} · 自动关闭 {{ r.last_resolved }}</span>
+                <span v-else-if="r.last_status === 'failed'" class="text-red-600" :title="r.last_error || ''">失败（连续 {{ r.consecutive_failures }} 次）：{{ r.last_error }}</span>
+                <span v-else class="text-slate-400">尚未运行</span>
+              </td>
+              <td class="px-4 py-2.5 text-xs text-slate-600">{{ fmt(r.next_run_at) }}</td>
+              <td class="px-4 py-2.5 text-right">
+                <button class="rounded border border-slate-200 px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  :disabled="runningRule === r.rule" @click="runRule(r.rule)">{{ runningRule === r.rule ? '运行中…' : '立即运行' }}</button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
   </div>
 </template>
 
@@ -110,6 +141,7 @@ import { computed, onMounted, ref } from 'vue'
 import { AlertTriangle, CheckCircle2, Database, RefreshCcw, Server, ShieldCheck, Workflow } from 'lucide-vue-next'
 import { getDiagnose, type HealthStatus } from '../../api/system'
 import { getErrorMessage } from '../../utils/request'
+import { getReminderStatus, runReminder, type ReminderRuleStatus } from '../../api/workCenter'
 
 const health = ref<HealthStatus | null>(null)
 const loading = ref(false)
@@ -141,5 +173,21 @@ const loadHealth = async () => {
   }
 }
 
-onMounted(loadHealth)
+const reminderRules = ref<ReminderRuleStatus[]>([])
+const reminderError = ref('')
+const runningRule = ref('')
+const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString('zh-CN') : '—')
+const loadReminders = async () => {
+  try { reminderRules.value = await getReminderStatus() } catch (e) { reminderError.value = getErrorMessage(e, '提醒规则状态加载失败') }
+}
+const runRule = async (rule: string) => {
+  runningRule.value = rule; reminderError.value = ''
+  try {
+    const result = await runReminder(rule)
+    if (result.status !== 'ok') reminderError.value = result.error || '运行失败'
+    await loadReminders()
+  } catch (e) { reminderError.value = getErrorMessage(e, '运行失败') } finally { runningRule.value = '' }
+}
+
+onMounted(() => { void loadHealth(); void loadReminders() })
 </script>

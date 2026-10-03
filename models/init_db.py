@@ -972,6 +972,76 @@ class NotificationChannel(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class WorkItem(Base):
+    """统一待办：提醒规则生成的、AI 工作成果里的后续事项、以及用户自己记的待办。
+    source_key 在同一负责人下唯一，规则重复运行不会重复创建；条件不再成立时由规则自动关闭。"""
+    __tablename__ = "work_item"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_key", name="uq_work_item_source"),
+        Index("idx_work_item_owner_status", "user_id", "status", "due_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_work_item_user"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_work_item_team"), nullable=True)
+    source_type = Column(String(30), nullable=False)        # reminder / automation / manual
+    source_key = Column(String(120), nullable=False)
+    rule = Column(String(40), nullable=True)                # 生成它的提醒规则
+    title = Column(String(200), nullable=False)
+    detail = Column(String(500), nullable=True)
+    link = Column(String(200), nullable=True)
+    priority = Column(String(10), nullable=False, default="normal")  # low/normal/high
+    status = Column(String(12), nullable=False, default="open")      # open/done/dismissed
+    due_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String(12), nullable=True)         # user / rule
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class Notification(Base):
+    """站内通知。dedupe_key 在同一用户下唯一，同一件事只通知一次。"""
+    __tablename__ = "notification"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_notification_dedupe"),
+        Index("idx_notification_user_read", "user_id", "read_at", "created_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_notification_user"), nullable=False)
+    category = Column(String(30), nullable=False)
+    title = Column(String(200), nullable=False)
+    body = Column(String(500), nullable=True)
+    link = Column(String(200), nullable=True)
+    dedupe_key = Column(String(160), nullable=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class NotificationPreference(Base):
+    """通知偏好：静音的类别（不再产生站内通知和外部推送）、免打扰时段（只影响外部推送）。"""
+    __tablename__ = "notification_preference"
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_notification_pref_user"), primary_key=True)
+    muted_categories = Column(Text, nullable=False, default="[]")
+    quiet_start = Column(String(5), nullable=True)   # "22:00"（北京时间）
+    quiet_end = Column(String(5), nullable=True)     # "08:00"
+    push_external = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ReminderRun(Base):
+    """每条提醒规则的运行租约与健康状态：多个 Worker 同时运行时只有拿到租约的那个执行。"""
+    __tablename__ = "reminder_run"
+    rule = Column(String(40), primary_key=True)
+    lease_until = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    last_started_at = Column(DateTime, nullable=True)
+    last_finished_at = Column(DateTime, nullable=True)
+    last_status = Column(String(12), nullable=True)   # ok / failed
+    last_error = Column(String(500), nullable=True)
+    last_created = Column(Integer, nullable=False, default=0)
+    last_resolved = Column(Integer, nullable=False, default=0)
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+
+
 class AgentPipeline(Base):
     """Agent 流水线：把多个 Agent 串成一条固定顺序的处理链——上一步的回答自动作为
 

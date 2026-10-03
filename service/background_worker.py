@@ -99,6 +99,26 @@ def _run_widget_scheduler_tick() -> None:
         logger.warning(f"组件调度执行失败: {exc}")
 
 
+def _run_reminder_tick() -> None:
+    """业务提醒规则（审批等待、客户未跟进、缺发票、待办到期、每周摘要）。默认开启，
+    REMINDERS_ENABLED=0 关闭。每条规则有自己的间隔和租约，多个 Worker 同时运行也只执行一次。"""
+    if os.getenv("REMINDERS_ENABLED", "1") == "0":
+        return
+    try:
+        from models.async_db import AsyncSessionLocal
+        from service.reminders import run_due_rules
+
+        async def _tick():
+            async with AsyncSessionLocal() as db:
+                return await run_due_rules(db)
+
+        results = _get_widget_loop().run_until_complete(_tick())
+        if results:
+            logger.info(f"提醒规则: {results}")
+    except Exception as exc:  # noqa: BLE001 - 提醒失败不能拖垮任务 Worker
+        logger.warning(f"提醒规则执行失败: {exc}")
+
+
 def run_forever() -> None:
     """持续运行 Worker。
 
@@ -108,6 +128,7 @@ def run_forever() -> None:
     bootstrap_database()
     poll_seconds = _env_float("TASK_WORKER_POLL_SECONDS", 2.0)
     widget_poll_seconds = _env_float("WIDGET_SCHEDULER_POLL_SECONDS", 60.0)
+    reminder_poll_seconds = _env_float("REMINDER_POLL_SECONDS", 60.0)
 
     from service.widgets.scheduler import scheduler_enabled
 
@@ -116,6 +137,7 @@ def run_forever() -> None:
         f"组件调度={'开启' if scheduler_enabled() else '关闭'}（每 {widget_poll_seconds:g}s 一轮）"
     )
     last_widget_tick = 0.0
+    last_reminder_tick = 0.0
     try:
         while True:
             handled = run_once()
@@ -123,6 +145,9 @@ def run_forever() -> None:
             if now - last_widget_tick >= widget_poll_seconds:
                 _run_widget_scheduler_tick()
                 last_widget_tick = now
+            if now - last_reminder_tick >= reminder_poll_seconds:
+                _run_reminder_tick()
+                last_reminder_tick = now
             if not handled:
                 time.sleep(poll_seconds)
     finally:

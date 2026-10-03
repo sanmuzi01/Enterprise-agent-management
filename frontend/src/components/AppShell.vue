@@ -12,6 +12,7 @@
           <Menu :size="20" :stroke-width="1.8" />
         </button>
         <p class="min-w-0 flex-1 truncate text-[16px] font-semibold tracking-[-0.016em]">{{ mobileTitle }}</p>
+        <NotificationBell />
         <ThemeToggle />
       </header>
       <Transition name="fade">
@@ -42,6 +43,8 @@
           >
             <component :is="item.icon" :size="18" :stroke-width="1.7" :class="iconClass(item.active)" />
             <span v-if="!rail" class="truncate">{{ item.label }}</span>
+            <span v-if="item.badge" :class="['rounded-full bg-red-500 px-1.5 text-[10px] font-semibold leading-4 text-white', rail ? 'absolute ml-5 -mt-5' : 'ml-auto']"
+              :aria-label="`${item.badge} 项逾期或今天到期`">{{ item.badge > 99 ? '99+' : item.badge }}</span>
           </RouterLink>
         </nav>
 
@@ -86,7 +89,8 @@
           </RouterLink>
         </nav>
 
-        <div v-if="rail" class="mt-auto flex justify-center pb-2">
+        <div v-if="rail" class="mt-auto flex flex-col items-center gap-1 pb-2">
+          <NotificationBell placement="up" />
           <ThemeToggle />
         </div>
         <div :class="[rail ? 'mt-1' : 'mt-auto', 'flex items-center gap-2.5 border-t border-black/[.08] pt-3', rail ? 'justify-center' : 'px-2']">
@@ -100,6 +104,7 @@
             <p class="truncate text-[13px] font-semibold tracking-[-0.008em]">{{ userStore.user?.name || '当前用户' }}</p>
             <p class="text-[12px] text-slate-500">个人账号</p>
           </div>
+          <NotificationBell v-if="!rail" placement="up" />
           <ThemeToggle v-if="!rail" />
           <button
             v-if="!rail"
@@ -124,10 +129,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { Building2, ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, LogOut, Menu, MessageSquare, Settings, Sparkles, Workflow, Zap } from 'lucide-vue-next'
+import { Building2, ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, ListTodo, LogOut, Menu, MessageSquare, Settings, Sparkles, Workflow, Zap } from 'lucide-vue-next'
 import { useUserStore } from '../stores/user'
 import { useAgentSessionStore } from '../stores/agentSession'
 import ThemeToggle from './ThemeToggle.vue'
+import NotificationBell from './NotificationBell.vue'
+import { useWorkCenterStore } from '../stores/workCenter'
 import IcpFooter from './IcpFooter.vue'
 import { useOnboardingStore } from '../stores/onboarding'
 
@@ -135,6 +142,10 @@ const route = useRoute()
 const userStore = useUserStore()
 const agentSession = useAgentSessionStore()
 const onboarding = useOnboardingStore()
+const workCenter = useWorkCenterStore()
+onMounted(() => workCenter.startPolling())
+onBeforeUnmount(() => workCenter.stopPolling())
+watch(() => route.fullPath, () => { void workCenter.refresh() })
 
 const openGuide = () => {
   mobileOpen.value = false
@@ -152,9 +163,10 @@ const activeAgentId = computed(() => {
 })
 
 const primaryItems = computed(() => [
-  { label: '工作台', path: '/agents', icon: Layers3, active: route.path === '/agents' },
-  { label: '部门工作台', path: '/department', icon: Building2, active: route.path.startsWith('/department') },
-  { label: '知识库中心', path: '/knowledge-spaces', icon: Library, active: route.path.startsWith('/knowledge-spaces') },
+  { label: '工作台', path: '/agents', icon: Layers3, active: route.path === '/agents', badge: 0 },
+  { label: '部门工作台', path: '/department', icon: Building2, active: route.path.startsWith('/department'), badge: 0 },
+  { label: '我的待办', path: '/todos', icon: ListTodo, active: route.path.startsWith('/todos'), badge: workCenter.urgent },
+  { label: '知识库中心', path: '/knowledge-spaces', icon: Library, active: route.path.startsWith('/knowledge-spaces'), badge: 0 },
 ])
 
 const moreItems = computed(() => [

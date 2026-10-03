@@ -1,0 +1,189 @@
+"""具体提醒规则。每条规则计算"此刻应存在的提醒"，由 sync_reminders 同步为待办与通知；
+条件不再成立的待办会被自动关闭（已审批、已跟进、已补发票）。
+
+调用 Java 业务系统时，用"本来就有权看到这些数据的人"的身份签名（部门负责人看本部门待审批、
+部门成员看本部门客户、员工看自己的报销单），权限标志如实从数据库计算，不做任何提权。
+"""
+from datetime import timedelta
+from typing import List, Tuple
+
+from sqlalchemy import func, select
+
+from models.init_db import AutomationWork, User, WorkItem
+from service import notification_center
+from service.reminders.base import (Reminder, ReminderRule, active_teams, approvers, beijing_day_start, env_int,
+                                    parse_instant, sync_reminders, team_members)
+from utils.timeutil import utcnow
+
+LEAVE_TYPES = {"annual": "年假", "sick": "病假", "personal": "事假"}
+
+
+async def user_names(db, ids):
+    ids = [i for i in ids if i]
+    if not ids:
+        return {}
+    return dict((await db.execute(select(User.id, User.name).where(User.id.in_(ids)))).all())
+
+
+# ---------------- 审批等待超时 ----------------
+
+async def _pending_for_team(db, team, approver_id):
+    from service import department_workspace_service as oa, finance_workspace_service as fin
+    from service import procurement_workspace_service as proc
+    results = []
+    for kind, loader in (("leave", oa.list_team_pending_leave_requests_async),
+                         ("purchase", proc.list_team_pending_purchase_requests_async),
+                         ("expense", fin.list_team_pending_expense_claims_async)):
+        results.extend((kind, item) for item in await loader(db, approver_id, team.id))
+    return results
+
+
+def _approval_reminder(kind, item, team, approver_id, now, wait_hours, names):
+    submitted = parse_instant(item.get("submittedAt") or item.get("createdAt"))
+    if submitted is None:
+        return None
+    waited = (now - submitted).total_seconds() / 3600
+    if waited < wait_hours:
+        return None
+    applicant = item.get("applicantUserId") or item.get("requesterUserId")
+    if applicant == approver_id:
+        return None  # 不能审批自己提交的单据
+    priority, due = ("high" if waited >= wait_hours * 3 else "normal"), submitted + timedelta(hours=wait_hours * 3)
+    if kind == "leave":
+        name = f"请假单 #{item['id']}"
+        detail = (f"{LEAVE_TYPES.get(item.get('leaveTypeCode'), item.get('leaveTypeCode'))} "
+                  f"{item['startDate']} 至 {item['endDate']}（{item['days']:g} 天）")
+        start = beijing_day_start(item["startDate"])
+        due = min(due, start)
+        if start - now <= timedelta(days=2):
+            priority = "high"
+            detail += "，即将开始"
+    elif kind == "purchase":
+        name, detail = f"采购申请 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
+    else:
+        name, detail = f"报销单 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
+    return Reminder(user_id=approver_id, key=f"approval:{kind}:{item['id']}", team_id=team.id,
+                    title=f"{team.name}：{name} 已等待审批 {int(waited)} 小时",
+                    detail=f"申请人 {names.get(applicant, f'#{applicant}')}，{detail}",
+                    priority=priority, due_at=due)
+
+
+async def run_approval_waiting(db) -> Tuple[int, int]:
+    wait_hours, now, reminders = env_int("REMIND_APPROVAL_WAIT_HOURS", 24), utcnow(), []
+    for team in await active_teams(db):
+        team_approvers = await approvers(db, team)
+        if not team_approvers:
+            continue
+        pending = await _pending_for_team(db, team, team_approvers[0])
+        names = await user_names(db, {i.get("applicantUserId") or i.get("requesterUserId") for _, i in pending})
+        for approver_id in team_approvers:
+            for kind, item in pending:
+                reminder = _approval_reminder(kind, item, team, approver_id, now, wait_hours, names)
+                if reminder:
+                    reminders.append(reminder)
+    return await sync_reminders(db, "approval_waiting", "approval", reminders)
+
+
+# ---------------- 客户长期未跟进 ----------------
+
+async def run_stale_customers(db) -> Tuple[int, int]:
+    from service import crm_workspace_service as crm
+    stale_days, now, reminders = env_int("REMIND_CUSTOMER_STALE_DAYS", 14), utcnow(), []
+    for team in await active_teams(db, "sales"):
+        members = await team_members(db, team.id)
+        if not members:
+            continue
+        admins = await team_members(db, team.id, "admin") or members[:1]
+        for customer in await crm.list_team_customers_async(db, members[0], team.id):
+            summary = await crm.get_customer_summary_async(db, members[0], team.id, customer["id"])
+            followups = summary.get("recentFollowUps") or []
+            last = parse_instant(followups[0]["createdAt"]) if followups else parse_instant(customer.get("createdAt"))
+            if last is None or now - last < timedelta(days=stale_days):
+                continue
+            days = (now - last).days
+            owner = customer["ownerUserId"] if customer["ownerUserId"] in members else admins[0]
+            reminders.append(Reminder(
+                user_id=owner, key=f"stale-customer:{customer['id']}", team_id=team.id,
+                title=f"客户「{customer['name']}」已 {days} 天没有跟进",
+                detail="上次跟进：" + (last.date().isoformat() if followups else "从未跟进（按建档时间计算）"),
+                priority="high" if days >= stale_days * 2 else "normal", due_at=last + timedelta(days=stale_days)))
+    return await sync_reminders(db, "stale_customer", "crm_followup", reminders)
+
+
+# ---------------- 报销缺发票 ----------------
+
+async def run_missing_invoices(db) -> Tuple[int, int]:
+    from service import finance_workspace_service as fin
+    reminders, seen = [], set()
+    for team in await active_teams(db):
+        for user_id in await team_members(db, team.id):
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            for claim in await fin.list_my_expense_claims_async(user_id):
+                if claim["status"] not in ("DRAFT", "SUBMITTED"):
+                    continue
+                missing = [l for l in claim.get("lines") or [] if not l.get("invoiceNo")]
+                if missing:
+                    reminders.append(Reminder(
+                        user_id=user_id, key=f"expense-invoice:{claim['id']}", team_id=claim.get("teamId"),
+                        title=f"报销单 #{claim['id']} 有 {len(missing)} 条费用缺发票",
+                        detail="、".join(f"{l['description']} ¥{float(l['amount']):,.2f}" for l in missing[:5])
+                               + "；审批前请补充票据"))
+    return await sync_reminders(db, "missing_invoice", "expense_invoice", reminders)
+
+
+# ---------------- 待办到期（AI 成果后续事项、手工待办） ----------------
+
+async def run_task_due(db) -> Tuple[int, int]:
+    """不生成新待办，只给 24 小时内到期或已逾期的开放待办发一次通知。"""
+    now, sent = utcnow(), 0
+    rows = (await db.execute(select(WorkItem).where(
+        WorkItem.status == "open", WorkItem.source_type.in_(("automation", "manual")),
+        WorkItem.due_at.is_not(None), WorkItem.due_at <= now + timedelta(hours=24)))).scalars().all()
+    for item in rows:
+        overdue = item.due_at < now
+        title = f"待办{'已逾期' if overdue else '即将到期'}：{item.title}"
+        sent += int(await notification_center.notify(
+            db, item.user_id, "task_due", title, body=item.detail, link="/todos",
+            dedupe_key=f"task-due:{item.id}:{'overdue' if overdue else 'soon'}:{item.due_at:%Y%m%d}"))
+    return sent, 0
+
+
+# ---------------- 每周部门工作摘要 ----------------
+
+async def run_weekly_digest(db) -> Tuple[int, int]:
+    now, sent = utcnow(), 0
+    week = (now + timedelta(hours=8)).strftime("%G-W%V")
+    since = now - timedelta(days=7)
+    for team in await active_teams(db):
+        rows = (await db.execute(select(AutomationWork.kind, AutomationWork.status, func.count()).where(
+            AutomationWork.team_id == team.id, AutomationWork.created_at >= since
+        ).group_by(AutomationWork.kind, AutomationWork.status))).all()
+        processed = sum(r[2] for r in rows)
+        applied = sum(r[2] for r in rows if r[1] == "applied")
+        for admin_id in await team_members(db, team.id, "admin"):
+            pending = (await db.execute(select(func.count()).where(
+                WorkItem.user_id == admin_id, WorkItem.status == "open", WorkItem.team_id == team.id,
+                WorkItem.rule == "approval_waiting"))).scalar() or 0
+            body = (f"近 7 天部门 AI 材料整理 {processed} 份，保存为业务草稿 {applied} 份；"
+                    f"当前等待你审批超过时限的单据 {pending} 件。")
+            sent += int(await notification_center.notify(
+                db, admin_id, "digest", f"{team.name} 本周工作摘要", body=body, link="/department",
+                dedupe_key=f"digest:{team.id}:{week}"))
+    return sent, 0
+
+
+RULES: List[ReminderRule] = [
+    ReminderRule("approval_waiting", "审批等待超时", "approval", 30, run_approval_waiting,
+                 "部门负责人：请假、采购、报销提交后超过时限仍未审批（请假临近开始升为高优先级）"),
+    ReminderRule("stale_customer", "客户长期未跟进", "crm_followup", 360, run_stale_customers,
+                 "销售：客户超过指定天数没有跟进记录"),
+    ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,
+                 "员工：未完成的报销单中有费用缺发票号"),
+    ReminderRule("task_due", "待办到期", "task_due", 15, run_task_due,
+                 "所有人：24 小时内到期或已逾期的待办"),
+    ReminderRule("weekly_digest", "每周工作摘要", "digest", 60 * 24, run_weekly_digest,
+                 "部门负责人：每周一份部门 AI 整理与审批积压摘要"),
+]
+RULES_BY_NAME = {rule.name: rule for rule in RULES}

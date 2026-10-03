@@ -225,7 +225,24 @@ async def apply_work(db, user_id, work_id, proposal):
         work.error_message = "业务服务未确认保存结果；可用同一内容重试，不会主动生成新的操作编号"
     work.updated_at = utcnow()
     await db.commit()
+    if work.status == "applied":
+        await _publish_followups(db, work)
     return payload(work)
+
+
+async def _publish_followups(db, work):
+    """把成果里的后续事项放进统一待办中心（幂等：同一成果同一条只建一次）。"""
+    workflow = get_workflow(work.kind)
+    if not workflow.followups:
+        return
+    from service import work_item_service
+    fu = workflow.followups
+    for index, task in enumerate(json.loads(work.accepted_json).get(fu["key"]) or []):
+        await work_item_service.upsert(
+            db, work.user_id, "automation", f"automation:{work.id}:{index}", title=task[fu["title"]],
+            team_id=work.team_id, detail=f"来自{workflow.name}（{workflow.draft_name}草稿 #"
+                                         f"{(json.loads(work.business_result_json or '{}') or {}).get('id', '')}）",
+            link="/department", due_at=work_item_service.parse_due(task.get(fu["due"])))
 
 
 async def recheck(db, user_id, work_id, proposal):
@@ -241,7 +258,7 @@ async def recheck(db, user_id, work_id, proposal):
     return payload(work)
 
 
-async def complete_task(db, user_id, work_id, index, done):
+async def complete_task(db, user_id, work_id, index, done, sync_work_item=True):
     work = await get_work(db, user_id, work_id)
     followups = get_workflow(work.kind).followups
     if followups is None:
@@ -261,5 +278,12 @@ async def complete_task(db, user_id, work_id, index, done):
         await db.rollback()
         raise Conflict("待办状态已变化，请刷新")
     await db.commit()
+    if sync_work_item:
+        from models.init_db import WorkItem
+        await db.execute(update(WorkItem).where(
+            WorkItem.user_id == user_id, WorkItem.source_key == f"automation:{work.id}:{index}"
+        ).values(status="done" if done else "open", resolved_by="user" if done else None,
+                 completed_at=utcnow() if done else None))
+        await db.commit()
     await db.refresh(work)
     return payload(work)

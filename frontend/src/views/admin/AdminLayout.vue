@@ -61,6 +61,7 @@
           <div class="flex items-center gap-2.5 text-[13px] text-slate-500">
             <span class="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-600">管理员</span>
             <span class="hidden sm:inline">{{ userStore.user?.name }}</span>
+            <NotificationBell />
             <ThemeToggle />
           </div>
         </header>
@@ -78,7 +79,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink, RouterView } from 'vue-router'
 import {
   LayoutDashboard, Users, ListChecks, BarChart3, ScrollText,
@@ -86,10 +87,15 @@ import {
 } from 'lucide-vue-next'
 import { useUserStore } from '../../stores/user'
 import ThemeToggle from '../../components/ThemeToggle.vue'
+import NotificationBell from '../../components/NotificationBell.vue'
+import { useWorkCenterStore } from '../../stores/workCenter'
 import IcpFooter from '../../components/IcpFooter.vue'
 
 const route = useRoute()
 const userStore = useUserStore()
+const workCenter = useWorkCenterStore()
+onMounted(() => workCenter.startPolling())
+onBeforeUnmount(() => workCenter.stopPolling())
 
 const navOpen = ref(false)
 watch(() => route.fullPath, () => { navOpen.value = false })
