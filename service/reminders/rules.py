@@ -30,11 +30,13 @@ async def user_names(db, ids):
 
 async def _pending_for_team(db, team, approver_id):
     from service import department_workspace_service as oa, finance_workspace_service as fin
+    from service import it_service as it
     from service import procurement_workspace_service as proc
     results = []
     for kind, loader in (("leave", oa.list_team_pending_leave_requests_async),
                          ("purchase", proc.list_team_pending_purchase_requests_async),
-                         ("expense", fin.list_team_pending_expense_claims_async)):
+                         ("expense", fin.list_team_pending_expense_claims_async),
+                         ("ticket", it.list_team_pending_async)):
         results.extend((kind, item) for item in await loader(db, approver_id, team.id))
     return results
 
@@ -61,6 +63,8 @@ def _approval_reminder(kind, item, team, approver_id, now, wait_hours, names):
             detail += "，即将开始"
     elif kind == "purchase":
         name, detail = f"采购申请 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
+    elif kind == "ticket":
+        name, detail = f"IT 工单 #{item['id']}", f"{item.get('categoryLabel') or item['category']}「{item['title']}」"
     else:
         name, detail = f"报销单 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
     return Reminder(user_id=approver_id, key=f"approval:{kind}:{item['id']}", team_id=team.id,
@@ -174,6 +178,67 @@ async def run_pending_vouchers(db) -> Tuple[int, int]:
     return await sync_reminders(db, "pending_voucher", "voucher_pending", reminders)
 
 
+# ---------------- IT 工单：超时与待接单（IT 部门） ----------------
+
+async def run_it_sla(db) -> Tuple[int, int]:
+    """IT 部门成员：有工单已超过处理时限，或还没人接单。接单/解决后自动关闭。"""
+    from service import it_service as it
+    reminders = []
+    for team in await active_teams(db, "it"):
+        members = await team_members(db, team.id)
+        overdue = unassigned = None
+        for caller in members:   # 用第一个企业身份仍有效的成员读取
+            try:
+                overdue = await it.desk_list_tickets_async(db, caller, team.id, overdue=True, limit=200)
+                unassigned = await it.desk_list_tickets_async(db, caller, team.id, status="OPEN", assignee="unassigned", limit=200)
+                break
+            except PermissionDenied:
+                continue
+        if overdue is None or (not overdue and not unassigned):
+            continue
+        at_risk = [t for t in unassigned if t.get("slaStatus") == "AT_RISK"]
+        parts = []
+        if overdue:
+            parts.append(f"{len(overdue)} 张工单已超过处理时限")
+        if unassigned:
+            parts.append(f"{len(unassigned)} 张待接单" + (f"（{len(at_risk)} 张即将超时）" if at_risk else ""))
+        first = min([t for t in overdue + unassigned if t.get("slaDueAt")], key=lambda t: t["slaDueAt"], default=None)
+        for user_id in members:
+            reminders.append(Reminder(
+                user_id=user_id, key=f"it-sla:{team.id}", team_id=team.id, title=f"{team.name}：" + "，".join(parts),
+                detail=(f"最急的是 #{first['id']}「{first['title']}」" if first else None),
+                priority="high" if overdue else "normal", due_at=parse_instant(first["slaDueAt"]) if first else None,
+                notify=bool(overdue or at_risk)))
+    return await sync_reminders(db, "it_sla", "it_ticket", reminders)
+
+
+# ---------------- IT 工单：等待你补充 / 请确认已解决（申请人） ----------------
+
+async def run_ticket_followup(db) -> Tuple[int, int]:
+    from service import it_service as it
+    reminders, seen, now = [], set(), utcnow()
+    confirm_after = timedelta(hours=env_int("REMIND_TICKET_CONFIRM_HOURS", 48))
+    for team in await active_teams(db):
+        for user_id in await team_members(db, team.id):
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            for ticket in await it.list_my_tickets_async(db, user_id):
+                if ticket["status"] == "WAITING_USER":
+                    reminders.append(Reminder(
+                        user_id=user_id, key=f"ticket-waiting:{ticket['id']}", team_id=ticket.get("teamId"),
+                        title=f"IT 工单 #{ticket['id']}「{ticket['title']}」在等你补充信息",
+                        detail="IT 需要更多信息才能继续处理，请在工单里回复", priority="high"))
+                elif ticket["status"] == "RESOLVED":
+                    updated = parse_instant(ticket.get("updatedAt"))
+                    if updated and now - updated >= confirm_after:
+                        reminders.append(Reminder(
+                            user_id=user_id, key=f"ticket-confirm:{ticket['id']}", team_id=ticket.get("teamId"),
+                            title=f"IT 工单 #{ticket['id']}「{ticket['title']}」已解决，请确认",
+                            detail="问题解决了请确认关闭；没有解决可以重新打开"))
+    return await sync_reminders(db, "ticket_followup", "ticket_followup", reminders)
+
+
 # ---------------- 待办到期（AI 成果后续事项、手工待办） ----------------
 
 async def run_task_due(db) -> Tuple[int, int]:
@@ -224,6 +289,10 @@ RULES: List[ReminderRule] = [
                  "员工：未完成的报销单中有费用缺发票号"),
     ReminderRule("pending_voucher", "记账凭证待核对", "voucher_pending", 120, run_pending_vouchers,
                  "财务：报销批准后生成的凭证草稿超过时限未核对入账，或有已批准报销单没有凭证"),
+    ReminderRule("it_sla", "IT 工单超时", "it_ticket", 30, run_it_sla,
+                 "IT 部门：工单超过处理时限，或还没人接单（接单/解决后自动关闭）"),
+    ReminderRule("ticket_followup", "工单待你处理", "ticket_followup", 120, run_ticket_followup,
+                 "申请人：IT 在等你补充信息，或已解决的工单超过 48 小时还没确认"),
     ReminderRule("task_due", "待办到期", "task_due", 15, run_task_due,
                  "所有人：24 小时内到期或已逾期的待办"),
     ReminderRule("weekly_digest", "每周工作摘要", "digest", 60 * 24, run_weekly_digest,

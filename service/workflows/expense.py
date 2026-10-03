@@ -89,7 +89,7 @@ WORKFLOW = WorkflowDefinition(
     source_label="粘贴费用明细、票据文字或导出的流水",
     example="10月1日出差高铁票260元，发票号G001；出租车48元，暂无发票。",
     hint="提取费用分类、金额与发票号，核对后生成报销草稿。",
-    preferred_for=frozenset({"finance", "it", None}),
+    preferred_for=frozenset({"finance", None}),
     check=_check, business_checks=_business_checks, order=10,
     baseline_minutes=15,
 )

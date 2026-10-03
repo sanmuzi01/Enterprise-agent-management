@@ -3,10 +3,10 @@ from typing import Dict, List, Optional
 
 from service.exceptions import InvalidInput
 from service.workflows.base import WorkflowDefinition, WriteRequest  # noqa: F401
-from service.workflows import crm, expense, leave, procurement
+from service.workflows import crm, expense, leave, procurement, ticket
 
 REGISTRY: Dict[str, WorkflowDefinition] = {}
-_BUILTIN = (expense, leave, procurement, crm)
+_BUILTIN = (expense, leave, procurement, crm, ticket)
 
 
 def register(workflow: WorkflowDefinition) -> WorkflowDefinition:

@@ -31,7 +31,7 @@ def _item_model(model, key):
 
 class DefinitionCompletenessTest(unittest.TestCase):
     def test_builtin_workflows_registered_in_order(self):
-        self.assertEqual([w.id for w in all_workflows()], ["expense", "leave", "procurement", "crm"])
+        self.assertEqual([w.id for w in all_workflows()], ["expense", "ticket", "leave", "procurement", "crm"])
 
     def test_every_form_field_exists_in_schema(self):
         for workflow in all_workflows():
@@ -66,13 +66,13 @@ class CatalogTest(unittest.TestCase):
         return [w["id"] for w in catalog(code)["workflows"] if w["available"]]
 
     def test_department_availability(self):
-        self.assertEqual(self.ids("sales"), ["expense", "leave", "crm"])
-        self.assertEqual(self.ids("procurement"), ["expense", "leave", "procurement"])
-        self.assertEqual(self.ids(None), ["expense", "leave"])
+        self.assertEqual(self.ids("sales"), ["expense", "ticket", "leave", "crm"])
+        self.assertEqual(self.ids("procurement"), ["expense", "ticket", "leave", "procurement"])
+        self.assertEqual(self.ids(None), ["expense", "ticket", "leave"])
 
     def test_default_follows_department(self):
         expected = {"sales": "crm", "procurement": "procurement", "hr": "leave", "finance": "expense",
-                    "it": "expense", None: "expense"}
+                    "it": "ticket", None: "expense"}
         for code, default in expected.items():
             with self.subTest(code=code):
                 self.assertEqual(catalog(code)["default_id"], default)

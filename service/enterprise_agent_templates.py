@@ -16,6 +16,10 @@ _GENERAL_TOOLS = ["get_leave_balance", "create_leave_draft", "submit_leave_reque
                   "get_team_pending_leave_requests", "get_expense_budget", "create_expense_draft",
                   "submit_expense_claim", "get_expense_status", "get_my_expense_claims",
                   "approve_expense_claim", "reject_expense_claim", "get_team_pending_expense_claims"]
+# 所有部门员工都能用的 IT 服务（自助排查、提工单、跟进、查名下设备）；IT 台工具只在 IT 模板里
+_TICKET_TOOLS = ["search_it_solutions", "create_it_ticket", "get_my_it_tickets", "get_it_ticket_status",
+                 "add_it_ticket_comment", "get_my_devices"]
+_GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS
 
 TEMPLATES = {
     "central": {
@@ -64,19 +68,21 @@ TEMPLATES = {
                   "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary"],
         "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "有哪些记账凭证待我核对", "汇总本月已入账的费用科目"],
     },
-    # IT 工单/账号权限/设备模块还没有业务闭环：先只给通用办公能力，并且不声明
-    # routing_keywords——中央 Agent 不能把 IT 故障转给一个办不了 IT 业务的助手。
     "it": {
         "id": "it", "name": "IT 服务助手", "agent_type": "department", "department_code": "it",
-        "description": "IT 部门的办公助手；IT 工单、账号权限与设备申请模块尚未上线，目前可办理请假与报销。",
-        "role": "你是 IT 部门的办公助手，协助部门成员办理请假和报销等日常事务。",
-        "task": "IT 工单、账号权限和设备申请的业务系统尚未接入，遇到这类请求时如实说明并建议走现有线下流程。请假与报销按业务系统规则办理。",
-        "tools": _GENERAL_TOOLS, "examples": ["查询我今年的年假余额", "帮我起草一份报销申请"],
+        "routing_keywords": ("故障", "工单", "密码", "账号", "权限", "打印机", "网络", "VPN", "电脑", "笔记本", "邮箱", "设备", "报修", "蓝屏"),
+        "description": "IT 工单（故障、账号、权限、设备申请）：自助排查建议、提交与跟进；IT 人员可查看队列、SLA 与设备台账。",
+        "role": "你是 IT 服务助手，协助员工先自助排查、再提交和跟进 IT 工单；协助 IT 人员了解工单队列、超时风险和设备台账；也可办理请假和报销。",
+        "task": ("员工遇到问题：先用 search_it_solutions 给自助排查步骤；仍要提交时复述类型、优先级、标题和描述，等用户确认后再 create_it_ticket。"
+                 "账号、权限、设备申请必须先由本部门负责人批准，如实告知。IT 人员询问队列时用 list_it_queue、get_it_ticket_detail、get_it_desk_summary、list_it_devices，"
+                 "指出超时和未指派的工单；接单、解决、批准、发放设备等决定你不能代办，必须由人在工作台里操作。"),
+        "tools": _GENERAL_TOOLS + ["list_it_queue", "get_it_ticket_detail", "get_it_desk_summary", "list_it_devices"],
+        "examples": ["打印机一直脱机怎么办", "帮我提交一个设备申请工单", "查看我的工单进度", "现在有哪些工单快超时了"],
     },
     # 没有配置专属业务类型的部门（Team.department_code 为空）使用的通用助手。
     "office": {
         "id": "office", "name": "部门办公助手", "agent_type": "department", "department_code": None,
-        "description": "请假、报销等各部门通用的办公事务。",
+        "description": "请假、报销、IT 工单等各部门通用的办公事务。",
         "role": "你是部门办公助手，协助部门成员办理请假和报销等日常事务。",
         "task": "请假先查余额再起草；报销先查部门预算再起草。提交前复述关键字段并等待用户确认；审批依据真实权限。",
         "tools": _GENERAL_TOOLS, "examples": ["查询我今年的年假余额", "帮我起草一份报销申请", "查询我的报销进度"],

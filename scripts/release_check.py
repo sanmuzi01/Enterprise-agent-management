@@ -142,6 +142,18 @@ AUTOMATION_FILES = [
     "scripts/e2e_finance_vouchers.py",
     "enterprise-business-hub/src/main/resources/db/migration/V6__finance_vouchers.sql",
     "enterprise-business-hub/src/main/java/com/enterprisehub/finance/VoucherService.java",
+    # IT 服务台
+    "FasdtApi/it_service.py",
+    "service/it_service.py",
+    "service/hub_gateway.py",
+    "service/workflows/ticket.py",
+    "service/tools/it_service.py",
+    "frontend/src/api/itService.ts",
+    "frontend/src/components/TicketModule.vue",
+    "frontend/src/components/ItDeskModule.vue",
+    "scripts/e2e_it_service.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V7__it_service_desk.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/it/ItTicketService.java",
 ]
 
 YAML_CONFIGS = [
@@ -210,6 +222,8 @@ def check_automation_wired() -> None:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
     if "app.include_router(finance_vouchers_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/finance/vouchers 路由")
+    if "app.include_router(it_service_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/it 路由")
     if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):
         raise SystemExit("前端未从工作流目录接口加载工作类型")
     sys.path.insert(0, str(ROOT))

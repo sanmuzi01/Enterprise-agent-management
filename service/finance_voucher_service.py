@@ -23,85 +23,33 @@ WRITE = ["finance.voucher.read", "finance.voucher.write"]
 RISK_LABELS = {"NONE": "无风险", "INFO": "有提示", "WARN": "需核对", "BLOCK": "不能入账"}
 
 
-def _translate_hub_error(exc: hub.EnterpriseHubError) -> AppError:
-    status = exc.status_code
-    if status == 400:
-        return InvalidInput(exc.detail)
-    if status == 403:
-        return PermissionDenied(exc.detail)
-    if status == 404:
-        return NotFound(exc.detail)
-    if status == 409:
-        return Conflict(exc.detail)
-    return UpstreamError(exc.detail)
+from service.hub_gateway import call_hub as _gateway_call, scoped_path as _scoped_path, translate_hub_error as _translate_hub_error  # noqa: E402
 
 
 async def staff_scope_async(db, user_id: int, team_id: int) -> List[int]:
     """校验调用者是财务部门人员，返回可见的部门 id 列表（同一企业的全部部门）。"""
-    team = (await db.execute(
-        text("SELECT t.id, t.organization_id, t.department_code FROM teams t "
-             "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
-             "WHERE t.id = :t AND t.status = 'active'"), {"t": team_id})).first()
-    if team is None:
-        raise PermissionDenied("部门不存在、已停用，或所在企业已停用")
-    if team.department_code != "finance":
-        raise PermissionDenied("记账凭证仅对财务部门开放，当前部门不是财务部门")
-    is_member = await is_team_member_of_team_async(db, user_id, team_id)
-    if not is_member and not await enterprise_access.is_org_admin_async(db, user_id):
-        raise PermissionDenied("不是该财务部门的有效成员，无法使用记账凭证")
-    rows = (await db.execute(text("SELECT id FROM teams WHERE organization_id = :o ORDER BY id"),
-                             {"o": team.organization_id})).all()
-    return [int(row[0]) for row in rows]
+    from service.department_access import department_staff_scope_async
+    return (await department_staff_scope_async(db, user_id, team_id, "finance", "记账凭证"))["scope"]
 
 
 def staff_scope(user_id: int, team_id: int) -> List[int]:
     """`staff_scope_async` 的同步版（Agent 工具用），规则一致；不满足时抛 PermissionDenied。"""
-    from models.enterprise_dao import is_team_member_of_team
-    from models.init_db import SessionLocal
-    db = SessionLocal()
-    try:
-        team = db.execute(
-            text("SELECT t.id, t.organization_id, t.department_code FROM teams t "
-                 "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
-                 "WHERE t.id = :t AND t.status = 'active'"), {"t": team_id}).first()
-        if team is None:
-            raise PermissionDenied("部门不存在、已停用，或所在企业已停用")
-        if team.department_code != "finance":
-            raise PermissionDenied("记账凭证仅对财务部门开放，当前部门不是财务部门")
-        if not is_team_member_of_team(db, user_id, team_id) and not enterprise_access.is_org_admin(db, user_id):
-            raise PermissionDenied("不是该财务部门的有效成员，无法使用记账凭证")
-        rows = db.execute(text("SELECT id FROM teams WHERE organization_id = :o ORDER BY id"),
-                          {"o": team.organization_id}).all()
-        return [int(row[0]) for row in rows]
-    finally:
-        db.close()
+    from service.department_access import department_staff_scope
+    return department_staff_scope(user_id, team_id, "finance", "记账凭证")["scope"]
 
 
 def _path(base: str, scope: List[int], **params: Any) -> str:
-    query = {"scopeTeamIds": ",".join(str(t) for t in scope)}
-    query.update({k: v for k, v in params.items() if v is not None})
-    return f"{base}?{urlencode(query, safe=',')}"
+    return _scoped_path(base, scope, **params)
 
 
 async def _call(method: str, path: str, user_id: int, team_id: int, scopes: List[str], operation: str,
                 json_body: Optional[Dict[str, Any]] = None, write: bool = False) -> Any:
-    try:
-        return await asyncio.to_thread(
-            hub.call, method, path, user_id, team_id, scopes, operation,
-            json_body=json_body, idempotency_key=str(uuid.uuid4()) if write else None,
-        )
-    except hub.EnterpriseHubError as exc:
-        raise _translate_hub_error(exc)
+    return await _gateway_call(method, path, user_id, team_id, scopes, operation, json_body, write)
 
 
 async def _names(db, table: str, ids: List[int], column: str = "name") -> Dict[int, str]:
-    unique = sorted({int(i) for i in ids if i is not None})
-    if not unique:
-        return {}
-    marks = ",".join(f":i{n}" for n in range(len(unique)))
-    rows = (await db.execute(text(f"SELECT id, {column} FROM {table} WHERE id IN ({marks})"),
-                             {f"i{n}": v for n, v in enumerate(unique)})).all()
-    return {int(row[0]): row[1] for row in rows}
+    from service.name_lookup import names
+    return await names(db, table, ids, column)
 
 
 async def _enrich(db, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

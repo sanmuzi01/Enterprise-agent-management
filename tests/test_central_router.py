@@ -32,10 +32,15 @@ class MatchDepartmentTest(unittest.TestCase):
         # 里程碑4新增了真实的财务报销闭环 + 模板，finance 现在也有 routing_keywords 了。
         self.assertEqual(central_router.match_department("这笔报销预算超了吗"), "finance")
 
-    def test_department_without_template_has_no_keywords(self):
-        # it 目前是唯一一个只在 VALID_DEPARTMENT_CODES 里占位、没有模板、没有
-        # routing_keywords 的部门代码——这是能力目录化改造要验证的行为。
-        self.assertIsNone(central_router.match_department("我的账号登不上去，报故障"))
+    def test_it_service_requests_route_to_it(self):
+        # IT 工单、设备台账上线后，IT 部门也有了路由关键词；原来“没有模板的部门没有关键词”的占位行为不再成立。
+        for message in ("我的账号登不上去，报故障", "打印机一直脱机", "帮我申请一台笔记本电脑", "VPN 连不上，帮我提个工单"):
+            with self.subTest(message=message):
+                self.assertEqual(central_router.match_department(message), "it")
+
+    def test_it_keywords_do_not_steal_other_departments(self):
+        self.assertEqual(central_router.match_department("这笔报销预算超了吗"), "finance")
+        self.assertEqual(central_router.match_department("我要请假三天"), "hr")
 
     def test_no_match_returns_none(self):
         self.assertIsNone(central_router.match_department("今天天气怎么样"))

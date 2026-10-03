@@ -198,17 +198,23 @@ class WorkCenterTest(unittest.TestCase):
                       "submittedAt": iso(now - timedelta(hours=2))}]
         expenses = [{"id": 701, "applicantUserId": self.admin["id"], "totalAmount": 50,
                      "submittedAt": iso(now - timedelta(hours=40))}]
+        tickets = [{"id": 801, "requesterUserId": self.member["id"], "category": "DEVICE", "categoryLabel": "设备申请",
+                    "title": "申请显示器", "createdAt": iso(now - timedelta(hours=26))}]
 
         def loader(data):
             return AsyncMock(side_effect=lambda db, uid, team_id: data if team_id == self.team else [])
         with self.scoped(), \
                 patch("service.department_workspace_service.list_team_pending_leave_requests_async", loader(leave)), \
                 patch("service.procurement_workspace_service.list_team_pending_purchase_requests_async", loader(purchases)), \
-                patch("service.finance_workspace_service.list_team_pending_expense_claims_async", loader(expenses)):
+                patch("service.finance_workspace_service.list_team_pending_expense_claims_async", loader(expenses)),                 patch("service.it_service.list_team_pending_async", loader(tickets)):
             created, _ = run_db(rules.run_approval_waiting)
-        items = self.items(self.admin)
-        self.assertEqual(created, 1)   # 采购未超时；报销是负责人自己提交的，不能自己审批
-        self.assertEqual(len(items), 1)
+        items = sorted(self.items(self.admin), key=lambda i: i["title"])
+        self.assertEqual(created, 2)   # 采购未超时；报销是负责人自己提交的，不能自己审批；请假和 IT 工单超时
+        self.assertEqual(len(items), 2)
+        ticket_item = next(i for i in items if "IT 工单" in i["title"])
+        self.assertIn("IT 工单 #801 已等待审批 26 小时", ticket_item["title"])
+        self.assertIn("设备申请「申请显示器」", ticket_item["detail"])
+        items = [next(i for i in items if "请假单" in i["title"])]
         self.assertIn("请假单 #501 已等待审批 30 小时", items[0]["title"])
         self.assertEqual(items[0]["priority"], "high")   # 明天就开始
         self.assertIn("即将开始", items[0]["detail"])
@@ -218,8 +224,8 @@ class WorkCenterTest(unittest.TestCase):
                 patch("service.procurement_workspace_service.list_team_pending_purchase_requests_async",
                       AsyncMock(return_value=[])), \
                 patch("service.finance_workspace_service.list_team_pending_expense_claims_async",
-                      AsyncMock(return_value=[])):
-            self.assertEqual(run_db(rules.run_approval_waiting), (0, 1))   # 已审批 → 自动关闭
+                      AsyncMock(return_value=[])),                 patch("service.it_service.list_team_pending_async", AsyncMock(return_value=[])):
+            self.assertEqual(run_db(rules.run_approval_waiting), (0, 2))   # 已审批 → 自动关闭
 
     def test_stale_customers_go_to_owner(self):
         now = utcnow()
@@ -284,6 +290,38 @@ class WorkCenterTest(unittest.TestCase):
             run_db(rules.run_pending_vouchers)
         self.assertEqual(len(calls), 2)   # 第一个失效成员读取失败后，换下一个成员继续
         self.assertTrue(self.items(self.member) or self.items(self.admin))
+
+    def test_it_sla_reminds_it_members_and_closes_when_cleared(self):
+        now = utcnow()
+        state = {"overdue": [{"id": 31, "title": "VPN 连不上", "slaDueAt": iso(now - timedelta(hours=2)), "slaStatus": "BREACHED"}],
+                 "unassigned": [{"id": 32, "title": "打印机坏了", "slaDueAt": iso(now + timedelta(hours=1)), "slaStatus": "AT_RISK"}]}
+
+        async def listing(db, caller, team_id, status=None, assignee=None, overdue=False, limit=100):
+            return state["overdue"] if overdue else state["unassigned"]
+        finance_team = AsyncMock(return_value=[t for t in self.teams if t.id == self.team])
+        with patch.object(rules, "active_teams", finance_team),                 patch("service.it_service.desk_list_tickets_async", AsyncMock(side_effect=listing)):
+            created, _ = run_db(rules.run_it_sla)
+            self.assertEqual(created, 2)
+            item = self.items(self.member)[0]
+            self.assertIn("1 张工单已超过处理时限，1 张待接单（1 张即将超时）", item["title"])
+            self.assertIn("#31「VPN 连不上」", item["detail"])
+            self.assertEqual(item["priority"], "high")
+            state.update(overdue=[], unassigned=[])
+            self.assertEqual(run_db(rules.run_it_sla), (0, 2))
+
+    def test_ticket_followup_for_requesters(self):
+        now = utcnow()
+        tickets = {self.member["id"]: [
+            {"id": 41, "title": "打印机坏了", "status": "WAITING_USER", "teamId": self.team, "updatedAt": iso(now)},
+            {"id": 42, "title": "邮箱", "status": "RESOLVED", "teamId": self.team, "updatedAt": iso(now - timedelta(hours=60))},
+            {"id": 43, "title": "刚解决", "status": "RESOLVED", "teamId": self.team, "updatedAt": iso(now - timedelta(hours=1))},
+            {"id": 44, "title": "处理中", "status": "IN_PROGRESS", "teamId": self.team, "updatedAt": iso(now)}]}
+        with self.scoped(), patch("service.it_service.list_my_tickets_async",
+                                  AsyncMock(side_effect=lambda db, uid: tickets.get(uid, []))):
+            run_db(rules.run_ticket_followup)
+        titles = sorted(i["title"] for i in self.items(self.member))
+        self.assertEqual(titles, ["IT 工单 #41「打印机坏了」在等你补充信息", "IT 工单 #42「邮箱」已解决，请确认"])
+        self.assertEqual(self.items(self.admin), [])
 
     def test_task_due_notifies_once(self):
         uid = self.member["id"]

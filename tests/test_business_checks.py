@@ -143,3 +143,48 @@ class CrmChecksTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TicketChecksTest(unittest.TestCase):
+    PRINTER = {"id": 1, "title": "打印机无法打印", "steps": "1. 检查打印机是否开机\n2. 重启"}
+
+    def routes(self, **over):
+        base = {"/it/classify": {"category": "INCIDENT", "priority": "NORMAL", "reasons": ["出现“无法” → 故障"]},
+                "/it/tickets/mine": [], "/it/devices/mine": [], "/it/kb/suggest": [self.PRINTER]}
+        base.update(over)
+        return base
+
+    def data(self, **over):
+        return {"category": "INCIDENT", "priority": "NORMAL", "title": "打印机坏了", "description": "三楼打印机无法打印",
+                "evidence": "x", **over}
+
+    def test_clean_incident_gets_self_service_suggestion(self):
+        results = levels(check("ticket", self.data(), self.routes()))
+        self.assertEqual(results, [("info", "可先自助排查：打印机无法打印（1. 检查打印机是否开机）")])
+
+    def test_category_mismatch_is_warning_with_reasons(self):
+        results = levels(check("ticket", self.data(category="PERMISSION"), self.routes()))
+        mismatch = [t for l, t in results if l == "warning" and "更像「故障」" in t]
+        self.assertTrue(mismatch and "出现“无法” → 故障" in mismatch[0] and "分类决定是否需要先审批" in mismatch[0])
+        self.assertTrue(any("需要先由本部门负责人批准" in t for _, t in results))
+
+    def test_wide_impact_suggests_urgent(self):
+        routes = self.routes(**{"/it/classify": {"category": "INCIDENT", "priority": "URGENT", "reasons": ["出现“全公司” → 紧急"]}})
+        self.assertTrue(any(l == "warning" and "建议把优先级调成紧急" in t for l, t in levels(check("ticket", self.data(), routes))))
+
+    def test_duplicate_open_title_warns_but_closed_ones_do_not(self):
+        mine = [{"id": 9, "title": "打印机坏了", "status": "IN_PROGRESS"}, {"id": 8, "title": "打印机坏了", "status": "CLOSED"}]
+        results = levels(check("ticket", self.data(), self.routes(**{"/it/tickets/mine": mine})))
+        self.assertTrue(any("已有标题相同且未结束的工单 #9" in t for _, t in results))
+        closed_only = levels(check("ticket", self.data(), self.routes(**{"/it/tickets/mine": mine[1:]})))
+        self.assertFalse(any("标题相同" in t for _, t in closed_only))
+
+    def test_device_request_mentions_existing_devices(self):
+        devices = [{"assetNo": "NB-1", "model": "ThinkPad"}]
+        results = levels(check("ticket", self.data(category="DEVICE"), self.routes(**{
+            "/it/devices/mine": devices, "/it/classify": {"category": "DEVICE", "priority": "NORMAL", "reasons": []}})))
+        self.assertTrue(any("名下已有 1 台设备：NB-1（ThinkPad）" in t for _, t in results))
+
+    def test_unavailable_business_system_degrades_to_warning(self):
+        results = check("ticket", self.data(), self.routes(**{"/it/classify": hub.EnterpriseHubError(500, "x")}))
+        self.assertEqual(levels(results), [("warning", UNAVAILABLE)])
