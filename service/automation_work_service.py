@@ -195,7 +195,8 @@ async def apply_work(db, user_id, work_id, proposal):
         AutomationWork.id == work.id, AutomationWork.status == previous_status,
         AutomationWork.updated_at == previous_updated,
     ).values(status="applying", accepted_json=accepted, updated_at=utcnow(),
-             edited=int(accepted != work.proposal_json), error_message=None))
+             edited=int(accepted != work.proposal_json), error_message=None,
+             apply_attempts=AutomationWork.apply_attempts + 1))
     if claimed.rowcount != 1:
         await db.rollback()
         raise Conflict("另一请求正在保存，请刷新")
@@ -208,6 +209,7 @@ async def apply_work(db, user_id, work_id, proposal):
                                         idempotency_key=f"automation-{work.id}")
         work.business_result_json = encode(result)
         work.status = "applied"
+        work.applied_at = work.applied_at or utcnow()
         work.error_message = None
     except hub.EnterpriseHubError as exc:
         # Java business errors are thrown inside IdempotencyService.execute's transaction,

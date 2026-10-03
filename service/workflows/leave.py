@@ -79,6 +79,7 @@ WORKFLOW = WorkflowDefinition(
     hint="提取假期类型与日期；未明确的年份、日期不会自行推算。",
     preferred_for=frozenset({"hr"}),
     check=_check, business_checks=_business_checks, order=20,
+    baseline_minutes=6,
     extra={"rules": [{"type": "date_order", "start": "start_date", "end": "end_date",
                       "message": "结束日期不能早于开始日期。"}]},
 )

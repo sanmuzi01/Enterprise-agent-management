@@ -81,5 +81,5 @@ WORKFLOW = WorkflowDefinition(
     departments=frozenset({"sales"}), preferred_for=frozenset({"sales"}),
     needs_customer=True, precheck=_precheck, business_checks=_business_checks,
     followups={"key": "tasks", "title": "title", "due": "due_date"},
-    order=40,
+    order=40, baseline_minutes=12,
 )

@@ -45,6 +45,7 @@ class WorkflowDefinition:
     # 业务系统核对：(user_id, team_id, 整理结果, work) → [{"level": info|warning|blocker, "text"}]
     business_checks: Optional[Callable[..., Awaitable[List[Dict[str, str]]]]] = None
     order: int = 100
+    baseline_minutes: float = 10.0   # 手工办理一次的估算时间（分钟），管理员可在后台调整
     extra: Dict[str, Any] = field(default_factory=dict)
 
     def available_for(self, department_code: Optional[str]) -> bool:

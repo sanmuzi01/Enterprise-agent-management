@@ -43,6 +43,26 @@ export async function getNotificationPreference() { return (await request.get<No
 export async function updateNotificationPreference(data: Omit<NotificationPreference, 'categories'>) {
   return (await request.put<NotificationPreference>('/notification-preferences', data)).data
 }
+export interface MetricsRow {
+  kind: string; name?: string; total: number; applied: number; failed: number
+  apply_rate: number | null; first_pass_rate: number | null; avg_edit_ratio: number | null; retry_rate: number | null
+  median_generate_seconds: number | null; median_apply_seconds: number | null
+  business_blocked: number; duplicate_drafts: number; users: number
+  tokens: number; tokens_per_applied: number | null; cost_per_applied: number | null
+  baseline_minutes?: number; estimated_saved_minutes: number | null
+}
+export interface AutomationMetrics {
+  days: number; team_id: number | null; team_name: string | null
+  overall: MetricsRow; workflows: MetricsRow[]
+  targets: { first_pass_rate: number; duplicate_drafts: number; median_apply_seconds: Record<string, number> }
+  token_price_configured: boolean
+}
+export async function getAutomationMetrics(days = 30, teamId?: number | null) {
+  return (await request.get<AutomationMetrics>('/admin/automation-metrics', { params: { days, team_id: teamId ?? undefined } })).data
+}
+export async function setWorkflowBaseline(kind: string, minutes: number) {
+  return (await request.put<Record<string, number>>(`/admin/automation-metrics/baselines/${kind}`, { minutes })).data
+}
 export async function getReminderStatus() { return (await request.get<ReminderRuleStatus[]>('/admin/reminders')).data }
 export async function runReminder(rule: string) {
   return (await request.post<{ rule: string; status: string; created?: number; resolved?: number; error?: string }>(`/admin/reminders/${rule}/run`)).data

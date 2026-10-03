@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from models.async_db import get_async_db
 from models.init_db import User
-from service import notification_center, reminders, work_item_service
+from service import automation_metrics, notification_center, reminders, work_item_service
 from service.dependencies import get_current_admin_user_async, get_current_user_async
 
 router = APIRouter(tags=["待办与通知"])
@@ -26,6 +26,10 @@ class WorkItemUpdate(BaseModel):
 
 class MarkRead(BaseModel):
     ids: Optional[List[int]] = Field(default=None, description="不传表示全部标为已读")
+
+
+class BaselineUpdate(BaseModel):
+    minutes: float = Field(gt=0, le=600)
 
 
 class PreferenceUpdate(BaseModel):
@@ -93,3 +97,15 @@ async def reminder_status(db=Depends(get_async_db), user: User = Depends(get_cur
 @router.post("/admin/reminders/{rule}/run", summary="立即运行一条提醒规则")
 async def run_reminder(rule: str, db=Depends(get_async_db), user: User = Depends(get_current_admin_user_async)):
     return await reminders.run_now(db, rule)
+
+
+@router.get("/admin/automation-metrics", summary="AI 工作成果效果指标")
+async def automation_metrics_view(days: int = Query(default=30, ge=1, le=365), team_id: Optional[int] = None,
+                                  db=Depends(get_async_db), user: User = Depends(get_current_admin_user_async)):
+    return await automation_metrics.metrics(db, days, team_id)
+
+
+@router.put("/admin/automation-metrics/baselines/{kind}", summary="设定某类工作的手工办理基准时间（分钟）")
+async def set_baseline(kind: str, data: BaselineUpdate, db=Depends(get_async_db),
+                       user: User = Depends(get_current_admin_user_async)):
+    return await automation_metrics.set_baseline(db, user.id, kind, data.minutes)

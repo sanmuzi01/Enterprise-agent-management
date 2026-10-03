@@ -227,7 +227,18 @@ class AutomationWork(Base):
     elapsed_ms = Column(Integer, nullable=False, default=0)
     total_tokens = Column(Integer, nullable=True)
     edited = Column(Integer, nullable=False, default=0)
+    applied_at = Column(DateTime, nullable=True)
+    apply_attempts = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class WorkflowBaseline(Base):
+    """管理员设定的各工作流"手工办理一次需要多少分钟"，用于和 AI 辅助后的实际耗时对比。"""
+    __tablename__ = "workflow_baseline"
+    kind = Column(String(30), primary_key=True)
+    minutes = Column(Float, nullable=False)
+    updated_by = Column(Integer, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 

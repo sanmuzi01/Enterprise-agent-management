@@ -91,4 +91,5 @@ WORKFLOW = WorkflowDefinition(
     hint="提取费用分类、金额与发票号，核对后生成报销草稿。",
     preferred_for=frozenset({"finance", "it", None}),
     check=_check, business_checks=_business_checks, order=10,
+    baseline_minutes=15,
 )

@@ -106,4 +106,5 @@ WORKFLOW = WorkflowDefinition(
     hint="提取产品 SKU 与数量；缺失信息会留空，由你补全后保存。",
     departments=frozenset({"procurement"}), preferred_for=frozenset({"procurement"}),
     check=_check, business_checks=_business_checks, order=30,
+    baseline_minutes=15,
 )
