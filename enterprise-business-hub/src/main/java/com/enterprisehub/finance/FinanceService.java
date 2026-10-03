@@ -33,13 +33,16 @@ public class FinanceService {
     private final ExpenseClaimRepository claimRepository;
     private final ExpenseLineRepository lineRepository;
     private final AuditService auditService;
+    private final VoucherService voucherService;
 
     public FinanceService(ExpenseBudgetRepository budgetRepository, ExpenseClaimRepository claimRepository,
-                           ExpenseLineRepository lineRepository, AuditService auditService) {
+                           ExpenseLineRepository lineRepository, AuditService auditService,
+                           VoucherService voucherService) {
         this.budgetRepository = budgetRepository;
         this.claimRepository = claimRepository;
         this.lineRepository = lineRepository;
         this.auditService = auditService;
+        this.voucherService = voucherService;
     }
 
     public ExpenseBudgetDto getBudget(long teamId, int year) {
@@ -71,6 +74,7 @@ public class FinanceService {
         }
 
         ExpenseClaim claim = new ExpenseClaim(applicantUserId, teamId, totalAmount);
+        claim.setDepartmentCode(normalizeDepartment(body.departmentCode()));
         claimRepository.save(claim);
         for (CreateExpenseClaimRequest.LineItem item : body.lines()) {
             ExpenseCategory category = parseCategory(item.category());
@@ -114,9 +118,9 @@ public class FinanceService {
     }
 
     @Transactional
-    public ExpenseClaimDto approve(long requestId, long approverUserId, String note, String traceId,
-                                    Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
-        ExpenseClaim claim = getSubmitted(requestId);
+    public ExpenseClaimDto approve(long requestId, long approverUserId, String note, String departmentCode,
+                                    String traceId, Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
+        ExpenseClaim claim = getSubmittedForUpdate(requestId);
         TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, claim.getTeamId());
         if (claim.getApplicantUserId() == approverUserId) {
             throw badRequest("不能审批自己提交的报销单，需要由部门负责人或企业管理员处理");
@@ -128,14 +132,19 @@ public class FinanceService {
         }
         budget.deduct(claim.getTotalAmount());
         claim.approve(approverUserId, note);
+        if (claim.getDepartmentCode() == null) {
+            claim.setDepartmentCode(normalizeDepartment(departmentCode));
+        }
         auditService.record(approverUserId, "finance.approved", "expense_claim", claim.getId(), note, traceId);
+        // 批准即自动生成记账凭证草稿（同一事务：批准成功就一定有待财务核对的凭证）
+        voucherService.generateDraft(claim, approverUserId, traceId);
         return toDto(claim);
     }
 
     @Transactional
     public ExpenseClaimDto reject(long requestId, long approverUserId, String note, String traceId,
                                    Long approverTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
-        ExpenseClaim claim = getSubmitted(requestId);
+        ExpenseClaim claim = getSubmittedForUpdate(requestId);
         TeamAccessGuard.requireTeamAccess(approverTeamId, isOrgAdmin, isTeamAdmin, claim.getTeamId());
         if (claim.getApplicantUserId() == approverUserId) {
             throw badRequest("不能处理自己提交的报销单，需要由部门负责人或企业管理员处理");
@@ -193,13 +202,24 @@ public class FinanceService {
         return claim;
     }
 
-    private ExpenseClaim getSubmitted(long requestId) {
-        ExpenseClaim claim = claimRepository.findById(requestId)
+    /** 审批要锁行：同一张单被两个审批人同时批准时，后到的等前一个提交后看到已批准状态，不会重复扣预算。 */
+    private ExpenseClaim getSubmittedForUpdate(long requestId) {
+        ExpenseClaim claim = claimRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("报销单不存在"));
         if (claim.getStatus() != ExpenseStatus.SUBMITTED) {
             throw badRequest("只有已提交状态的报销单能审批，当前状态: " + claim.getStatus());
         }
         return claim;
+    }
+
+    /** 已批准但还没有凭证的报销单（范围内），供财务补生成。 */
+    @Transactional(readOnly = true)
+    public List<ExpenseClaimDto> listApprovedWithoutVoucher(Collection<Long> scopeTeamIds) {
+        return claimRepository.findApprovedWithoutVoucher(scopeTeamIds).stream().map(this::toDto).toList();
+    }
+
+    private static String normalizeDepartment(String raw) {
+        return raw == null || raw.isBlank() ? null : raw.trim().toLowerCase();
     }
 
     private ExpenseCategory parseCategory(String raw) {

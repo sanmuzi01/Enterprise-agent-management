@@ -57,11 +57,11 @@ async def require_team_member_async(db, user_id: int, team_id: Optional[int], mo
     await check_team_module_async(db, team_id, module)
 
 
-def check_team_module(team_id: Optional[int], module: str) -> None:
+def check_team_module(team_id: Optional[int], module: str) -> Optional[str]:
     """同步版（Agent 工具用）；team_id 为空时不检查（企业管理员的跨部门场景）。失败抛 ValueError，
-    符合工具层"错误以文字返回给 Agent"的约定。"""
+    符合工具层"错误以文字返回给 Agent"的约定。返回部门业务类型（可能为空），工具据此告诉业务系统走哪类科目。"""
     if team_id is None:
-        return
+        return None
     from models.init_db import SessionLocal
     db = SessionLocal()
     try:
@@ -74,3 +74,4 @@ def check_team_module(team_id: Optional[int], module: str) -> None:
         raise ValueError("部门不存在、已停用，或所在企业已停用")
     if not module_allows(module, row[0]):
         raise ValueError(_module_error(module, row[0]))
+    return row[0]

@@ -48,7 +48,9 @@ export async function submitMyPurchaseRequest(requestId: number): Promise<Purcha
 }
 
 export async function getTeamPendingPurchaseRequests(teamId: number): Promise<PurchaseRequestDto[]> {
-  const { data } = await request.get('/enterprise/procurement/team-pending', { params: { team_id: teamId } })
+  const { data } = await request.get('/enterprise/procurement/team-pending', {
+    params: { team_id: teamId }, skipErrorToast: true,   // 普通员工没有审批权限（403）是正常状态，由调用方隐藏区块
+  })
   return data as PurchaseRequestDto[]
 }
 

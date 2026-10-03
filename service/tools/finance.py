@@ -22,8 +22,8 @@ def _require_user_and_auth(ctx) -> tuple:
     if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行报销操作（报销按部门查预算）")
     from service.department_access import check_team_module
-    check_team_module(auth["team_id"], "finance")
-    return user_id, auth
+    department_code = check_team_module(auth["team_id"], "finance")
+    return user_id, {**auth, "department_code": department_code if isinstance(department_code, str) else None}
 
 
 def _error_json(exc: hub.EnterpriseHubError) -> str:
@@ -114,7 +114,8 @@ class CreateExpenseDraftTool(BaseTool):
                 "POST", "/finance/expenses", user_id, auth["team_id"], ["finance.write"],
                 "create_expense_draft",
                 is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
-                json_body={"lines": lines}, idempotency_key=str(uuid.uuid4()),
+                json_body={"lines": lines, "departmentCode": auth.get("department_code")},
+                idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
@@ -191,7 +192,8 @@ class ApproveExpenseClaimTool(BaseTool):
                 "POST", f"/finance/expenses/{int(request_id)}/approve", user_id, auth["team_id"],
                 ["finance.approve"], "approve_expense_claim",
                 is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
-                json_body={"note": kwargs.get("note")}, idempotency_key=str(uuid.uuid4()),
+                json_body={"note": kwargs.get("note"), "departmentCode": auth.get("department_code")},
+                idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)

@@ -143,7 +143,7 @@ class FinanceWorkspaceServiceTest(unittest.TestCase):
         self.assertEqual(result["status"], "APPROVED")
         args, kwargs = mock_call.call_args
         self.assertEqual(args[:2], ("POST", "/finance/expenses/42/approve"))
-        self.assertEqual(kwargs["json_body"], {"note": "同意"})
+        self.assertEqual(kwargs["json_body"], {"note": "同意", "departmentCode": None})
 
     # ---------------- list_my_expense_claims_async / submit ----------------
 

@@ -73,8 +73,9 @@ public class FinanceController {
         ScopeGuard.require("finance.approve");
         RequestContext ctx = RequestContextHolder.current();
         String note = body != null ? body.note() : null;
+        String departmentCode = body != null ? body.departmentCode() : null;
         return idempotencyService.execute(idempotencyKey, () -> {
-            var dto = financeService.approve(id, ctx.userId(), note, ctx.traceId(),
+            var dto = financeService.approve(id, ctx.userId(), note, departmentCode, ctx.traceId(),
                     ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
             return ResponseEntity.<Object>ok(dto);
         });

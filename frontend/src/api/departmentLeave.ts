@@ -40,7 +40,9 @@ export async function submitMyLeaveRequest(requestId: number): Promise<LeaveRequ
 }
 
 export async function getTeamPendingLeaveRequests(teamId: number): Promise<LeaveRequestDto[]> {
-  const { data } = await request.get('/enterprise/oa/leave/team-pending', { params: { team_id: teamId } })
+  const { data } = await request.get('/enterprise/oa/leave/team-pending', {
+    params: { team_id: teamId }, skipErrorToast: true,   // 普通员工没有审批权限（403）是正常状态，由调用方隐藏区块
+  })
   return data as LeaveRequestDto[]
 }
 

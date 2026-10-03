@@ -13,6 +13,7 @@ from models.init_db import AutomationWork, User, WorkItem
 from service import notification_center
 from service.reminders.base import (Reminder, ReminderRule, active_teams, approvers, beijing_day_start, env_int,
                                     parse_instant, sync_reminders, team_members)
+from service.exceptions import PermissionDenied
 from utils.timeutil import utcnow
 
 LEAVE_TYPES = {"annual": "年假", "sick": "病假", "personal": "事假"}
@@ -133,6 +134,46 @@ async def run_missing_invoices(db) -> Tuple[int, int]:
     return await sync_reminders(db, "missing_invoice", "expense_invoice", reminders)
 
 
+# ---------------- 记账凭证待核对 ----------------
+
+async def run_pending_vouchers(db) -> Tuple[int, int]:
+    """财务部门成员：报销批准后自动生成的凭证草稿还没核对入账，或有已批准报销单没有生成凭证。"""
+    from service import finance_voucher_service as vouchers
+    wait_hours, now, reminders = env_int("REMIND_VOUCHER_WAIT_HOURS", 24), utcnow(), []
+    for team in await active_teams(db, "finance"):
+        members = await team_members(db, team.id)
+        if not members:
+            continue
+        drafts = unbooked = None
+        for caller in members:   # 用第一个企业身份仍有效的成员读取（停用的成员读不到，也不该收到提醒）
+            try:
+                drafts = await vouchers.list_vouchers_async(db, caller, team.id, status="DRAFT", limit=200)
+                unbooked = await vouchers.list_unbooked_async(db, caller, team.id)
+                break
+            except PermissionDenied:
+                continue
+        if drafts is None or (not drafts and not unbooked):
+            continue
+        needs_review = [d for d in drafts if d.get("riskLevel") in ("WARN", "BLOCK")]
+        created = [parse_instant(d.get("createdAt")) for d in drafts]
+        oldest = min((c for c in created if c), default=None)
+        waited = (now - oldest).total_seconds() / 3600 if oldest else 0
+        parts = []
+        if drafts:
+            parts.append(f"{len(drafts)} 张凭证待核对" + (f"（{len(needs_review)} 张有风险需核对）" if needs_review else ""))
+        if unbooked:
+            parts.append(f"{len(unbooked)} 张已批准报销单还没有凭证")
+        priority = "high" if needs_review or waited >= wait_hours * 3 else "normal"
+        for user_id in members:
+            reminders.append(Reminder(
+                user_id=user_id, key=f"voucher-pending:{team.id}", team_id=team.id,
+                title=f"{team.name}：" + "，".join(parts),
+                detail="报销批准后系统已自动生成凭证草稿，请核对科目与风险项后确认入账",
+                priority=priority, due_at=(oldest + timedelta(hours=wait_hours)) if oldest else None,
+                link="/department", notify=waited >= wait_hours or bool(needs_review)))
+    return await sync_reminders(db, "pending_voucher", "voucher_pending", reminders)
+
+
 # ---------------- 待办到期（AI 成果后续事项、手工待办） ----------------
 
 async def run_task_due(db) -> Tuple[int, int]:
@@ -181,6 +222,8 @@ RULES: List[ReminderRule] = [
                  "销售：客户超过指定天数没有跟进记录"),
     ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,
                  "员工：未完成的报销单中有费用缺发票号"),
+    ReminderRule("pending_voucher", "记账凭证待核对", "voucher_pending", 120, run_pending_vouchers,
+                 "财务：报销批准后生成的凭证草稿超过时限未核对入账，或有已批准报销单没有凭证"),
     ReminderRule("task_due", "待办到期", "task_due", 15, run_task_due,
                  "所有人：24 小时内到期或已逾期的待办"),
     ReminderRule("weekly_digest", "每周工作摘要", "digest", 60 * 24, run_weekly_digest,

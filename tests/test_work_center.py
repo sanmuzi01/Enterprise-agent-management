@@ -248,6 +248,43 @@ class WorkCenterTest(unittest.TestCase):
         self.assertEqual(titles, ["报销单 #9 有 1 条费用缺发票"])
         self.assertEqual(self.items(self.admin), [])
 
+    def test_pending_vouchers_remind_finance_members_and_close_when_cleared(self):
+        drafts = [{"id": 1, "riskLevel": "WARN", "createdAt": iso(utcnow() - timedelta(hours=30))},
+                  {"id": 2, "riskLevel": "NONE", "createdAt": iso(utcnow() - timedelta(hours=2))}]
+        state = {"drafts": drafts, "unbooked": [{"id": 5}]}
+        finance_team = AsyncMock(return_value=[t for t in self.teams if t.id == self.team])
+        with patch.object(rules, "active_teams", finance_team),                 patch("service.finance_voucher_service.list_vouchers_async",
+                      AsyncMock(side_effect=lambda *a, **k: state["drafts"])),                 patch("service.finance_voucher_service.list_unbooked_async",
+                      AsyncMock(side_effect=lambda *a, **k: state["unbooked"])):
+            created, _ = run_db(rules.run_pending_vouchers)
+            self.assertEqual(created, 2)   # 部门里每个成员一条
+            item = self.items(self.member)[0]
+            self.assertIn("2 张凭证待核对（1 张有风险需核对）", item["title"])
+            self.assertIn("1 张已批准报销单还没有凭证", item["title"])
+            self.assertEqual(item["priority"], "high")
+            self.assertEqual(len(self.items(self.admin)), 1)
+            self.assertEqual(run_db(rules.run_pending_vouchers)[0], 0)   # 再跑一次不重复创建
+            state.update(drafts=[], unbooked=[])
+            self.assertEqual(run_db(rules.run_pending_vouchers), (0, 2))   # 全部核对完 → 待办自动关闭
+        closed = self.items(self.member)[0]
+        self.assertEqual((closed["status"], closed["resolved_by"]), ("done", "rule"))
+
+    def test_pending_vouchers_skip_members_who_lost_access(self):
+        from service.exceptions import PermissionDenied
+        finance_team = AsyncMock(return_value=[t for t in self.teams if t.id == self.team])
+        calls = []
+
+        async def listing(db, caller, *args, **kwargs):
+            calls.append(caller)
+            if caller == min(self.admin["id"], self.member["id"]):
+                raise PermissionDenied("企业成员已停用")
+            return [{"id": 1, "riskLevel": "NONE", "createdAt": iso(utcnow())}]
+
+        with patch.object(rules, "active_teams", finance_team),                 patch("service.finance_voucher_service.list_vouchers_async", AsyncMock(side_effect=listing)),                 patch("service.finance_voucher_service.list_unbooked_async", AsyncMock(return_value=[])):
+            run_db(rules.run_pending_vouchers)
+        self.assertEqual(len(calls), 2)   # 第一个失效成员读取失败后，换下一个成员继续
+        self.assertTrue(self.items(self.member) or self.items(self.admin))
+
     def test_task_due_notifies_once(self):
         uid = self.member["id"]
         run_db(lambda db: work_item_service.create_manual(db, uid, "回电话", iso(utcnow() + timedelta(hours=3))))

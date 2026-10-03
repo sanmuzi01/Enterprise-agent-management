@@ -1,6 +1,13 @@
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import { toastError } from './toast'
 
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 调用方自己处理这个请求的失败（比如“没有权限就隐藏区块”），拦截器不再弹全局错误提示。 */
+    skipErrorToast?: boolean
+  }
+}
+
 const REQUEST_ID_HEADER = 'X-Request-ID'
 
 const createRequestId = () => {
@@ -95,7 +102,7 @@ request.interceptors.response.use(
       if (location.pathname !== '/login') {
         location.href = '/login'
       }
-    } else {
+    } else if (!err.config?.skipErrorToast) {
       toastError(getErrorMessage(err))
     }
     return Promise.reject(err)

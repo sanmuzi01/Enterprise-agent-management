@@ -33,6 +33,7 @@ from FasdtApi.background_task import router as background_task_router
 from FasdtApi.admin import router as admin_router
 from FasdtApi.organization_admin import router as organization_admin_router
 from FasdtApi.enterprise_workspace import router as enterprise_workspace_router
+from FasdtApi.finance_vouchers import router as finance_vouchers_router
 from FasdtApi.automation_work import router as automation_work_router
 from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
@@ -116,6 +117,7 @@ app.include_router(background_task_router)
 app.include_router(admin_router)
 app.include_router(organization_admin_router)
 app.include_router(enterprise_workspace_router)
+app.include_router(finance_vouchers_router)
 app.include_router(automation_work_router)
 app.include_router(work_center_router)
 app.include_router(evaluation_router)

@@ -79,7 +79,7 @@ class FinanceToolsTest(unittest.TestCase):
         ))
         self.assertEqual(kwargs["json_body"], {"lines": [
             {"category": "TRAVEL", "amount": 100, "description": None, "invoiceNo": None},
-        ]})
+        ], "departmentCode": None})
         self.assertEqual(json.loads(result)["status"], "DRAFT")
 
     def test_submit_uses_write_scope(self, _auth_mock):
@@ -184,7 +184,7 @@ class ApproveRejectAuthorizationTest(unittest.TestCase):
         self.assertEqual(args[:6], (
             "POST", "/finance/expenses/7/approve", 4001, 6, ["finance.approve"], "approve_expense_claim",
         ))
-        self.assertEqual(kwargs["json_body"], {"note": "同意"})
+        self.assertEqual(kwargs["json_body"], {"note": "同意", "departmentCode": None})
         self.assertEqual(kwargs["is_team_admin"], True)
 
     @patch("service.tools.finance.hub.resolve_caller_context",

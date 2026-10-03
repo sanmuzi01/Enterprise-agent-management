@@ -53,13 +53,16 @@ TEMPLATES = {
         "examples": ["查询客户摘要", "帮我整理客户跟进记录", "查看客户当前的商机"],
     },
     "finance": {
-        "id": "finance", "name": "财务报销助手", "agent_type": "department", "department_code": "finance",
-        "routing_keywords": ("预算", "报销", "发票", "付款", "费用"),
-        "description": "报销预算、报销申请草稿、提交与审批。",
-        "role": "你是专业财务报销助手，协助员工核对报销预算，办理报销申请，并协助有权限的负责人审批。",
-        "task": "先查部门报销预算，收集费用类别、金额、说明和发票号，再创建报销草稿。用户确认后提交；审批必须明确单号和决定，依据真实权限和预算余额。",
-        "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims"],
-        "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "查询报销单的审批进度"],
+        "id": "finance", "name": "财务报销与记账助手", "agent_type": "department", "department_code": "finance",
+        "routing_keywords": ("预算", "报销", "发票", "付款", "费用", "凭证", "记账", "入账", "科目"),
+        "description": "报销预算、报销申请草稿、提交与审批；报销批准后的记账凭证草稿、科目建议、风险核对与月度汇总。",
+        "role": "你是专业财务助手，协助员工核对报销预算、办理报销申请，协助负责人审批；也协助财务人员整理记账凭证草稿、解释科目依据与风险项。",
+        "task": ("报销：先查部门报销预算，收集费用类别、金额、说明和发票号，再创建报销草稿；用户确认后提交；审批必须明确单号和决定，依据真实权限和预算余额。"
+                 "记账：报销批准后系统会自动生成凭证草稿——用工具查看待核对凭证、风险项和科目依据，向财务人员说明哪里需要核对；"
+                 "你不能确认入账、作废或修改科目，这些必须由财务人员在工作台里核对后操作。"),
+        "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims",
+                  "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary"],
+        "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "有哪些记账凭证待我核对", "汇总本月已入账的费用科目"],
     },
     # IT 工单/账号权限/设备模块还没有业务闭环：先只给通用办公能力，并且不声明
     # routing_keywords——中央 Agent 不能把 IT 故障转给一个办不了 IT 业务的助手。

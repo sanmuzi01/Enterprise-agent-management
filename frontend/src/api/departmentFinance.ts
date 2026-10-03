@@ -41,7 +41,9 @@ export async function submitMyExpenseClaim(requestId: number): Promise<ExpenseCl
 }
 
 export async function getTeamPendingExpenseClaims(teamId: number): Promise<ExpenseClaimDto[]> {
-  const { data } = await request.get('/enterprise/finance/team-pending', { params: { team_id: teamId } })
+  const { data } = await request.get('/enterprise/finance/team-pending', {
+    params: { team_id: teamId }, skipErrorToast: true,   // 普通员工没有审批权限（403）是正常状态，由调用方隐藏区块
+  })
   return data as ExpenseClaimDto[]
 }
 

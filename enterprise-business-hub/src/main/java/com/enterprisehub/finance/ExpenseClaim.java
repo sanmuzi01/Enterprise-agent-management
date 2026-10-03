@@ -40,6 +40,9 @@ public class ExpenseClaim {
     @Column(name = "decision_note", length = 500)
     private String decisionNote;
 
+    @Column(name = "department_code", length = 20)
+    private String departmentCode;
+
     @Column(name = "created_at", nullable = false)
     private Instant createdAt;
 
@@ -81,6 +84,14 @@ public class ExpenseClaim {
 
     public Long getId() {
         return id;
+    }
+
+    public String getDepartmentCode() {
+        return departmentCode;
+    }
+
+    public void setDepartmentCode(String departmentCode) {
+        this.departmentCode = departmentCode;
     }
 
     public long getApplicantUserId() {

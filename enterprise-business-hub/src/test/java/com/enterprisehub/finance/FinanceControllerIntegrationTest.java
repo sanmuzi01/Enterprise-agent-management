@@ -65,6 +65,9 @@ class FinanceControllerIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        jdbc.update("DELETE FROM voucher_entry WHERE voucher_id IN "
+                + "(SELECT id FROM voucher WHERE applicant_user_id = ?)", userId);
+        jdbc.update("DELETE FROM voucher WHERE applicant_user_id = ?", userId);
         jdbc.update("DELETE FROM expense_line WHERE expense_claim_id IN "
                 + "(SELECT id FROM expense_claim WHERE applicant_user_id = ?)", userId);
         jdbc.update("DELETE FROM expense_claim WHERE applicant_user_id = ?", userId);

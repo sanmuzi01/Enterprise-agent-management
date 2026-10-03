@@ -133,6 +133,15 @@ AUTOMATION_FILES = [
     "migrations/versions/20261002_0003_work_items_notifications.py",
     "frontend/src/views/TodoCenter.vue",
     "frontend/src/components/NotificationBell.vue",
+    # 财务自动记账
+    "FasdtApi/finance_vouchers.py",
+    "service/finance_voucher_service.py",
+    "service/tools/finance_voucher.py",
+    "frontend/src/api/financeVouchers.ts",
+    "frontend/src/components/FinanceVoucherModule.vue",
+    "scripts/e2e_finance_vouchers.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V6__finance_vouchers.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/finance/VoucherService.java",
 ]
 
 YAML_CONFIGS = [
@@ -199,6 +208,8 @@ def check_automation_wired() -> None:
     main_py = (ROOT / "FasdtApi/main.py").read_text(encoding="utf-8")
     if "app.include_router(automation_work_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
+    if "app.include_router(finance_vouchers_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/finance/vouchers 路由")
     if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):
         raise SystemExit("前端未从工作流目录接口加载工作类型")
     sys.path.insert(0, str(ROOT))

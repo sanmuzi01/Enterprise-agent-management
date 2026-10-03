@@ -10,6 +10,8 @@ import asyncio
 import uuid
 from typing import Any, Dict, List, Optional
 
+from sqlalchemy import text
+
 from models.enterprise_dao import is_team_admin_of_team_async
 from service.department_access import check_team_module_async, require_team_member_async
 from service import enterprise_access
@@ -54,11 +56,13 @@ async def create_my_expense_draft_async(
         db, user_id: int, team_id: int, lines: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
     await require_team_member_async(db, user_id, team_id, "finance", message="不属于该部门，无法为该部门创建报销申请")
+    team = await check_team_module_async(db, team_id, "finance")
     try:
         return await asyncio.to_thread(
             hub.call, "POST", "/finance/expenses", user_id, team_id,
             ["finance.write"], "create_expense_draft",
-            json_body={"lines": lines}, idempotency_key=str(uuid.uuid4()),
+            # departmentCode：销售部门的报销入账走销售费用，其他走管理费用
+            json_body={"lines": lines, "departmentCode": team.department_code}, idempotency_key=str(uuid.uuid4()),
         )
     except hub.EnterpriseHubError as exc:
         raise _translate_hub_error(exc)
@@ -97,12 +101,15 @@ async def decide_expense_claim_async(
     flags = await _caller_admin_flags_async(db, user_id, team_id)
     if not (flags["is_org_admin"] or flags["is_team_admin"]):
         raise PermissionDenied("不是该部门负责人或企业管理员，无法处理该报销单")
+    department_code = (await db.execute(text("SELECT department_code FROM teams WHERE id = :t"),
+                                        {"t": team_id})).scalar()
     try:
         return await asyncio.to_thread(
             hub.call, "POST", f"/finance/expenses/{int(request_id)}/{action}", user_id, team_id,
             ["finance.approve"], f"{action}_expense_claim",
             is_org_admin=flags["is_org_admin"], is_team_admin=flags["is_team_admin"],
-            json_body={"note": note}, idempotency_key=str(uuid.uuid4()),
+            # 批准会自动生成记账凭证草稿；老报销单没有部门类型时，用审批人所在部门补上
+            json_body={"note": note, "departmentCode": department_code}, idempotency_key=str(uuid.uuid4()),
         )
     except hub.EnterpriseHubError as exc:
         raise _translate_hub_error(exc)
