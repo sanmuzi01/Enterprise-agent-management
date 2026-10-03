@@ -323,7 +323,7 @@ class LeaveControllerIntegrationTest {
         // P1 并发修复的真实验证（第四轮审计）：两个请求用同一个 Idempotency-Key
         // 真正并发打进来（两个线程同时发，用 CountDownLatch 卡住让它们尽量同时
         // 起跑，不是顺序调用），必须只有一个真正执行了业务逻辑创建请假单，
-        // 另一个必须拿到 409（重复提交，不是悄悄跟着再建一条）。
+        // 另一个要么 409（并发中），要么拿到同一张单据的缓存重放，绝不能再建一条。
         String requestsPath = "/oa/leave/requests";
         String key = UUID.randomUUID().toString();
         String draftBodyJson = writeJson(Map.of(
@@ -363,10 +363,14 @@ class LeaveControllerIntegrationTest {
 
             List<HttpStatus> statuses = List.of(
                     HttpStatus.valueOf(r1.getStatusCode().value()), HttpStatus.valueOf(r2.getStatusCode().value()));
-            long successCount = statuses.stream().filter(s -> s == HttpStatus.OK).count();
-            long conflictCount = statuses.stream().filter(s -> s == HttpStatus.CONFLICT).count();
-            assertThat(successCount).isEqualTo(1);
-            assertThat(conflictCount).isEqualTo(1);
+            // 不变式：只创建一条草稿，没有 5xx。两个请求的先后是不确定的：同时到达时后者拿 409；
+            // 后者晚于前者完成时拿到的是同一个 key 缓存的 200（幂等重放，返回同一张单据），
+            // 这是正确行为而不是重复执行——所以不能断言"恰好一个 200 一个 409"。
+            assertThat(statuses).allMatch(st -> st == HttpStatus.OK || st == HttpStatus.CONFLICT);
+            assertThat(statuses).contains(HttpStatus.OK);
+            if (statuses.stream().filter(st -> st == HttpStatus.OK).count() == 2) {
+                assertThat(r1.getBody().get("id")).isEqualTo(r2.getBody().get("id"));
+            }
         } finally {
             pool.shutdown();
         }

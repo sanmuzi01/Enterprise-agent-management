@@ -108,6 +108,7 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
     """
     from models.init_db import SessionLocal
     from sqlalchemy import text
+    from models.enterprise_dao import is_team_member_of_team
     from service import enterprise_access
 
     db = SessionLocal()
@@ -121,12 +122,18 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
                 ),
                 {"aid": agent_id},
             ).first()
-            if row and row[0] is not None:
+            # 部门助手的部门只有在调用者本人是该部门有效成员（或企业管理员）时才采用：
+            # 助手的创建者/管理员不一定是部门成员，不能借助手的部门身份往部门里写业务数据。
+            if row and row[0] is not None and (
+                    is_team_member_of_team(db, user_id, row[0]) or enterprise_access.is_org_admin(db, user_id)):
                 team_id = row[0]
         if team_id is None:
             row = db.execute(
                 text(
                     "SELECT tm.team_id FROM team_members tm JOIN teams t ON tm.team_id = t.id "
+                    "JOIN organizations o ON t.organization_id = o.id AND o.status='active' "
+                    "JOIN organization_members om ON om.organization_id = t.organization_id "
+                    "AND om.user_id = tm.user_id AND om.status='active' "
                     "WHERE tm.user_id=:u AND tm.status='active' AND t.status='active' "
                     "ORDER BY tm.id LIMIT 1"
                 ),

@@ -14,9 +14,12 @@
 不用每个文件自己记得写。
 """
 import asyncio
+import os
 from typing import Awaitable, Callable, TypeVar
 
-from models.async_db import async_engine
+os.environ.setdefault("ASYNC_DB_POOL", "null")   # 必须在导入 models.async_db 之前设置
+
+from models.async_db import async_engine  # noqa: E402
 
 T = TypeVar("T")
 

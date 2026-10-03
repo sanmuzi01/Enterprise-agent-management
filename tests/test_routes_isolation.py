@@ -261,14 +261,23 @@ class RouteIsolationTest(unittest.TestCase):
         能把它绑到自己的 Agent 上（校验路径跟上面一样，走 access_control.user_space_ids，
         这条走的是它新加的第三个来源）。没有现成的路由能设置 team_id，直接建库行。
         """
-        from models.init_db import EnterpriseRole, KnowledgeSpace, SessionLocal, Team, TeamMember
+        from models.init_db import (EnterpriseRole, KnowledgeSpace, Organization, OrganizationMember, SessionLocal,
+                                    Team, TeamMember)
 
         db = SessionLocal()
         try:
-            team = Team(name=f"rt-bind-team-{self.alice['id']}", owner_user_id=self.bob["id"])
+            org = Organization(name=f"rt-bind-org-{self.alice['id']}", owner_user_id=self.bob["id"])
+            db.add(org)
+            db.commit()
+            org_id = org.id
+            team = Team(name=f"rt-bind-team-{self.alice['id']}", owner_user_id=self.bob["id"], organization_id=org_id)
             db.add(team)
             db.commit()
             team_id = team.id
+            db.add(OrganizationMember(
+                organization_id=org_id, user_id=self.alice["id"], status="active",
+                role_id=db.query(EnterpriseRole.id).filter_by(scope="organization", code="member").scalar()))
+            db.commit()
             admin_role_id = db.query(EnterpriseRole.id).filter_by(scope="team", code="admin").scalar()
             db.add(TeamMember(team_id=team_id, user_id=self.alice["id"], role_id=admin_role_id, status="active"))
             db.commit()
@@ -300,6 +309,8 @@ class RouteIsolationTest(unittest.TestCase):
                 db.execute(text("DELETE FROM knowledge_spaces WHERE id=:i"), {"i": dept_space_id})
                 db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
                 db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": team_id})
+                db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": org_id})
+                db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": org_id})
                 db.commit()
             except Exception:
                 db.rollback()

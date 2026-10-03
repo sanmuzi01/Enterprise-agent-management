@@ -47,6 +47,8 @@ class ProcurementWorkspaceServiceTest(unittest.TestCase):
         _add_org_member(cls.db, cls.org_id, cls.member["id"], "member")
 
         cls.team_id = _create_team(cls.db, cls.org_id, "pws-test-team", cls.team_admin["id"])
+        cls.db.execute(text("UPDATE teams SET department_code='procurement' WHERE id=:t"), {"t": cls.team_id})
+        cls.db.commit()
         _add_team_member(cls.db, cls.team_id, cls.team_admin["id"], "admin")
         _add_team_member(cls.db, cls.team_id, cls.member["id"], "member")
 

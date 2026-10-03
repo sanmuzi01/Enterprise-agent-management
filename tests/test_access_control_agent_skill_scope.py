@@ -9,9 +9,9 @@
   - Agent/Skill B：scope_type=department + team_id —— owner + 该部门在职成员能用；
     只是企业成员但不在这个部门的人不能用。
   - Agent/Skill C：scope_type=enterprise + organization_id —— owner + 任意在职企业成员
-    能用；只在部门里但不在企业成员表里的人不能用（故意不让 department_member 也加入
-    organization_members，用来确认企业范围判断真的只看 organization_members，不是从
-    team_members 推出来的）。
+    能用（部门成员同时也是企业成员，所以也能用）。
+  - stale_member：部门成员记录仍有效，但企业成员身份已被停用——部门权限和企业权限都失效
+    （部门成员资格以企业成员身份有效为前提）。
   - outsider：什么都不是，什么都不能用。
 """
 import unittest
@@ -40,6 +40,7 @@ class AgentSkillScopeTest(unittest.TestCase):
         cls.owner = rc.create_user("scope-owner")
         cls.dept_member = rc.create_user("scope-dept-member")
         cls.org_member = rc.create_user("scope-org-member")
+        cls.stale_member = rc.create_user("scope-stale-member")
         cls.outsider = rc.create_user("scope-outsider")
 
         db = SessionLocal()
@@ -61,6 +62,13 @@ class AgentSkillScopeTest(unittest.TestCase):
                                role_id=team_member_role_id, status="active"))
             db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.org_member["id"],
                                        role_id=org_member_role_id, status="active"))
+            # 部门成员必须同时是有效企业成员，部门权限才生效。
+            db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.dept_member["id"],
+                                       role_id=org_member_role_id, status="active"))
+            db.add(TeamMember(team_id=cls.team_id, user_id=cls.stale_member["id"],
+                               role_id=team_member_role_id, status="active"))
+            db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.stale_member["id"],
+                                       role_id=org_member_role_id, status="disabled"))
             db.commit()
 
             # 部门/企业共享的 Agent 必须是 published 才能被非作者使用（见
@@ -126,8 +134,8 @@ class AgentSkillScopeTest(unittest.TestCase):
         try:
             self.assertIsNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_personal_id))
             self.assertIsNotNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_dept_id))
-            # 部门成员没有被加进 organization_members，企业级不该放行
-            self.assertIsNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_org_id))
+            # 部门成员同时也是有效企业成员，企业级共享的 Agent 也能用
+            self.assertIsNotNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_org_id))
         finally:
             db.close()
 
@@ -140,6 +148,23 @@ class AgentSkillScopeTest(unittest.TestCase):
             self.assertIsNotNone(access_control.get_usable_agent(db, self.org_member["id"], self.agent_org_id))
         finally:
             db.close()
+
+    def test_stale_member_with_disabled_org_membership_gets_nothing(self):
+        db = SessionLocal()
+        try:
+            for agent_id in (self.agent_personal_id, self.agent_dept_id, self.agent_org_id):
+                self.assertIsNone(access_control.get_usable_agent(db, self.stale_member["id"], agent_id))
+            skill_dept = __import__("models.skill_dao", fromlist=["get_skill_by_id"]).get_skill_by_id(db, self.skill_dept_id)
+            self.assertFalse(access_control.can_read_skill(skill_dept, self.stale_member["id"], db))
+        finally:
+            db.close()
+
+    def test_async_stale_member_blocked(self):
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                self.assertIsNone(await access_control.get_usable_agent_async(db, self.stale_member["id"], self.agent_dept_id))
+        _run(_do())
 
     def test_outsider_gets_nothing(self):
         db = SessionLocal()
@@ -266,7 +291,7 @@ class AgentSkillScopeTest(unittest.TestCase):
             self.assertTrue(access_control.can_read_skill(skill_dept, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_dept, self.org_member["id"], db))
             self.assertTrue(access_control.can_read_skill(skill_org, self.org_member["id"], db))
-            self.assertFalse(access_control.can_read_skill(skill_org, self.dept_member["id"], db))
+            self.assertTrue(access_control.can_read_skill(skill_org, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_personal, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_personal, self.outsider["id"], db))
         finally:

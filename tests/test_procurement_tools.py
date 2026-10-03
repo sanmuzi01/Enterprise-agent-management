@@ -30,6 +30,17 @@ from service.tools.procurement import (
     SubmitPurchaseRequestTool,
 )
 
+def setUpModule():
+    # 工具单测用的是伪造的 team_id，部门业务类型校验另有专门测试（tests/test_department_access.py）。
+    global _module_patch
+    _module_patch = patch("service.department_access.check_team_module")
+    _module_patch.start()
+
+
+def tearDownModule():
+    _module_patch.stop()
+
+
 
 def _ctx(user_id=2001):
     return ToolContext(user_id=user_id)

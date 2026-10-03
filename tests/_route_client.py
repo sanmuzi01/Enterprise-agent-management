@@ -16,6 +16,7 @@ import time
 import uuid
 
 # FasdtApi.main 在模块导入时就会 assert_runtime_config() —— 用非生产环境跑，避免生产校验拦截。
+os.environ.setdefault("ASYNC_DB_POOL", "null")   # 见 models/async_db.py：测试不复用跨事件循环的连接
 _ORIG_APP_ENV = os.environ.get("APP_ENV")
 os.environ["APP_ENV"] = "test"
 # TestClient 默认 Host 是 testserver —— 必须在 import FasdtApi.main（构造 TrustedHostMiddleware）之前放行

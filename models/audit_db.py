@@ -65,14 +65,19 @@ audit_engine = create_engine(
 )
 AuditSessionLocal = sessionmaker(bind=audit_engine)
 
+# ASYNC_DB_POOL=null 只给测试用，原因见 models/async_db.py。
+if os.getenv("ASYNC_DB_POOL", "queue").lower() == "null":
+    from sqlalchemy.pool import NullPool
+    _audit_pool_options = {"poolclass": NullPool}
+else:
+    _audit_pool_options = {"pool_size": _AUDIT_POOL_SIZE, "max_overflow": _AUDIT_MAX_OVERFLOW,
+                           "pool_recycle": DB_POOL_RECYCLE, "pool_pre_ping": DB_POOL_PRE_PING}
+
 audit_async_engine = create_async_engine(
     AUDIT_ASYNC_DATABASE_URL,
     echo=False,
-    pool_size=_AUDIT_POOL_SIZE,
-    max_overflow=_AUDIT_MAX_OVERFLOW,
-    pool_recycle=DB_POOL_RECYCLE,
-    pool_pre_ping=DB_POOL_PRE_PING,
     connect_args={"charset": "utf8mb4"},
+    **_audit_pool_options,
 )
 AuditAsyncSessionLocal = async_sessionmaker(
     bind=audit_async_engine,

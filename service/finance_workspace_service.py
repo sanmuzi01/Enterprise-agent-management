@@ -10,7 +10,8 @@ import asyncio
 import uuid
 from typing import Any, Dict, List, Optional
 
-from models.enterprise_dao import is_team_admin_of_team_async, is_team_member_of_team_async
+from models.enterprise_dao import is_team_admin_of_team_async
+from service.department_access import check_team_module_async, require_team_member_async
 from service import enterprise_access
 from service import enterprise_hub_client as hub
 from service.exceptions import AppError, Conflict, InvalidInput, NotFound, PermissionDenied, UpstreamError
@@ -30,6 +31,8 @@ def _translate_hub_error(exc: hub.EnterpriseHubError) -> AppError:
 
 
 async def _caller_admin_flags_async(db, user_id: int, team_id: Optional[int]) -> Dict[str, bool]:
+    if team_id is not None:
+        await check_team_module_async(db, team_id, "finance")
     org_admin = await enterprise_access.is_org_admin_async(db, user_id)
     team_admin = await is_team_admin_of_team_async(db, user_id, team_id) if team_id is not None else False
     return {"is_org_admin": org_admin, "is_team_admin": team_admin}
@@ -50,8 +53,7 @@ async def list_my_expense_claims_async(user_id: int) -> List[Dict[str, Any]]:
 async def create_my_expense_draft_async(
         db, user_id: int, team_id: int, lines: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    if not await is_team_member_of_team_async(db, user_id, team_id):
-        raise PermissionDenied("不属于该部门，无法为该部门创建报销申请")
+    await require_team_member_async(db, user_id, team_id, "finance", message="不属于该部门，无法为该部门创建报销申请")
     try:
         return await asyncio.to_thread(
             hub.call, "POST", "/finance/expenses", user_id, team_id,

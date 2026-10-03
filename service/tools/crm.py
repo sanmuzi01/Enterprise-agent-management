@@ -22,6 +22,8 @@ def _require_user_and_auth(ctx) -> tuple:
     auth = hub.resolve_caller_context(user_id, ctx.agent_id)
     if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行 CRM 操作（客户按部门隔离）")
+    from service.department_access import check_team_module
+    check_team_module(auth["team_id"], "crm")
     return user_id, auth
 
 

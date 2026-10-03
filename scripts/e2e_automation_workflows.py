@@ -277,6 +277,8 @@ def cleanup(db, ent, owner, org, teams, work_ids):
             conn.execute(text("DELETE FROM idempotency_record WHERE idempotency_key=:k"), {"k": f"automation-{work_id}"})
     team_ids = list(teams.values())
     db.execute(text("DELETE FROM automation_work WHERE user_id=:u"), {"u": owner["id"]})
+    for table in ("work_item", "notification", "notification_preference"):   # 待办引用部门，必须先删
+        db.execute(text(f"DELETE FROM {table} WHERE user_id=:u"), {"u": owner["id"]})
     db.execute(text("DELETE FROM team_members WHERE team_id IN :t").bindparams(
         bindparam("t", expanding=True)), {"t": team_ids})
     db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": org})

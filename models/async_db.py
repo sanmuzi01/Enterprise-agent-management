@@ -6,10 +6,12 @@
 """
 
 import importlib.util
+import os
 from typing import AsyncGenerator
 
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from models.init_db import (
     DB_HOST,
@@ -45,16 +47,22 @@ def async_database_available() -> bool:
 if not async_database_available():
     raise RuntimeError(f"缺少异步数据库驱动: {ASYNC_DB_DRIVER}")
 
+# ASYNC_DB_POOL=null：每个会话用完就关闭连接，不跨事件循环复用。只给测试用——测试里每次
+# asyncio.run/TestClient 请求都是一个新的事件循环，进程级连接池里的连接会绑在已经关掉的循环上，
+# 之后被垃圾回收时才去关闭，报 'NoneType' object has no attribute 'send'。生产保持默认的连接池。
+if os.getenv("ASYNC_DB_POOL", "queue").lower() == "null":
+    _pool_options = {"poolclass": NullPool}
+else:
+    _pool_options = {
+        "pool_size": DB_POOL_SIZE, "max_overflow": DB_MAX_OVERFLOW, "pool_timeout": DB_POOL_TIMEOUT,
+        "pool_recycle": DB_POOL_RECYCLE, "pool_pre_ping": DB_POOL_PRE_PING, "pool_use_lifo": True,
+    }
+
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=False,
-    pool_size=DB_POOL_SIZE,
-    max_overflow=DB_MAX_OVERFLOW,
-    pool_timeout=DB_POOL_TIMEOUT,
-    pool_recycle=DB_POOL_RECYCLE,
-    pool_pre_ping=DB_POOL_PRE_PING,
-    pool_use_lifo=True,
     connect_args={"charset": "utf8mb4"},
+    **_pool_options,
 )
 AsyncSessionLocal = async_sessionmaker(
     bind=async_engine,

@@ -126,6 +126,7 @@ AUTOMATION_FILES = [
     "service/reminders/rules.py",
     "service/automation_metrics.py",
     "service/handoff_service.py",
+    "service/department_access.py",
     "migrations/versions/20261003_0002_agent_handoff.py",
     "migrations/versions/20261003_0001_automation_metrics.py",
     "frontend/src/views/admin/AdminAutomation.vue",

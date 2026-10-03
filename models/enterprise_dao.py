@@ -14,9 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # 不要在两处各写一份，写歪了两边就对不上默认企业到底是哪一行。
 DEFAULT_ORG_NAME = "默认企业"
 
+# 部门成员/部门负责人的有效性 = 部门成员记录有效 + 部门有效 + 所在企业有效 + 本人的企业成员身份有效。
+# 企业成员被停用、被移出企业或企业被停用后，残留的部门成员记录不能继续给出任何部门权限。
 _TEAM_ADMIN_OF_TEAM_SQL = (
     "SELECT 1 FROM team_members tm "
     "JOIN teams t ON tm.team_id = t.id "
+    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = t.organization_id "
+    "AND om.user_id = tm.user_id AND om.status = 'active' "
     "JOIN enterprise_role er ON tm.role_id = er.id "
     "WHERE tm.user_id = :uid AND tm.team_id = :tid AND tm.status = 'active' "
     "AND er.scope = 'team' AND er.code = 'admin' AND t.status = 'active' LIMIT 1"
@@ -26,6 +31,9 @@ _TEAM_ADMIN_OF_TEAM_SQL = (
 # 使用类（而非管理类）判断——跟上面的"部门管理员"是两个不同的问题。
 _TEAM_MEMBER_OF_TEAM_SQL = (
     "SELECT 1 FROM team_members tm JOIN teams t ON tm.team_id = t.id "
+    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = t.organization_id "
+    "AND om.user_id = tm.user_id AND om.status = 'active' "
     "WHERE tm.user_id = :uid AND tm.team_id = :tid "
     "AND tm.status = 'active' AND t.status = 'active' LIMIT 1"
 )
@@ -40,6 +48,9 @@ _SPACE_IDS_WHERE_TEAM_ADMIN_SQL = (
     "SELECT ks.id FROM knowledge_spaces ks "
     "JOIN team_members tm ON tm.team_id = ks.team_id "
     "JOIN teams t ON tm.team_id = t.id "
+    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = t.organization_id "
+    "AND om.user_id = tm.user_id AND om.status = 'active' "
     "JOIN enterprise_role er ON tm.role_id = er.id "
     "WHERE tm.user_id = :uid AND tm.status = 'active' "
     "AND er.scope = 'team' AND er.code = 'admin' AND t.status = 'active'"

@@ -11,7 +11,7 @@ import asyncio
 import uuid
 from typing import Any, Dict, List, Optional
 
-from models.enterprise_dao import is_team_member_of_team_async
+from service.department_access import require_team_member_async
 from service import enterprise_hub_client as hub
 from service.exceptions import AppError, Conflict, InvalidInput, NotFound, PermissionDenied, UpstreamError
 
@@ -30,8 +30,7 @@ def _translate_hub_error(exc: hub.EnterpriseHubError) -> AppError:
 
 
 async def list_team_customers_async(db, user_id: int, team_id: int) -> List[Dict[str, Any]]:
-    if not await is_team_member_of_team_async(db, user_id, team_id):
-        raise PermissionDenied("不属于该部门，无法查看部门客户列表")
+    await require_team_member_async(db, user_id, team_id, "crm", message="不属于该部门，无法查看部门客户列表")
     try:
         return await asyncio.to_thread(
             hub.call, "GET", "/crm/customers", user_id, team_id,
@@ -42,8 +41,7 @@ async def list_team_customers_async(db, user_id: int, team_id: int) -> List[Dict
 
 
 async def get_customer_summary_async(db, user_id: int, team_id: int, customer_id: int) -> Dict[str, Any]:
-    if not await is_team_member_of_team_async(db, user_id, team_id):
-        raise PermissionDenied("不属于该部门，无法查看客户详情")
+    await require_team_member_async(db, user_id, team_id, "crm", message="不属于该部门，无法查看客户详情")
     try:
         return await asyncio.to_thread(
             hub.call, "GET", f"/crm/customers/{int(customer_id)}", user_id, team_id,
@@ -56,8 +54,7 @@ async def get_customer_summary_async(db, user_id: int, team_id: int, customer_id
 async def create_followup_draft_async(
         db, user_id: int, team_id: int, customer_id: int, content: str,
 ) -> Dict[str, Any]:
-    if not await is_team_member_of_team_async(db, user_id, team_id):
-        raise PermissionDenied("不属于该部门，无法为该客户创建跟进记录")
+    await require_team_member_async(db, user_id, team_id, "crm", message="不属于该部门，无法为该客户创建跟进记录")
     try:
         return await asyncio.to_thread(
             hub.call, "POST", f"/crm/customers/{int(customer_id)}/followups", user_id, team_id,
@@ -85,8 +82,7 @@ async def upsert_opportunity_async(
         db, user_id: int, team_id: int, customer_id: int, opportunity_id: Optional[int],
         stage: str, amount: float,
 ) -> Dict[str, Any]:
-    if not await is_team_member_of_team_async(db, user_id, team_id):
-        raise PermissionDenied("不属于该部门，无法维护该客户的商机")
+    await require_team_member_async(db, user_id, team_id, "crm", message="不属于该部门，无法维护该客户的商机")
     body: Dict[str, Any] = {"stage": stage, "amount": amount}
     if opportunity_id is not None:
         body["opportunityId"] = opportunity_id

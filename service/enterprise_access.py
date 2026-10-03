@@ -87,6 +87,9 @@ def _team_role_rank(db: Session, user_id: int, team_id: int) -> Optional[int]:
         text(
             "SELECT MAX(er.rank) FROM team_members tm "
             "JOIN teams t ON tm.team_id = t.id "
+            "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+            "JOIN organization_members om ON om.organization_id = t.organization_id "
+            "AND om.user_id = tm.user_id AND om.status = 'active' "
             "JOIN enterprise_role er ON tm.role_id = er.id "
             "WHERE tm.user_id = :uid AND tm.team_id = :tid "
             "AND tm.status = 'active' AND er.scope = 'team' AND t.status = 'active'"
