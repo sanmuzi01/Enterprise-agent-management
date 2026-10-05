@@ -20,6 +20,7 @@ CATEGORIES = {
     "voucher_pending": "记账凭证待核对提醒",
     "it_ticket": "IT 工单超时提醒",
     "ticket_followup": "工单待你处理提醒",
+    "hr_task": "人事办理任务提醒",
     "task_due": "待办到期提醒",
     "digest": "工作摘要",
     "system": "系统告警",

@@ -19,7 +19,9 @@ _GENERAL_TOOLS = ["get_leave_balance", "create_leave_draft", "submit_leave_reque
 # 所有部门员工都能用的 IT 服务（自助排查、提工单、跟进、查名下设备）；IT 台工具只在 IT 模板里
 _TICKET_TOOLS = ["search_it_solutions", "create_it_ticket", "get_my_it_tickets", "get_it_ticket_status",
                  "add_it_ticket_comment", "get_my_devices"]
-_GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS
+# 入转调离的办理任务会分到各部门（IT、财务、负责人、员工本人），所以查任务/事项是通用能力；预检与汇总只在人事模板里
+_HR_CASE_TOOLS = ["get_my_hr_tasks", "get_hr_case", "list_hr_cases"]
+_GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS + _HR_CASE_TOOLS
 
 TEMPLATES = {
     "central": {
@@ -31,12 +33,16 @@ TEMPLATES = {
     },
     "oa": {
         "id": "oa", "name": "OA 人事助手", "agent_type": "department", "department_code": "hr",
-        "routing_keywords": ("请假", "入职", "制度", "考勤", "离职", "转正"),
-        "description": "请假余额、申请草稿、提交、审批和进度查询。",
-        "role": "你是专业 OA 人事助手，按企业制度协助员工办理请假，并协助有权限的负责人审批。",
-        "task": "先查假期余额，收集假期类型、起止日期和原因，再创建草稿。用户确认后提交；审批必须明确单号和决定。查询以业务系统返回为准。",
-        "tools": ["get_leave_balance", "create_leave_draft", "submit_leave_request", "approve_leave_request", "reject_leave_request", "get_leave_status", "get_my_leave_requests", "get_team_pending_leave_requests"],
-        "examples": ["查询我今年的年假余额", "帮我起草一份请假申请", "查询请假单的审批进度"],
+        "routing_keywords": ("请假", "入职", "制度", "考勤", "离职", "转正", "调岗", "人事"),
+        "description": "请假余额、申请与审批；入职、转正、调岗、离职的预检、办理清单与进度。",
+        "role": "你是专业 OA 人事助手，按企业制度协助员工办理请假，协助负责人审批，并协助人事人员办理入转调离。",
+        "task": ("请假：先查假期余额，收集假期类型、起止日期和原因，再创建草稿，用户确认后提交；审批必须明确单号和决定。"
+                 "入转调离：发起前用 precheck_hr_case 检查重复事项、名下设备、未结报销、待批请假、未休年假等并逐条说明；"
+                 "用 get_hr_case / get_my_hr_tasks / get_hr_summary 汇报进度和逾期任务。发起、批准、完成任务、办结都必须由人在工作台里操作，你不能代办。"),
+        "tools": ["get_leave_balance", "create_leave_draft", "submit_leave_request", "approve_leave_request", "reject_leave_request",
+                  "get_leave_status", "get_my_leave_requests", "get_team_pending_leave_requests",
+                  "get_my_hr_tasks", "get_hr_case", "list_hr_cases", "precheck_hr_case", "get_hr_summary"],
+        "examples": ["查询我今年的年假余额", "帮我起草一份请假申请", "张三下月离职，先帮我检查一下", "有哪些入职任务逾期了"],
     },
     "procurement": {
         "id": "procurement", "name": "采购与库存助手", "agent_type": "department", "department_code": "procurement",

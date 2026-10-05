@@ -30,13 +30,15 @@ async def user_names(db, ids):
 
 async def _pending_for_team(db, team, approver_id):
     from service import department_workspace_service as oa, finance_workspace_service as fin
+    from service import hr_service as hr
     from service import it_service as it
     from service import procurement_workspace_service as proc
     results = []
     for kind, loader in (("leave", oa.list_team_pending_leave_requests_async),
                          ("purchase", proc.list_team_pending_purchase_requests_async),
                          ("expense", fin.list_team_pending_expense_claims_async),
-                         ("ticket", it.list_team_pending_async)):
+                         ("ticket", it.list_team_pending_async),
+                         ("hr", hr.team_pending_approval_async)):
         results.extend((kind, item) for item in await loader(db, approver_id, team.id))
     return results
 
@@ -48,9 +50,9 @@ def _approval_reminder(kind, item, team, approver_id, now, wait_hours, names):
     waited = (now - submitted).total_seconds() / 3600
     if waited < wait_hours:
         return None
-    applicant = item.get("applicantUserId") or item.get("requesterUserId")
-    if applicant == approver_id:
-        return None  # 不能审批自己提交的单据
+    applicant = item.get("applicantUserId") or item.get("requesterUserId") or item.get("employeeUserId")
+    if applicant == approver_id or item.get("initiatorUserId") == approver_id:
+        return None  # 不能审批自己提交的单据、与自己有关的人事事项
     priority, due = ("high" if waited >= wait_hours * 3 else "normal"), submitted + timedelta(hours=wait_hours * 3)
     if kind == "leave":
         name = f"请假单 #{item['id']}"
@@ -65,6 +67,8 @@ def _approval_reminder(kind, item, team, approver_id, now, wait_hours, names):
         name, detail = f"采购申请 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
     elif kind == "ticket":
         name, detail = f"IT 工单 #{item['id']}", f"{item.get('categoryLabel') or item['category']}「{item['title']}」"
+    elif kind == "hr":
+        name, detail = f"{item['caseTypeLabel']}事项 #{item['id']}", f"生效日期 {item['effectiveDate']}"
     else:
         name, detail = f"报销单 #{item['id']}", f"金额 ¥{float(item['totalAmount']):,.2f}"
     return Reminder(user_id=approver_id, key=f"approval:{kind}:{item['id']}", team_id=team.id,
@@ -80,7 +84,8 @@ async def run_approval_waiting(db) -> Tuple[int, int]:
         if not team_approvers:
             continue
         pending = await _pending_for_team(db, team, team_approvers[0])
-        names = await user_names(db, {i.get("applicantUserId") or i.get("requesterUserId") for _, i in pending})
+        names = await user_names(db, {i.get("applicantUserId") or i.get("requesterUserId") or i.get("employeeUserId")
+                                      for _, i in pending})
         for approver_id in team_approvers:
             for kind, item in pending:
                 reminder = _approval_reminder(kind, item, team, approver_id, now, wait_hours, names)
@@ -239,6 +244,35 @@ async def run_ticket_followup(db) -> Tuple[int, int]:
     return await sync_reminders(db, "ticket_followup", "ticket_followup", reminders)
 
 
+# ---------------- 人事事项：办理任务到期（各办理方） ----------------
+
+async def run_hr_tasks(db) -> Tuple[int, int]:
+    """人事/IT/财务/负责人/员工本人：分到自己名下的入转调离办理任务，3 天内到期或已逾期。办完自动关闭。"""
+    from datetime import date
+    from service import hr_service as hr
+    reminders, seen = [], set()
+    soon = (utcnow() + timedelta(hours=8)).date() + timedelta(days=env_int("REMIND_HR_TASK_DAYS", 3))
+    for team in await active_teams(db):
+        for user_id in await team_members(db, team.id):
+            if user_id in seen:
+                continue
+            seen.add(user_id)
+            try:
+                tasks = await hr.my_tasks_async(db, user_id, team.id)
+            except PermissionDenied:
+                continue
+            for task in tasks:
+                if date.fromisoformat(task["dueDate"]) > soon:
+                    continue
+                who = task.get("employeeName") or f"#{task['employeeUserId']}"
+                reminders.append(Reminder(
+                    user_id=user_id, key=f"hr-task:{task['taskId']}", team_id=task["teamId"],
+                    title=f"{task['caseTypeLabel']}办理：{task['title']}（{who}）",
+                    detail=f"期限 {task['dueDate']}" + ("，已逾期" if task["overdue"] else ""),
+                    priority="high" if task["overdue"] else "normal", due_at=beijing_day_start(task["dueDate"])))
+    return await sync_reminders(db, "hr_task", "hr_task", reminders)
+
+
 # ---------------- 待办到期（AI 成果后续事项、手工待办） ----------------
 
 async def run_task_due(db) -> Tuple[int, int]:
@@ -293,6 +327,8 @@ RULES: List[ReminderRule] = [
                  "IT 部门：工单超过处理时限，或还没人接单（接单/解决后自动关闭）"),
     ReminderRule("ticket_followup", "工单待你处理", "ticket_followup", 120, run_ticket_followup,
                  "申请人：IT 在等你补充信息，或已解决的工单超过 48 小时还没确认"),
+    ReminderRule("hr_task", "人事办理任务", "hr_task", 120, run_hr_tasks,
+                 "入转调离的各办理方：分给自己的办理任务 3 天内到期或已逾期（办完自动关闭）"),
     ReminderRule("task_due", "待办到期", "task_due", 15, run_task_due,
                  "所有人：24 小时内到期或已逾期的待办"),
     ReminderRule("weekly_digest", "每周工作摘要", "digest", 60 * 24, run_weekly_digest,

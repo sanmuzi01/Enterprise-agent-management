@@ -45,6 +45,7 @@
       <FinanceVoucherModule v-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
       <ItDeskModule v-if="moduleCode === 'it'" :team-id="deptStore.currentTeamId!" />
       <TicketModule :team-id="deptStore.currentTeamId!" />
+      <HrCaseModule :team-id="deptStore.currentTeamId!" />
       <ProcurementModule v-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
       <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
       <div v-else-if="!moduleCode" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
@@ -84,6 +85,7 @@ import CrmModule from '../components/CrmModule.vue'
 import EmbeddedAgentChatPanel from '../components/EmbeddedAgentChatPanel.vue'
 import FinanceModule from '../components/FinanceModule.vue'
 import FinanceVoucherModule from '../components/FinanceVoucherModule.vue'
+import HrCaseModule from '../components/HrCaseModule.vue'
 import ItDeskModule from '../components/ItDeskModule.vue'
 import TicketModule from '../components/TicketModule.vue'
 import LeaveModule from '../components/LeaveModule.vue'

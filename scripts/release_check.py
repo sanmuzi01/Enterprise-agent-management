@@ -154,6 +154,15 @@ AUTOMATION_FILES = [
     "scripts/e2e_it_service.py",
     "enterprise-business-hub/src/main/resources/db/migration/V7__it_service_desk.sql",
     "enterprise-business-hub/src/main/java/com/enterprisehub/it/ItTicketService.java",
+    # 人事入转调离
+    "FasdtApi/hr_cases.py",
+    "service/hr_service.py",
+    "service/tools/hr_cases.py",
+    "frontend/src/api/hrCases.ts",
+    "frontend/src/components/HrCaseModule.vue",
+    "scripts/e2e_hr_cases.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V8__hr_lifecycle.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/hr/HrCaseService.java",
 ]
 
 YAML_CONFIGS = [
@@ -222,6 +231,8 @@ def check_automation_wired() -> None:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
     if "app.include_router(finance_vouchers_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/finance/vouchers 路由")
+    if "app.include_router(hr_cases_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/hr 路由")
     if "app.include_router(it_service_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/it 路由")
     if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):

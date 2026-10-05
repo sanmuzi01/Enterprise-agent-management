@@ -6,13 +6,14 @@ import unittest
 import uuid
 from unittest.mock import patch
 
+from tests import _route_client as rc  # 先导入：测试用的异步连接不复用（必须在导入 models 之前）
+
 from sqlalchemy import text
 
 from models.init_db import SessionLocal
 from service import enterprise_hub_client as hub
 from service import finance_voucher_service as svc
 from service import finance_workspace_service as fin
-from tests import _route_client as rc
 from tests._async_helpers import run_async
 from tests.test_enterprise_access import _add_org_member, _add_team_member, _create_org, _create_team
 

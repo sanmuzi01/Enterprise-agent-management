@@ -200,17 +200,26 @@ class WorkCenterTest(unittest.TestCase):
                      "submittedAt": iso(now - timedelta(hours=40))}]
         tickets = [{"id": 801, "requesterUserId": self.member["id"], "category": "DEVICE", "categoryLabel": "设备申请",
                     "title": "申请显示器", "createdAt": iso(now - timedelta(hours=26))}]
+        hr_cases = [{"id": 901, "employeeUserId": self.member["id"], "initiatorUserId": self.other["id"],
+                     "caseTypeLabel": "转正", "effectiveDate": "2026-11-01", "createdAt": iso(now - timedelta(hours=30))},
+                    {"id": 902, "employeeUserId": self.member["id"], "initiatorUserId": self.admin["id"],   # 自己发起的不提醒自己批
+                     "caseTypeLabel": "调岗", "effectiveDate": "2026-11-01", "createdAt": iso(now - timedelta(hours=30))}]
 
         def loader(data):
             return AsyncMock(side_effect=lambda db, uid, team_id: data if team_id == self.team else [])
         with self.scoped(), \
                 patch("service.department_workspace_service.list_team_pending_leave_requests_async", loader(leave)), \
                 patch("service.procurement_workspace_service.list_team_pending_purchase_requests_async", loader(purchases)), \
-                patch("service.finance_workspace_service.list_team_pending_expense_claims_async", loader(expenses)),                 patch("service.it_service.list_team_pending_async", loader(tickets)):
+                patch("service.finance_workspace_service.list_team_pending_expense_claims_async", loader(expenses)),                 patch("service.it_service.list_team_pending_async", loader(tickets)), \
+                patch("service.hr_service.team_pending_approval_async", loader(hr_cases)):
             created, _ = run_db(rules.run_approval_waiting)
         items = sorted(self.items(self.admin), key=lambda i: i["title"])
-        self.assertEqual(created, 2)   # 采购未超时；报销是负责人自己提交的，不能自己审批；请假和 IT 工单超时
-        self.assertEqual(len(items), 2)
+        self.assertEqual(created, 3)   # 采购未超时；报销是负责人自己提交的、调岗是自己发起的，不能自己审批
+        self.assertEqual(len(items), 3)
+        hr_item = next(i for i in items if "事项" in i["title"])
+        self.assertIn("转正事项 #901 已等待审批 30 小时", hr_item["title"])
+        self.assertIn(f"申请人 {self.member['name']}", hr_item["detail"])
+        items = [i for i in items if "事项" not in i["title"]]
         ticket_item = next(i for i in items if "IT 工单" in i["title"])
         self.assertIn("IT 工单 #801 已等待审批 26 小时", ticket_item["title"])
         self.assertIn("设备申请「申请显示器」", ticket_item["detail"])
@@ -224,8 +233,9 @@ class WorkCenterTest(unittest.TestCase):
                 patch("service.procurement_workspace_service.list_team_pending_purchase_requests_async",
                       AsyncMock(return_value=[])), \
                 patch("service.finance_workspace_service.list_team_pending_expense_claims_async",
-                      AsyncMock(return_value=[])),                 patch("service.it_service.list_team_pending_async", AsyncMock(return_value=[])):
-            self.assertEqual(run_db(rules.run_approval_waiting), (0, 2))   # 已审批 → 自动关闭
+                      AsyncMock(return_value=[])),                 patch("service.it_service.list_team_pending_async", AsyncMock(return_value=[])), \
+                patch("service.hr_service.team_pending_approval_async", AsyncMock(return_value=[])):
+            self.assertEqual(run_db(rules.run_approval_waiting), (0, 3))   # 已审批 → 自动关闭
 
     def test_stale_customers_go_to_owner(self):
         now = utcnow()
@@ -322,6 +332,24 @@ class WorkCenterTest(unittest.TestCase):
         titles = sorted(i["title"] for i in self.items(self.member))
         self.assertEqual(titles, ["IT 工单 #41「打印机坏了」在等你补充信息", "IT 工单 #42「邮箱」已解决，请确认"])
         self.assertEqual(self.items(self.admin), [])
+
+    def test_hr_tasks_remind_due_and_overdue_tasks(self):
+        today = (utcnow() + timedelta(hours=8)).date()
+        tasks = {self.member["id"]: [
+            {"taskId": 1, "caseTypeLabel": "入职", "title": "开通账号和邮箱", "employeeName": "新同事", "employeeUserId": 5,
+             "teamId": self.team, "dueDate": (today - timedelta(days=1)).isoformat(), "overdue": True},
+            {"taskId": 2, "caseTypeLabel": "入职", "title": "配发电脑", "employeeName": "新同事", "employeeUserId": 5,
+             "teamId": self.team, "dueDate": (today + timedelta(days=2)).isoformat(), "overdue": False},
+            {"taskId": 3, "caseTypeLabel": "离职", "title": "回收设备", "employeeName": "老同事", "employeeUserId": 6,
+             "teamId": self.team, "dueDate": (today + timedelta(days=20)).isoformat(), "overdue": False}]}
+        with self.scoped(), patch("service.hr_service.my_tasks_async",
+                                  AsyncMock(side_effect=lambda db, uid, team: tasks.get(uid, []))):
+            self.assertEqual(run_db(rules.run_hr_tasks)[0], 2)   # 20 天后的不提醒
+            items = sorted(self.items(self.member), key=lambda i: i["due_at"])
+            self.assertEqual([i["title"] for i in items], ["入职办理：开通账号和邮箱（新同事）", "入职办理：配发电脑（新同事）"])
+            self.assertEqual([i["priority"] for i in items], ["high", "normal"])
+            tasks[self.member["id"]] = []
+            self.assertEqual(run_db(rules.run_hr_tasks), (0, 2))   # 办完 → 自动关闭
 
     def test_task_due_notifies_once(self):
         uid = self.member["id"]
