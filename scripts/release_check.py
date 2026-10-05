@@ -163,6 +163,7 @@ AUTOMATION_FILES = [
     "scripts/e2e_hr_cases.py",
     "enterprise-business-hub/src/main/resources/db/migration/V8__hr_lifecycle.sql",
     "enterprise-business-hub/src/main/java/com/enterprisehub/hr/HrCaseService.java",
+    "service/department_home.py",
 ]
 
 YAML_CONFIGS = [

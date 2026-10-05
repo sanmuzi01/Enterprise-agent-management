@@ -486,8 +486,8 @@ const submit = async () => {
       successMsg.value = '注册成功，正在登录...'
     }
     await userStore.login(username.value.trim(), password.value)
-    // 管理员跳 /admin，普通用户跳 /agents
-    router.push(userStore.user?.is_admin ? '/admin' : '/agents')
+    // 管理员跳 /admin；普通用户进 /home，由路由守卫决定落在部门工作台还是个人工作台
+    router.push(userStore.user?.is_admin ? '/admin' : '/home')
   } catch (e: any) {
     const fallback = isResetMode.value ? '重置密码失败' : isRegisterMode.value ? '注册失败' : '登录失败'
     errorMsg.value = getErrorMessage(e, fallback)
@@ -497,7 +497,7 @@ const submit = async () => {
 }
 
 onMounted(() => {
-  if (userStore.token) router.push(userStore.user?.is_admin ? '/admin' : '/agents')
+  if (userStore.token) router.push(userStore.user?.is_admin ? '/admin' : '/home')
 })
 
 onUnmounted(() => {

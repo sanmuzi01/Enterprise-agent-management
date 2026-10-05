@@ -20,6 +20,13 @@ async def workspace(db=Depends(get_async_db), user: User = Depends(get_current_u
     return await get_workspace(db, user.id)
 
 
+@router.get("/home")
+async def department_home(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    """部门首页概览：按部门业务类型和我的身份汇总待办、审批与专业业务数字。"""
+    from service.department_home import build_home
+    return await build_home(db, user.id, team_id)
+
+
 # ============================================================================
 # 部门工作台：请假闭环（里程碑1）。不挂在 /admin 下——任何登录用户都能调，
 # 权限判断（是不是这个部门的成员/负责人）在 service 层做，不是路由级门槛。

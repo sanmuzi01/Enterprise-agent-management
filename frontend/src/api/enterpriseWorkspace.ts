@@ -40,3 +40,25 @@ export async function getWorkspace(): Promise<Workspace> {
   const { data } = await request.get('/enterprise/workspace')
   return data as Workspace
 }
+
+export interface HomeCard {
+  key: string
+  label: string
+  value: number | string
+  hint: string
+  section: 'todos' | 'business' | 'office' | 'overview'
+  tone: 'normal' | 'warn' | 'danger'
+}
+
+export interface DepartmentHome {
+  department: { id: number; name: string; department_code: string | null; department_label: string }
+  identity: { is_head: boolean; org_admin: boolean; roles: string[] }
+  business_label: string | null
+  cards: HomeCard[]
+}
+
+/** GET /enterprise/home ——部门首页概览：按部门业务类型和我的身份汇总的数字卡片。 */
+export async function getDepartmentHome(teamId: number): Promise<DepartmentHome> {
+  const { data } = await request.get('/enterprise/home', { params: { team_id: teamId } })
+  return data as DepartmentHome
+}

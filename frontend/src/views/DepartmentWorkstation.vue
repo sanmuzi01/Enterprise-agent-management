@@ -4,7 +4,7 @@
       <div>
         <h1 class="text-lg font-semibold text-slate-900">部门工作台</h1>
         <p class="text-xs text-slate-500 mt-0.5">
-          <span v-if="currentDept">{{ currentDept.name }} · {{ currentDept.role_name }}</span>
+          <span v-if="currentDept">{{ currentDept.name }} · {{ home?.department.department_label || '未设置业务类型' }} · {{ currentDept.role_name }}<span v-if="home?.identity.org_admin"> · 企业管理员</span></span>
           <span v-else>还没有加入任何部门</span>
         </p>
       </div>
@@ -13,6 +13,7 @@
           v-if="deptStore.departments.length > 1"
           :value="deptStore.currentTeamId ?? ''"
           @change="onSwitchDept(($event.target as HTMLSelectElement).value)"
+          aria-label="切换部门"
           class="rounded border border-slate-200 bg-white px-2.5 py-1.5 text-sm text-slate-700"
         >
           <option v-for="d in deptStore.departments" :key="d.id" :value="d.id">{{ d.name }}</option>
@@ -34,40 +35,64 @@
 
     <div v-else-if="!currentDept" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-16 text-center">
       <p class="text-sm text-slate-500">你还不属于任何部门，请联系企业管理员分配部门。</p>
+      <RouterLink to="/agents" class="mt-2 inline-block text-sm text-indigo-600 hover:text-indigo-700">先去个人工作台 →</RouterLink>
     </div>
 
     <div v-else class="space-y-5">
-      <AutomationWorkPanel :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
-        @saved="businessRevision++" />
-      <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
-      <LeaveModule :team-id="deptStore.currentTeamId!" />
-      <FinanceModule :team-id="deptStore.currentTeamId!" />
-      <FinanceVoucherModule v-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
-      <ItDeskModule v-if="moduleCode === 'it'" :team-id="deptStore.currentTeamId!" />
-      <TicketModule :team-id="deptStore.currentTeamId!" />
-      <HrCaseModule :team-id="deptStore.currentTeamId!" />
-      <ProcurementModule v-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
-      <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
-      <div v-else-if="!moduleCode" class="rounded-lg border border-dashed border-slate-300 bg-slate-50 py-10 text-center">
-        <p class="text-sm text-slate-500">该部门还没有配置专属业务类型，可使用请假、报销等通用办公事务。</p>
-      </div>
+      <!-- 概览：按部门业务和我的身份汇总，点卡片直达对应工作区 -->
+      <div v-if="home" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="home-cards">
+        <button v-for="c in home.cards" :key="c.key" @click="openCard(c)" :data-testid="`home-card-${c.key}`"
+          class="rounded-lg border bg-white px-3 py-3 text-left transition hover:border-indigo-300 hover:shadow-sm"
+          :class="c.tone === 'danger' ? 'border-red-200' : c.tone === 'warn' ? 'border-amber-200' : 'border-slate-200'">
+          <p class="text-xs text-slate-500">{{ c.label }}</p>
+          <p class="mt-1 text-xl font-semibold tabular-nums"
+            :class="c.tone === 'danger' ? 'text-red-600' : c.tone === 'warn' ? 'text-amber-600' : 'text-slate-900'">{{ c.value }}</p>
+          <p class="mt-0.5 truncate text-xs text-slate-400" :title="c.hint">{{ c.hint }}</p>
+        </button>
       </div>
 
-      <!-- 部门助手 -->
-      <section v-if="deptAgent" class="rounded-lg border border-slate-200 bg-white">
-        <div class="border-b border-slate-200 px-4 py-3">
-          <h2 class="text-sm font-semibold text-slate-900">部门助手 · {{ deptAgent.name }}</h2>
-          <p class="text-xs text-slate-400 mt-0.5">{{ deptAgent.description }}</p>
-          <p v-if="!deptAgent.model_configured" class="mt-1 text-xs text-amber-700">
-            需要先在「设置 → 模型连接」连接 {{ deptAgent.model_name }} 模型，部门助手才能回答。
-          </p>
-        </div>
-        <EmbeddedAgentChatPanel :agent-id="deptAgent.id" />
-      </section>
-      <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
-        部门助手尚未发布：企业管理员完成配置并发布后，会出现在这里。
-      </p>
-      <RouterLink v-if="centralAgent" :to="`/agents/${centralAgent.id}/chat`" data-testid="central-entry"
+      <nav class="flex flex-wrap gap-1 border-b border-slate-200" data-testid="dept-sections">
+        <button v-for="s in sections" :key="s.value" @click="setSection(s.value)" :data-testid="`dept-section-${s.value}`"
+          class="-mb-px border-b-2 px-3 py-2 text-sm"
+          :class="section === s.value ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'">{{ s.label }}</button>
+      </nav>
+
+      <AutomationWorkPanel v-show="section === 'overview'" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
+        @saved="businessRevision++" />
+
+      <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
+        <template v-if="section === 'business'">
+          <FinanceVoucherModule v-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
+          <ItDeskModule v-else-if="moduleCode === 'it'" :team-id="deptStore.currentTeamId!" />
+          <HrCaseModule v-else-if="moduleCode === 'hr'" :team-id="deptStore.currentTeamId!" />
+          <CrmModule v-else-if="moduleCode === 'sales'" :team-id="deptStore.currentTeamId!" />
+          <ProcurementModule v-else-if="moduleCode === 'procurement'" :team-id="deptStore.currentTeamId!" />
+        </template>
+        <template v-if="section === 'office'">
+          <LeaveModule :team-id="deptStore.currentTeamId!" />
+          <FinanceModule :team-id="deptStore.currentTeamId!" />
+          <TicketModule :team-id="deptStore.currentTeamId!" />
+          <!-- 人事部门成员在“人事办理”区处理；其他部门在这里看分给自己的入转调离任务 -->
+          <HrCaseModule v-if="!(hasBusiness && moduleCode === 'hr')" :team-id="deptStore.currentTeamId!" />
+        </template>
+      </div>
+
+      <template v-if="section === 'assistant'">
+        <section v-if="deptAgent" class="rounded-lg border border-slate-200 bg-white">
+          <div class="border-b border-slate-200 px-4 py-3">
+            <h2 class="text-sm font-semibold text-slate-900">部门助手 · {{ deptAgent.name }}</h2>
+            <p class="text-xs text-slate-400 mt-0.5">{{ deptAgent.description }}</p>
+            <p v-if="!deptAgent.model_configured" class="mt-1 text-xs text-amber-700">
+              需要先在「设置 → 模型连接」连接 {{ deptAgent.model_name }} 模型，部门助手才能回答。
+            </p>
+          </div>
+          <EmbeddedAgentChatPanel :agent-id="deptAgent.id" />
+        </section>
+        <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
+          部门助手尚未发布：企业管理员完成配置并发布后，会出现在这里。
+        </p>
+      </template>
+      <RouterLink v-if="centralAgent && (section === 'assistant' || section === 'overview')" :to="`/agents/${centralAgent.id}/chat`" data-testid="central-entry"
         class="flex items-center justify-between rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 hover:bg-sky-100">
         <span><strong>不确定该找哪个部门？</strong>问「{{ centralAgent.name }}」，它会按问题转交给你有权使用的部门助手。</span>
         <span class="shrink-0 text-xs text-sky-700">去提问 →</span>
@@ -77,9 +102,12 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { RefreshCcw } from 'lucide-vue-next'
 import { useCurrentDepartmentStore } from '../stores/currentDepartment'
+import { getDepartmentHome } from '../api/enterpriseWorkspace'
+import type { DepartmentHome, HomeCard } from '../api/enterpriseWorkspace'
 import { getErrorMessage } from '../utils/request'
 import CrmModule from '../components/CrmModule.vue'
 import EmbeddedAgentChatPanel from '../components/EmbeddedAgentChatPanel.vue'
@@ -93,10 +121,15 @@ import AutomationWorkPanel from '../components/AutomationWorkPanel.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
 
 const deptStore = useCurrentDepartmentStore()
+const router = useRouter()
 
 const loading = ref(true)
 const businessRevision = ref(0)
 const errorMsg = ref('')
+const home = ref<DepartmentHome | null>(null)
+
+type Section = 'overview' | 'business' | 'office' | 'assistant'
+const section = ref<Section>('overview')
 
 const currentDept = computed(() => deptStore.currentDepartment)
 const centralAgent = computed(() => deptStore.workspace?.agents.find((a) => a.agent_type === 'central') || null)
@@ -106,15 +139,53 @@ const deptAgent = computed(() => {
   return deptStore.workspace?.agents.find((a) => a.agent_type === 'department' && a.team_id === teamId) || null
 })
 // 业务模块显示与否是部门自己的属性（Team.department_code），跟"有没有已发布
-// 的部门 Agent"是两个独立的可用性判断——没有发布 Agent 时业务表单仍然可用，
-// 只是下方"部门助手"聊天区块不出现（那个区块才依赖 deptAgent）。
+// 的部门 Agent"是两个独立的可用性判断——没有发布 Agent 时业务表单仍然可用。
 const moduleCode = computed(() => currentDept.value?.department_code ?? null)
+// 专业业务区随部门业务类型和我的身份变化：后端只在有权限时给出 business_label（人事办理只给人事部门成员）
+const hasBusiness = computed(() => !!home.value?.business_label)
+const sections = computed(() => {
+  const list: { value: Section; label: string }[] = [{ value: 'overview', label: '概览' }]
+  if (home.value?.business_label) list.push({ value: 'business', label: home.value.business_label })
+  list.push({ value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
+  return list
+})
+const sectionKey = (teamId: number) => `dept_section_${teamId}`
+
+function setSection(value: Section) {
+  section.value = value
+  try {
+    if (deptStore.currentTeamId != null) localStorage.setItem(sectionKey(deptStore.currentTeamId), value)
+  } catch { /* 记不住上次打开的分区不影响使用 */ }
+}
+
+function openCard(card: HomeCard) {
+  if (card.section === 'todos') router.push('/todos')
+  else setSection(card.section as Section)
+}
+
+async function loadHome() {
+  const teamId = deptStore.currentTeamId
+  if (teamId == null) {
+    home.value = null
+    return
+  }
+  try {
+    home.value = await getDepartmentHome(teamId)
+  } catch (e) {
+    home.value = null
+    errorMsg.value = getErrorMessage(e, '加载部门概览失败')
+  }
+  let saved: string | null = null
+  try { saved = localStorage.getItem(sectionKey(teamId)) } catch { saved = null }
+  section.value = sections.value.some((s) => s.value === saved) ? (saved as Section) : 'overview'
+}
 
 async function reload(force = false) {
   loading.value = true
   errorMsg.value = ''
   try {
     await deptStore.load(force)
+    await loadHome()
   } catch (e) {
     errorMsg.value = getErrorMessage(e, '加载部门工作台失败')
   } finally {
@@ -125,6 +196,15 @@ async function reload(force = false) {
 function onSwitchDept(value: string) {
   deptStore.selectTeam(value ? Number(value) : null)
 }
+
+watch(() => deptStore.currentTeamId, (value, old) => {
+  if (value !== old && !loading.value) {
+    errorMsg.value = ''
+    void loadHome()
+  }
+})
+// AI 整理保存为业务草稿后，概览数字也跟着刷新
+watch(businessRevision, () => { void loadHome() })
 
 onMounted(() => reload())
 </script>

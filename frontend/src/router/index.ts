@@ -13,6 +13,11 @@ const router = createRouter({
       component: () => import('../views/Login.vue'),
     },
     {
+      // 登录后的落脚点：属于某个部门的员工进部门工作台，否则进个人工作台（见下方守卫）
+      path: '/home',
+      component: () => import('../views/AgentList.vue'),
+    },
+    {
       path: '/agents',
       name: 'Agents',
       component: () => import('../views/AgentList.vue'),
@@ -142,15 +147,31 @@ const router = createRouter({
   ],
 })
 
+/** 当前用户是否属于至少一个部门（读不到时当作没有，退回个人工作台，不挡住登录）。 */
+async function hasDepartment(): Promise<boolean> {
+  try {
+    const { useCurrentDepartmentStore } = await import('../stores/currentDepartment')
+    const store = useCurrentDepartmentStore()
+    await store.load(true)
+    return store.departments.length > 0
+  } catch {
+    return false
+  }
+}
+
 // 路由守卫：未登录跳转登录页
-router.beforeEach((to, _from) => {
+router.beforeEach(async (to, _from) => {
   const token = localStorage.getItem('token')
   if (to.path !== '/login' && !token) {
     return '/login'
   }
   const user = JSON.parse(localStorage.getItem('user') || 'null')
   if (token && to.path === '/login') {
-    return user?.is_admin ? '/admin' : '/agents'
+    return user?.is_admin ? '/admin' : '/home'
+  }
+  if (to.path === '/home') {
+    if (user?.is_admin) return '/admin'
+    return (await hasDepartment()) ? '/department' : '/agents'
   }
   if (to.path.startsWith('/admin')) {
     if (!user?.is_admin) return '/agents'
