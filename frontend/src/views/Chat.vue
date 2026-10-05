@@ -280,6 +280,10 @@
             <p v-if="evt.unavailable?.length && evt.reason === 'routed'" class="text-sky-700">
               另外涉及{{ evt.unavailable.map((u: any) => departmentLabel(u.department_code)).join('、') }}，你所在的部门没有对应的已发布助手。
             </p>
+            <p v-if="evt.alternatives?.length || evt.unavailable?.length" data-testid="route-orchestrate">
+              这件事涉及多个部门：
+              <button class="font-medium text-sky-700 underline" @click="openOrchestration(evt.message)">在部门工作台一次拆成各部门步骤办理</button>
+            </p>
           </div>
           <div v-else class="max-w-2xl w-full px-4 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-gray-500 font-mono space-y-1">
             <div v-if="evt.type === 'thinking'">
@@ -1020,6 +1024,14 @@ const handleExportConv = async (c: any, format: 'markdown' | 'json') => {
     toastError(getErrorMessage(e, '导出失败'))
   }
 }
+/** 跨部门请求：把原话带到部门工作台的“协同办理”（只在本浏览器会话里暂存，不放进地址栏）。 */
+function openOrchestration(message?: string) {
+  try {
+    if (message) sessionStorage.setItem('orchestration_draft', message)
+  } catch { /* 存不住就让用户在协同办理里重新输入 */ }
+  router.push('/department')
+}
+
 const sendMessage = async () => {
   const msg = inputText.value.trim()
   if (!msg || loading.value) return
@@ -1053,7 +1065,7 @@ const sendMessage = async () => {
       attachmentIds: attached.map((a) => a.id),
       onEvent: async (evt) => {
                 if (evt.type === 'route') {
-          eventTraces.value.push({ ...evt })
+          eventTraces.value.push({ ...evt, message: msg })
         } else if (evt.type === 'ready' && evt.run_id) {
           // 可选：记 run_id 供轨迹
         } else if (evt.type === 'retrieval') {

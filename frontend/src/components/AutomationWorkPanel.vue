@@ -1,5 +1,5 @@
 <template>
-  <section class="rounded-xl border border-blue-200 bg-white p-5 space-y-5">
+  <section class="rounded-xl border border-blue-200 bg-white p-5 space-y-5" data-testid="automation-panel">
     <div class="flex flex-wrap justify-between gap-3">
       <div>
         <h2 class="font-semibold text-slate-900">让 AI 帮我整理工作</h2>
@@ -231,6 +231,8 @@ async function importText(event: Event) {
     source.value = text; error.value = ''
   } catch (e) { error.value = e instanceof Error ? e.message : '文件读取失败，请使用 UTF-8 文字文件' } finally { input.value = '' }
 }
+// 协同办理面板开始整理某一步后，直接在这里打开对应的工作成果核对
+defineExpose({ open, refresh })
 onMounted(async () => {
   try { const data = await api.getWorkflows(props.teamId); catalog.value = data.workflows; kind.value = data.default_id || '' }
   catch (e) { error.value = getErrorMessage(e, '加载工作类型失败') }

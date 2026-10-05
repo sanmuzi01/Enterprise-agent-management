@@ -251,6 +251,35 @@ class AgentHandoff(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class OrchestrationPlan(Base):
+    """跨部门协同办理：一段话拆成的多个部门步骤。只是计划，业务数据都由各步骤关联的 AI 工作成果经人工核对后写入。"""
+    __tablename__ = "orchestration_plan"
+    __table_args__ = (Index("idx_orch_plan_user", "user_id", "created_at"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_orch_plan_user"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_orch_plan_team"), nullable=False)
+    source_text = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="open")   # open / closed
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class OrchestrationStep(Base):
+    """协同计划的一步：交给哪个工作流/部门、依据哪段原文、关联哪份 AI 工作成果。"""
+    __tablename__ = "orchestration_step"
+    __table_args__ = (Index("idx_orch_step_plan", "plan_id", "seq"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey("orchestration_plan.id", name="fk_orch_step_plan"), nullable=False)
+    seq = Column(Integer, nullable=False)
+    kind = Column(String(30), nullable=True)               # 工作流 ID；人事事项等没有工作流的为 None
+    department_code = Column(String(20), nullable=True)    # 由哪类部门负责
+    clause = Column(Text, nullable=False)
+    reason = Column(String(300), nullable=False)
+    state = Column(String(20), nullable=False, default="pending")  # pending / handoff / skipped / linked
+    automation_work_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class WorkflowBaseline(Base):
     """管理员设定的各工作流"手工办理一次需要多少分钟"，用于和 AI 辅助后的实际耗时对比。"""
     __tablename__ = "workflow_baseline"

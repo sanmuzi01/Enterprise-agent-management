@@ -185,6 +185,8 @@ def _purge_users(where_users: str) -> int:
             f"DELETE FROM user_workspace WHERE user_id IN {inc}",
             f"DELETE FROM operation_log WHERE user_id IN {inc}",
             # 第五轮审计 P0-2 新增，tool_confirmation.user_id 有 user.id 的外键，同理先删。
+            f"DELETE os FROM orchestration_step os JOIN orchestration_plan op ON os.plan_id=op.id WHERE op.user_id IN {inc}",
+            f"DELETE FROM orchestration_plan WHERE user_id IN {inc}",
             f"DELETE FROM automation_work WHERE user_id IN {inc}",
             f"DELETE FROM work_item WHERE user_id IN {inc}",
             f"DELETE FROM agent_handoff WHERE user_id IN {inc}",

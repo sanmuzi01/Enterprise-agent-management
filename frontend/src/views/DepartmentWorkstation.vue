@@ -57,7 +57,9 @@
           :class="section === s.value ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'">{{ s.label }}</button>
       </nav>
 
-      <AutomationWorkPanel v-show="section === 'overview'" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
+      <OrchestrationPanel v-if="section === 'overview'" :key="`orch-${deptStore.currentTeamId}`" :team-id="deptStore.currentTeamId!"
+        :revision="businessRevision" @open-work="openWork" />
+      <AutomationWorkPanel ref="workPanel" v-show="section === 'overview'" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
         @saved="businessRevision++" />
 
       <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
@@ -118,6 +120,7 @@ import ItDeskModule from '../components/ItDeskModule.vue'
 import TicketModule from '../components/TicketModule.vue'
 import LeaveModule from '../components/LeaveModule.vue'
 import AutomationWorkPanel from '../components/AutomationWorkPanel.vue'
+import OrchestrationPanel from '../components/OrchestrationPanel.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
 
 const deptStore = useCurrentDepartmentStore()
@@ -191,6 +194,14 @@ async function reload(force = false) {
   } finally {
     loading.value = false
   }
+}
+
+const workPanel = ref<InstanceType<typeof AutomationWorkPanel> | null>(null)
+// 协同办理的某一步整理好后，在下方工作成果面板里直接打开它核对
+async function openWork(id: string) {
+  await workPanel.value?.refresh()
+  await workPanel.value?.open(id)
+  document.querySelector('[data-testid="automation-panel"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
 function onSwitchDept(value: string) {

@@ -164,6 +164,10 @@ AUTOMATION_FILES = [
     "enterprise-business-hub/src/main/resources/db/migration/V8__hr_lifecycle.sql",
     "enterprise-business-hub/src/main/java/com/enterprisehub/hr/HrCaseService.java",
     "service/department_home.py",
+    "service/orchestration_service.py",
+    "FasdtApi/orchestration.py",
+    "frontend/src/components/OrchestrationPanel.vue",
+    "migrations/versions/20261006_0001_orchestration.py",
 ]
 
 YAML_CONFIGS = [
