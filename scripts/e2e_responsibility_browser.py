@@ -145,7 +145,18 @@ async def main():
         page = await login(browser, "demo_head")
         await shot(page, "head-home", "部门首页新增责任协同卡片", "待我接受、我的执行中、部门逾期、本周完成率——按身份显示。", "[data-testid=home-cards]")
         await open_collab(page, "extract")
-        await page.locator("#automation-source-responsibility").fill(MEETING)
+        # 会议纪要以 Word 文件导入：服务端提取文字（不保存文件），填进输入框供核对
+        import docx
+        import tempfile
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            path = pathlib.Path(folder) / "10月例会纪要.docx"
+            document = docx.Document()
+            document.add_paragraph(MEETING)
+            document.save(path)
+            await page.locator("[data-testid=resp-module] [data-testid=import-file]").set_input_files(str(path))
+        await expect(page.locator("[data-testid=resp-module] [data-testid=import-note]")).to_contain_text("10月例会纪要.docx", timeout=20000)
+        assert (await page.locator("#automation-source-responsibility").input_value()) == MEETING
+        await shot(page, "import", "直接导入 Word 会议纪要", "PDF、Word、Excel、邮件、图片都能导入：服务端只提取文字（不保存文件），填进输入框让你核对后再整理；图片和扫描件按密级决定能否交给视觉模型识别。", "[data-testid=resp-module] [data-testid=import-note]")
         await page.get_by_role("button", name="开始整理").click()
         await expect(page.locator("[data-testid=business-checks]")).to_be_visible(timeout=30000)
         checks = await page.locator("[data-testid=business-checks]").inner_text()

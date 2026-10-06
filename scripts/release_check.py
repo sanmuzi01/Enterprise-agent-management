@@ -168,6 +168,9 @@ AUTOMATION_FILES = [
     "FasdtApi/orchestration.py",
     "frontend/src/components/OrchestrationPanel.vue",
     "migrations/versions/20261006_0001_orchestration.py",
+    # 文件导入
+    "service/document_intake.py",
+    "tests/test_document_intake.py",
     # 部门责任执行
     "FasdtApi/responsibility.py",
     "service/responsibility_service.py",

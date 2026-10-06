@@ -45,14 +45,17 @@
     <div v-if="current">
       <div class="flex flex-wrap justify-between gap-2 text-sm">
         <label :for="sourceId">{{ current.source_label }}</label>
-        <label class="cursor-pointer text-blue-600">导入文字文件
-          <input class="sr-only" type="file" accept=".txt,.md,.csv" :disabled="busy" @change="importText" />
+        <label class="cursor-pointer text-blue-600" data-testid="import-file-label">{{ importing ? '正在提取文字…' : '导入文件（PDF / Word / Excel / 邮件 / 图片 / 文本）' }}
+          <input class="sr-only" type="file" data-testid="import-file" :disabled="busy || importing"
+            accept=".txt,.md,.csv,.pdf,.docx,.xlsx,.eml,.png,.jpg,.jpeg" @change="importText" />
         </label>
       </div>
       <textarea :id="sourceId" v-model="source" :disabled="busy" maxlength="15000" rows="6"
         class="mt-2 w-full rounded-lg border p-3 text-sm" :placeholder="current.example" />
       <p class="mb-2 text-xs text-blue-700">{{ current.hint }}</p>
-      <p class="text-xs text-slate-500">支持 TXT / Markdown / CSV，最多 15,000 字。本入口不识别图片；费用仅支持人民币。材料发送给你选择的模型。</p>
+      <p v-if="importNote" class="text-xs text-emerald-700" data-testid="import-note">{{ importNote }}</p>
+      <p class="text-xs text-slate-500">可直接粘贴，或导入 PDF / Word / Excel / 邮件(.eml) / 图片 / TXT / Markdown / CSV：文字提取后放进上面的输入框，请核对再整理（最多 15,000 字，文件不会被保存）。
+        图片和扫描件需要先配置视觉模型，会把图片发给该模型识别；受限密级不能导入。费用仅支持人民币。材料发送给你选择的模型。</p>
       <button class="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40"
         :disabled="busy || !modelName || source.trim().length < 10 || (current.needs_customer && !customerId) || sensitivity === 'restricted'"
         @click="generate">{{ generating ? '正在整理，结果会自动保存…' : '开始整理' }}</button>
@@ -243,14 +246,18 @@ async function apply() {
 }
 async function toggleTask(index: number, done: boolean) { if (!selected.value) return; saving.value = true; try { select(await api.setTask(selected.value.id, index, done)); await refresh() } catch (e) { error.value = getErrorMessage(e) } finally { saving.value = false } }
 function reuse() { if (!selected.value) return; source.value = selected.value.source_text || ''; kind.value = selected.value.kind; customerId.value = selected.value.customer_id; modelName.value = selected.value.model_name; sensitivity.value = selected.value.sensitivity || 'internal'; lastInput = ''; selected.value = null; draft.value = null }
+const importing = ref(false), importNote = ref('')
 async function importText(event: Event) {
   const input = event.target as HTMLInputElement, file = input.files?.[0]
   if (!file) return
-  try { if (!/\.(txt|md|csv)$/i.test(file.name) || file.size > 100000) throw new Error('请选择小于100KB的文字文件')
-    const text = new TextDecoder('utf-8', { fatal: true }).decode(await file.arrayBuffer())
-    if (text.length > 15000) throw new Error('文件超过15,000字，请拆分后导入')
-    source.value = text; error.value = ''
-  } catch (e) { error.value = e instanceof Error ? e.message : '文件读取失败，请使用 UTF-8 文字文件' } finally { input.value = '' }
+  importing.value = true; importNote.value = ''; error.value = ''
+  try {
+    const result = await api.importFile(props.teamId, file, sensitivity.value)
+    if (result.text.length > 15000) throw new Error(`从「${result.file_name}」提取了 ${result.chars.toLocaleString()} 字，超过 15,000 字上限，请拆分或删减后再导入`)
+    source.value = result.text
+    importNote.value = `已从「${result.file_name}」（${result.label}${result.pages ? `，${result.pages} 页` : ''}${result.ocr ? '，含图片文字识别' : ''}）提取 ${result.chars.toLocaleString()} 字，请核对后再整理。`
+      + (result.warnings.length ? ' ' + result.warnings.join('；') : '')
+  } catch (e) { error.value = getErrorMessage(e, '文件读取失败') } finally { importing.value = false; input.value = '' }
 }
 // 协同办理面板开始整理某一步后，直接在这里打开对应的工作成果核对
 defineExpose({ open, refresh })

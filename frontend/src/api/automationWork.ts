@@ -58,6 +58,18 @@ export async function generateWork(data: {
   team_id: number; request_key: string; kind: WorkKind; model_name: string
   source_text: string; customer_id: number | null; sensitivity: string
 }) { return (await request.post<Work>('/enterprise/automation', data, { timeout: 120000 })).data }
+export interface ImportedText {
+  text: string; file_name: string; file_type: string; label: string; chars: number; pages: number | null
+  ocr: boolean; warnings: string[]; attachments: string[]
+}
+/** 把 PDF / Word / Excel / 邮件 / 图片 / 文本文件提取成文字（服务端不保存文件）。 */
+export async function importFile(teamId: number, file: File, sensitivity: string) {
+  const form = new FormData()
+  form.append('team_id', String(teamId))
+  form.append('sensitivity', sensitivity)
+  form.append('file', file)
+  return (await request.post<ImportedText>('/enterprise/automation/import', form, { timeout: 90000, headers: { 'Content-Type': 'multipart/form-data' } })).data
+}
 export async function applyWork(id: string, proposal: Proposal) {
   return (await request.post<Work>(`/enterprise/automation/${id}/apply`, { proposal }, { timeout: 60000 })).data
 }

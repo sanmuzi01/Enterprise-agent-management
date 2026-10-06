@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field, ConfigDict
 
 from models.async_db import get_async_db
@@ -42,6 +42,20 @@ async def history(team_id: int, offset: int = Query(default=0, ge=0, le=100000),
 @router.get("/workflows")
 async def workflows(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
     return await svc.workflows_for_team(db, user.id, team_id)
+
+
+@router.post("/import")
+async def import_file(team_id: int = Form(gt=0), sensitivity: Literal["internal", "confidential", "restricted"] = Form("internal"),
+                      file: UploadFile = File(...), db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    """把 PDF / Word / Excel / 邮件 / 图片 / 文本文件提取成文字（不保存文件），由用户核对后再整理。"""
+    from service import document_intake
+    try:
+        require_limit(f"automation_import:{user.id}", "AUTOMATION_IMPORT_RATE_LIMIT", 20,
+                      "AUTOMATION_RATE_WINDOW_SECONDS", 60, "文件导入")
+    except LimitExceeded:
+        raise RateLimited("文件导入过于频繁，请稍后重试") from None
+    content = await file.read(document_intake.MAX_BYTES + 1)
+    return await document_intake.extract_text(db, user.id, team_id, file.filename or "", content, sensitivity)
 
 
 @router.post("")
