@@ -905,6 +905,9 @@ class AgentRun(Base):
     started_at = Column(DateTime, default=utcnow, nullable=False)
     finished_at = Column(DateTime, nullable=True)          # 结束时间（结束时回填）
     conversation_id = Column(Integer, ForeignKey("conversation.id", name="fk_run_conv", ondelete="SET NULL"),nullable=True)
+    trace_id = Column(String(64), nullable=True)           # 链路追踪编号：和日志、Java 业务服务、问题中心是同一个
+    error_code = Column(String(60), nullable=True)         # 失败时的统一错误码（MODEL_TIMEOUT、JAVA_SERVICE_UNAVAILABLE…）
+    issue_no = Column(String(40), nullable=True)           # 失败进入问题中心时的问题编号
 
 # Agent运行步骤表（每一步的思考/工具/结果）
 class AgentStep(Base):

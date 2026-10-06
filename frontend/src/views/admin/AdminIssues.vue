@@ -44,6 +44,25 @@
       </table>
     </div>
 
+    <section class="space-y-2 rounded-lg border border-slate-200 bg-white p-4 text-sm" data-testid="agent-health">
+      <h3 class="font-semibold text-slate-900">Agent 运行可靠性（近 7 天）</h3>
+      <p class="text-xs text-slate-500">只统计运行次数和失败原因，不看对话内容。用户自己的配置问题（没配模型密钥）算失败但不会开问题；模型超时同一个 Agent 10 分钟内累计 3 次才会开问题。</p>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="text-slate-500"><tr><th class="py-1 pr-3">Agent</th><th class="pr-3">运行</th><th class="pr-3">失败率</th><th class="pr-3">平均步数</th><th class="pr-3">Token</th><th class="pr-3">失败原因</th><th>未关闭问题</th></tr></thead>
+          <tbody>
+            <tr v-for="a in health" :key="a.agent_id" class="border-t border-slate-100">
+              <td class="py-1 pr-3">{{ a.agent_name || `#${a.agent_id}` }}</td><td class="pr-3 tabular-nums">{{ a.runs }}</td>
+              <td class="pr-3 tabular-nums" :class="a.failure_rate >= 20 ? 'text-red-600' : ''">{{ a.failure_rate }}%（{{ a.failed }}）</td>
+              <td class="pr-3 tabular-nums">{{ a.avg_steps }}</td><td class="pr-3 tabular-nums">{{ a.tokens.toLocaleString() }}</td>
+              <td class="pr-3 text-slate-500">{{ Object.entries(a.error_codes).map(([k, v]) => `${k}×${v}`).join('、') || '—' }}</td>
+              <td class="tabular-nums">{{ a.open_issues }}</td></tr>
+            <tr v-if="!health.length"><td colspan="7" class="py-3 text-center text-slate-400">近 7 天没有运行记录</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
     <section class="space-y-2 rounded-lg border border-slate-200 bg-white p-4 text-sm" data-testid="dead-letters">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h3 class="font-semibold text-slate-900">死信队列</h3>
@@ -114,7 +133,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import * as api from '../../api/issues'
-import type { DeadLetter, EventStats, Issue, IssueDetail, IssueSummary } from '../../api/issues'
+import type { AgentHealth, DeadLetter, EventStats, Issue, IssueDetail, IssueSummary } from '../../api/issues'
 import { getErrorMessage } from '../../utils/request'
 
 const STATUS: Record<string, string> = { OPEN: '新发现', ACKNOWLEDGED: '已确认', INVESTIGATING: '排查中', MITIGATED: '已缓解', RESOLVED: '已解决', REGRESSED: '问题复发' }
@@ -128,6 +147,7 @@ const status = ref('active'), severity = ref(''), keyword = ref('')
 const loading = ref(false), busy = ref(false), error = ref('')
 const form = ref('')
 const dead = ref<DeadLetter[]>([])
+const health = ref<AgentHealth[]>([])
 const eventStats = ref<EventStats | null>(null)
 const values = reactive({ note: '', root_cause: '', resolution: '', fix_version: '' })
 
@@ -153,6 +173,9 @@ async function load() {
   } catch (e) { error.value = getErrorMessage(e, '加载问题列表失败') } finally { loading.value = false }
 }
 
+async function loadHealth() {
+  try { health.value = (await api.getAgentHealth(7)).agents } catch { /* 统计读不到不影响问题列表 */ }
+}
 async function loadDead() {
   try { [dead.value, eventStats.value] = await Promise.all([api.listDeadLetters(), api.getEventStats()]) } catch (e) { error.value = getErrorMessage(e, '加载死信队列失败') }
 }
@@ -183,5 +206,5 @@ async function submit() {
   } catch (e) { error.value = getErrorMessage(e, '操作失败') } finally { busy.value = false }
 }
 
-onMounted(() => { void load(); void loadDead() })
+onMounted(() => { void load(); void loadDead(); void loadHealth() })
 </script>

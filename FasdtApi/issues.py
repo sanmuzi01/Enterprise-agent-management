@@ -49,6 +49,12 @@ async def issue_summary(_: User = Depends(get_current_admin_user_async)):
     return await _sync(svc.summary)
 
 
+@admin_router.get("/agent-health")
+async def agent_health(days: int = Query(default=7, ge=1, le=90), _: User = Depends(get_current_admin_user_async)):
+    from service.observability import agent_runs
+    return await _sync(agent_runs.agent_health, days)
+
+
 @admin_router.get("/{issue_id}")
 async def issue_detail(issue_id: int, _: User = Depends(get_current_admin_user_async)):
     return await _sync(svc.get_issue, issue_id)

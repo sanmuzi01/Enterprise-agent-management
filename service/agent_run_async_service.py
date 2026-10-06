@@ -22,6 +22,9 @@ def _run_to_dict(run) -> Dict:
         "total_tokens": run.total_tokens,
         "final_answer": final_answer[:200] + "..." if final_answer and len(final_answer) > 200 else final_answer,
         "error_msg": run.error_msg,
+        "trace_id": run.trace_id,
+        "error_code": run.error_code,
+        "issue_no": run.issue_no,
         "started_at": _format_dt(run.started_at),
         "finished_at": _format_dt(run.finished_at),
     }

@@ -278,3 +278,23 @@ def stats(db) -> Dict[str, Any]:
     retrying = db.execute(select(func.count()).where(ConsumerRetry.attempts > 0)).scalar() or 0
     return {"unpublished": int(unpublished), "oldest_unpublished_seconds": int((utcnow() - oldest).total_seconds()) if oldest else 0,
             "dead_letters": int(dead), "retrying": int(retrying)}
+
+
+def purge_old(days: int = 7) -> int:
+    """清理已发布超过 N 天的事件及其收件箱/重试记录（有待处理死信的事件保留）。事件是传输用的，不是长期存档；审计另有专门的表。"""
+    from sqlalchemy import delete
+    db = SessionLocal()
+    try:
+        cutoff = utcnow() - timedelta(days=days)
+        old = select(OutboxEvent.event_id).where(OutboxEvent.published_at.is_not(None), OutboxEvent.published_at < cutoff)
+        parked = select(DeadLetter.event_id).where(DeadLetter.status == "pending")
+        ids = [r[0] for r in db.execute(old.where(OutboxEvent.event_id.not_in(parked)).limit(1000)).all()]
+        if not ids:
+            return 0
+        db.execute(delete(ConsumerInbox).where(ConsumerInbox.event_id.in_(ids)))
+        db.execute(delete(ConsumerRetry).where(ConsumerRetry.event_id.in_(ids)))
+        db.execute(delete(OutboxEvent).where(OutboxEvent.event_id.in_(ids)))
+        db.commit()
+        return len(ids)
+    finally:
+        db.close()

@@ -244,7 +244,7 @@ def _plan_react_steps(step_no_ref: Dict[str, int], step_info: Dict[str, Any],
 # AsyncSession 版（阶段 2）：chat_service.chat_with_agent → 这条
 # ============================================================================
 
-async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = None) -> None:
+async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = None, exc: BaseException = None) -> None:
     """异步失败收尾。run 行在函数开头已 commit，主事务 rollback 后它仍在，
     这里单独把它标记为终态（best-effort，吞二次异常）。"""
     from models.init_db import AgentRun
@@ -256,6 +256,13 @@ async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = 
             if error_msg is not None:
                 run_record.error_msg = str(error_msg)[:500]
             run_record.finished_at = utcnow()
+            if status == "failed":
+                # 失败要可追溯：错误码、trace_id、问题编号、事件（同一个事务）；追踪失败不影响收尾本身
+                try:
+                    from service.observability.agent_runs import report_failure
+                    await report_failure(db, run_id, exc, str(error_msg or ""))
+                except Exception:  # noqa: BLE001
+                    logger.warning("Agent 运行失败追踪出错", exc_info=True)
             await db.commit()
     except Exception:  # noqa: BLE001
         await db.rollback()
@@ -436,7 +443,7 @@ async def run_with_history_async(
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        await _finalize_run_async(db, run_id, "failed", error_msg=str(e))
+        await _finalize_run_async(db, run_id, "failed", error_msg=str(e), exc=e)
         raise
 
 
@@ -639,6 +646,6 @@ async def run_stream_with_history_async(
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        await _finalize_run_async(db, run_id, "failed", error_msg=str(e))
+        await _finalize_run_async(db, run_id, "failed", error_msg=str(e), exc=e)
         yield make_error(message="服务暂时异常，请稍后重试", detail=str(e)[:300])
         return

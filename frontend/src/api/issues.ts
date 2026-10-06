@@ -37,3 +37,9 @@ export const getEventStats = async () => (await request.get<EventStats>('/admin/
 export const listDeadLetters = async (status = 'pending') => (await request.get<DeadLetter[]>('/admin/events/dead-letters', { params: { status } })).data
 export const redeliverDeadLetter = async (id: number) => (await request.post<DeadLetter>(`/admin/events/dead-letters/${id}/redeliver`)).data
 export const discardDeadLetter = async (id: number, reason: string) => (await request.post<DeadLetter>(`/admin/events/dead-letters/${id}/discard`, { reason })).data
+
+export interface AgentHealth {
+  agent_id: number; agent_name: string | null; runs: number; failed: number; cancelled: number; failure_rate: number
+  open_issues: number; avg_steps: number; tokens: number; error_codes: Record<string, number>
+}
+export const getAgentHealth = async (days = 7) => (await request.get<{ days: number; agents: AgentHealth[] }>('/admin/issues/agent-health', { params: { days } })).data

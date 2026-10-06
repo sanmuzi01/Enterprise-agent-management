@@ -6,6 +6,7 @@
 """
 import asyncio
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -118,8 +119,12 @@ class Runner:
         self._stop = asyncio.Event()
 
     async def _loop(self) -> None:
+        last_purge = 0.0
         while not self._stop.is_set():
             try:
+                if time.monotonic() - last_purge > 3600:   # 每小时清理一次已发布很久的事件
+                    last_purge = time.monotonic()
+                    await asyncio.to_thread(outbox.purge_old, int(os.getenv("OUTBOX_RETENTION_DAYS", "7")))
                 result = await run_cycle()
                 busy = result["published"]["sent"] or result["consumed"]["done"] or result["consumed"]["retry"]
             except Exception:  # noqa: BLE001 —— 一轮失败不能让整个运行器停掉

@@ -229,13 +229,15 @@
 - **运行**：API 进程启动时在事件循环里起一个后台运行器（`OUTBOX_RUNNER=0` 可关闭，此时事件只会堆积、不会丢）；`run_cycle()` 是一轮完整的发布 + 消费。消费者登记在 `service/events/handlers.py`。
 - **已接入的事件**：问题中心——新问题、问题复发（与问题记录同一个事务）→ `issue_notifier` 在严重/高优先级的新问题或复发时通知所有管理员；批量整理——创建批次时每份材料的事件和材料**同一个事务**登记 → `batch_item_worker` 整理。
 
+- **Agent 运行追踪**：每次运行记录带 `trace_id`（与请求、日志、Java 同一个）；失败时补全统一错误码和问题编号，并写 `agent.run-event.v1` 事件（与运行记录同一个事务）。归类：用户自己的配置问题（没配模型密钥 → `MODEL_NOT_CONFIGURED`）和业务拒绝（额度、权限）只记录错误码、不开问题；依赖不可用（Java、数据库）和代码缺陷每次都进问题中心；**模型超时/暂时不可用**同一个 Agent 10 分钟内累计 3 次才开问题。管理后台“问题中心”页新增“Agent 运行可靠性”：各 Agent 近 7 天的运行数、失败率、失败原因分布、平均步数、Token、未关闭问题数，只统计不看内容（`GET /admin/issues/agent-health`）。发件箱里已发布超过 7 天的事件每小时清理一次（有待处理死信的保留，`OUTBOX_RETENTION_DAYS` 可调）。
+
 **批量整理的崩溃恢复**：材料停在“整理中”时进程崩溃，租约到期后事件重新投递，处理函数发现这份材料“整理中”且已超过 100 秒没有更新就接手继续整理（没超过则判断为另一个处理者还在做，稍后重试，不会重复整理）；重试用尽的材料被标成失败（用户能看到原因、可重试），事件进死信，管理员重新投递后会重新整理。
 
 故障演练：`scripts\drill_batch_restart.py`（前提 `scripts\demo.py start`）——提交 10 份材料的批次后立即杀掉真实的后端进程，此时批次还有材料没整理完；重启后全部材料整理完成、没有一份失败、没有进死信、每份恰好处理一次。已通过。
 
 测试：`tests/test_outbox.py`（20 项：事务回滚事件消失、发布失败退避补发、Kafka 适配器格式、重复投递只处理一次、租约防双重处理、崩溃后租约到期继续、按序投递、失败重试到死信并进问题中心、一个坏事件不挡后面的、重新投递/丢弃、问题事件只在新建和复发时产生、通知只给严重问题）、`tests/test_automation_batch.py`（20 项，含重启继续、正在被处理的不重复整理、重试用尽进死信、死信管理接口）。
 
-**仍未做**：真实 Kafka 的联调（Docker 守护进程未运行，没有验证）与 Kafka 一侧的消费者；`platform.audit.v1`、`enterprise.business-event.v1`、`agent.run-event.v1`、`notification.command.v1` 目前只登记了 Topic，还没有生产者；Schema 兼容性测试；OpenTelemetry Collector / Loki / Tempo / 云日志；Vue 与 Java 的 Sentry；Agent 执行记录（AgentRun）。
+**仍未做**：真实 Kafka 的联调（Docker 守护进程未运行，没有验证）与 Kafka 一侧的消费者；`platform.audit.v1`、`enterprise.business-event.v1`、`agent.run-event.v1`、`notification.command.v1` 目前只登记了 Topic，还没有生产者；Schema 兼容性测试；OpenTelemetry Collector / Loki / Tempo / 云日志；Vue 与 Java 的 Sentry；Agent 执行的“等待确认/部分成功”状态与人工修改统计。
 
 ## 部门责任执行（会议纪要 → 责任事项 → 接受 → 执行 → 提交 → 验收）
 

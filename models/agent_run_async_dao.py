@@ -47,6 +47,11 @@ async def list_steps_by_run_async(db: AsyncSession, run_id: int) -> List[AgentSt
 
 # ========== 写入（agent_runtime async 迁移用；对齐 models/agent_run_dao.py 同步版）==========
 
+def _trace_id():
+    from service.observability.context import current_trace_id
+    return current_trace_id()
+
+
 async def create_run_async(
         db: AsyncSession, user_id: int, agent_id: int,
         user_message: str, chat_id: int = None, conversation_id: int = None,
@@ -59,6 +64,7 @@ async def create_run_async(
         chat_id=chat_id,
         conversation_id=conversation_id,
         status="running",
+        trace_id=_trace_id(),
     )
     db.add(run)
     await db.flush()
