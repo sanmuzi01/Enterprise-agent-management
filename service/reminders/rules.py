@@ -315,6 +315,7 @@ async def run_weekly_digest(db) -> Tuple[int, int]:
 
 
 from service.reminders.responsibility_rules import run_resp_accept, run_resp_due, run_resp_review  # noqa: E402
+from service.reminders.attendance_reminders import run_attendance_decide, run_attendance_explain  # noqa: E402
 
 RULES: List[ReminderRule] = [
     ReminderRule("approval_waiting", "审批等待超时", "approval", 30, run_approval_waiting,
@@ -337,6 +338,10 @@ RULES: List[ReminderRule] = [
                  "主责员工：责任 2 天内到期或已逾期；指派人：已逾期，或阻塞超过 48 小时（完成/解除后自动关闭）"),
     ReminderRule("resp_review", "责任待验收", "responsibility", 60, run_resp_review,
                  "验收人：员工已提交成果等你验收，超过 24 小时升为高优先级"),
+    ReminderRule("attendance_explain", "考勤异常待说明", "attendance", 360, run_attendance_explain,
+                 "员工：有考勤异常等你说明原因（每人一条汇总，超过 2 天升为高优先级，说明后自动关闭）"),
+    ReminderRule("attendance_decide", "考勤异常待认定", "attendance", 360, run_attendance_decide,
+                 "部门负责人和人事：员工已说明、等你认定的考勤异常（每人一条汇总，自己的不算，认定后自动关闭）"),
     ReminderRule("task_due", "待办到期", "task_due", 15, run_task_due,
                  "所有人：24 小时内到期或已逾期的待办"),
     ReminderRule("weekly_digest", "每周工作摘要", "digest", 60 * 24, run_weekly_digest,

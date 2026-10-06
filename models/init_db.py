@@ -320,6 +320,94 @@ class IssueEvent(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class AttendanceRule(Base):
+    """考勤规则：企业默认（team_id 为空）或某个部门自己的上下班时间与迟到宽限。"""
+    __tablename__ = "attendance_rule"
+    __table_args__ = (UniqueConstraint("organization_id", "team_key", name="uq_attendance_rule"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    team_key = Column(Integer, nullable=False, default=0)       # team_id 或 0（企业默认），用来做唯一约束
+    work_start = Column(String(5), nullable=False, default="09:00")
+    work_end = Column(String(5), nullable=False, default="18:00")
+    grace_minutes = Column(Integer, nullable=False, default=5)
+    updated_by = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AttendanceCalendar(Base):
+    """工作日历：法定节假日和调休上班日每年都不一样，由人事按国务院公布的安排录入；没有记录的日期按周一到周五上班、周末休息。"""
+    __tablename__ = "attendance_calendar"
+    __table_args__ = (UniqueConstraint("organization_id", "day", name="uq_attendance_calendar"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    day = Column(DateTime, nullable=False)
+    kind = Column(String(10), nullable=False)       # workday（含调休上班）/ rest（休息日）/ holiday（法定节假日）
+    note = Column(String(60), nullable=True)
+
+
+class AttendanceAlias(Base):
+    """打卡机/考勤系统里的名字（姓名、工号）与平台账号的对应：现实里两边的叫法经常不一样，人事确认一次就记住。"""
+    __tablename__ = "attendance_alias"
+    __table_args__ = (UniqueConstraint("organization_id", "alias", name="uq_attendance_alias"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    alias = Column(String(80), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    created_by = Column(Integer, nullable=True)
+
+
+class AttendanceImport(Base):
+    """一次考勤文件导入（打卡机/钉钉/企业微信导出的 Excel 或 CSV）：只记录文件名、格式、区间、条数，不保存文件本身。"""
+    __tablename__ = "attendance_import"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    uploaded_by = Column(Integer, nullable=False)
+    file_name = Column(String(255), nullable=False)
+    source_format = Column(String(20), nullable=False)       # punch_rows 逐条打卡 / daily_summary 每日汇总
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+    row_count = Column(Integer, nullable=False, default=0)
+    punch_count = Column(Integer, nullable=False, default=0)
+    new_punch_count = Column(Integer, nullable=False, default=0)
+    unmatched_json = Column(Text, nullable=True)
+    skipped_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class AttendancePunch(Base):
+    __tablename__ = "attendance_punch"
+    __table_args__ = (UniqueConstraint("user_id", "punch_at", name="uq_attendance_punch"), Index("idx_attendance_punch_org_day", "organization_id", "punch_at"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    punch_at = Column(DateTime, nullable=False)             # 北京时间的本地时间（打卡机导出的就是这个）
+    import_id = Column(Integer, nullable=True)
+
+
+class AttendanceAnomaly(Base):
+    """考勤异常：由规则判断（不涉及模型），员工说明，人事/部门负责人认定。同一个人同一天同一类型只有一条。"""
+    __tablename__ = "attendance_anomaly"
+    __table_args__ = (UniqueConstraint("user_id", "work_date", "type", name="uq_attendance_anomaly"),
+                      Index("idx_attendance_anomaly_team", "team_id", "status", "work_date"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, nullable=False)
+    work_date = Column(DateTime, nullable=False)
+    type = Column(String(20), nullable=False)               # late / early_leave / missing_in / missing_out / absent / rest_day_work / overlong / leave_conflict
+    severity = Column(String(8), nullable=False, default="medium")
+    detail_json = Column(Text, nullable=False)
+    status = Column(String(12), nullable=False, default="open")   # open / explained / confirmed / dismissed / cleared
+    explanation = Column(String(500), nullable=True)
+    explained_at = Column(DateTime, nullable=True)
+    decided_by = Column(Integer, nullable=True)
+    decision_note = Column(String(500), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class PilotTimeSample(Base):
     """试点“手工办理计时”样本：员工自己记录这类工作手工做一次实际花了多少分钟，用来取代拍脑袋的基准时间。"""
     __tablename__ = "pilot_time_sample"

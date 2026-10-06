@@ -142,6 +142,17 @@ public class LeaveService {
                 .toList();
     }
 
+    /** 范围内（FastAPI 签在路径里的 scopeTeamIds）已批准、与日期区间重叠的请假；只读，给考勤异常判断用。 */
+    public List<LeaveRequestDto> listApproved(java.util.Collection<Long> scopeTeamIds, LocalDate from, LocalDate to) {
+        if (scopeTeamIds == null || scopeTeamIds.isEmpty()) {
+            throw badRequest("缺少 scopeTeamIds");
+        }
+        if (from == null || to == null || to.isBefore(from) || java.time.temporal.ChronoUnit.DAYS.between(from, to) > 93) {
+            throw badRequest("日期区间无效（最长 93 天）");
+        }
+        return leaveRequestRepository.findApprovedOverlapping(scopeTeamIds, from, to).stream().map(this::toDto).toList();
+    }
+
     private LeaveRequestDto toDto(LeaveRequest request) {
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
         return LeaveRequestDto.from(request, type);

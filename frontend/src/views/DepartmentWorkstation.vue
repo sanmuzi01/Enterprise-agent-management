@@ -65,6 +65,8 @@
       <ResponsibilityModule v-if="section === 'collab'" ref="collabModule" :key="`collab-${deptStore.currentTeamId}`"
         :team-id="deptStore.currentTeamId!" :initial-tab="collabTab" />
 
+      <AttendanceModule v-if="section === 'attendance'" :key="`attendance-${deptStore.currentTeamId}`" :team-id="deptStore.currentTeamId!" @changed="businessRevision++" />
+
       <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
         <template v-if="section === 'business'">
           <FinanceVoucherModule v-if="moduleCode === 'finance'" :team-id="deptStore.currentTeamId!" />
@@ -126,6 +128,7 @@ import AutomationWorkPanel from '../components/AutomationWorkPanel.vue'
 import OrchestrationPanel from '../components/OrchestrationPanel.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
 import ResponsibilityModule from '../components/ResponsibilityModule.vue'
+import AttendanceModule from '../components/AttendanceModule.vue'
 
 const deptStore = useCurrentDepartmentStore()
 const router = useRouter()
@@ -135,7 +138,7 @@ const businessRevision = ref(0)
 const errorMsg = ref('')
 const home = ref<DepartmentHome | null>(null)
 
-type Section = 'overview' | 'business' | 'collab' | 'office' | 'assistant'
+type Section = 'overview' | 'business' | 'collab' | 'attendance' | 'office' | 'assistant'
 const section = ref<Section>('overview')
 
 const currentDept = computed(() => deptStore.currentDepartment)
@@ -153,7 +156,7 @@ const hasBusiness = computed(() => !!home.value?.business_label)
 const sections = computed(() => {
   const list: { value: Section; label: string }[] = [{ value: 'overview', label: '概览' }]
   if (home.value?.business_label) list.push({ value: 'business', label: home.value.business_label })
-  list.push({ value: 'collab', label: '责任协同' }, { value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
+  list.push({ value: 'collab', label: '责任协同' }, { value: 'attendance', label: '考勤' }, { value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
   return list
 })
 const sectionKey = (teamId: number) => `dept_section_${teamId}`

@@ -91,6 +91,14 @@ async def build_home(db, user_id: int, team_id: int) -> Dict[str, Any]:
             cards.append(_card("resp_week", "本周责任完成率", "—" if rate is None else f"{rate:g}%", "本周到期的责任里已验收完成的比例",
                                "collab", "normal", "team"))
 
+    # ---- 考勤异常（有待办才出现：本人要说明的 / 人事和负责人要认定的）----
+    from service import attendance_service as attendance
+    att = await _safe("attendance", lambda: attendance.me(db, user_id, team_id))
+    if att and att["open_mine"]:
+        cards.append(_card("att_explain", "待说明的考勤异常", att["open_mine"], "系统按打卡记录发现的异常，请写明原因", "attendance", "warn"))
+    if att and att["to_decide"]:
+        cards.append(_card("att_decide", "待认定的考勤异常", att["to_decide"], "员工已说明，等你认定为异常或正常", "attendance", "warn"))
+
     # ---- 部门专业业务 ----
     if code == "finance":
         drafts = await _safe("vouchers", lambda: vouchers.list_vouchers_async(db, user_id, team_id, status="DRAFT", limit=200))

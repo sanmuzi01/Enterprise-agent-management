@@ -118,4 +118,11 @@ public class LeaveController {
         RequestContext ctx = RequestContextHolder.current();
         return leaveService.listTeamPending(teamId, ctx.teamId(), ctx.isOrgAdmin(), ctx.isTeamAdmin());
     }
+
+    /** 已批准的请假（只读）：scopeTeamIds 由 FastAPI 计算并写进已签名的路径，只返回这些部门的请假。 */
+    @GetMapping("/requests/approved")
+    public List<LeaveRequestDto> approved(@RequestParam List<Long> scopeTeamIds, @RequestParam LocalDate from, @RequestParam LocalDate to) {
+        ScopeGuard.require("oa.leave.read");
+        return leaveService.listApproved(scopeTeamIds, from, to);
+    }
 }

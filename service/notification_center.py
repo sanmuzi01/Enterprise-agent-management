@@ -22,6 +22,7 @@ CATEGORIES = {
     "ticket_followup": "工单待你处理提醒",
     "hr_task": "人事办理任务提醒",
     "responsibility": "责任协同提醒",
+    "attendance": "考勤异常提醒",
     "task_due": "待办到期提醒",
     "digest": "工作摘要",
     "system": "系统告警",
