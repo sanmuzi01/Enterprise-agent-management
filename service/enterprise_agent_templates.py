@@ -21,7 +21,15 @@ _TICKET_TOOLS = ["search_it_solutions", "create_it_ticket", "get_my_it_tickets",
                  "add_it_ticket_comment", "get_my_devices"]
 # 入转调离的办理任务会分到各部门（IT、财务、负责人、员工本人），所以查任务/事项是通用能力；预检与汇总只在人事模板里
 _HR_CASE_TOOLS = ["get_my_hr_tasks", "get_hr_case", "list_hr_cases"]
-_GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS + _HR_CASE_TOOLS
+# 责任协同：每个人都可能被指派责任、也可能被指定为验收人，所以员工侧和验收侧工具是通用能力；
+# 接受、提交、验收、退回是高风险工具（需用户点确认），正式指派/改责任人/改期限/取消没有任何工具，只能在工作台里由负责人操作。
+_RESPONSIBILITY_TOOLS = ["list_my_responsibilities", "get_responsibility_detail", "accept_responsibility", "raise_responsibility_objection",
+                         "report_responsibility_progress", "report_responsibility_blocker", "submit_deliverable",
+                         "list_pending_verification", "verify_deliverable", "request_rework"]
+# 把工作文本整理成责任计划草稿、负责人视角的风险与周报：先在"部门办公助手"（综合办公室/运营部/项目管理部这类没有专属业务的部门）做成标杆
+_RESPONSIBILITY_MANAGER_TOOLS = ["extract_responsibility_plan", "list_pending_acceptance", "get_department_responsibility_risks",
+                                 "get_responsibility_weekly_summary"]
+_GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS + _HR_CASE_TOOLS + _RESPONSIBILITY_TOOLS
 
 TEMPLATES = {
     "central": {
@@ -41,7 +49,7 @@ TEMPLATES = {
                  "用 get_hr_case / get_my_hr_tasks / get_hr_summary 汇报进度和逾期任务。发起、批准、完成任务、办结都必须由人在工作台里操作，你不能代办。"),
         "tools": ["get_leave_balance", "create_leave_draft", "submit_leave_request", "approve_leave_request", "reject_leave_request",
                   "get_leave_status", "get_my_leave_requests", "get_team_pending_leave_requests",
-                  "get_my_hr_tasks", "get_hr_case", "list_hr_cases", "precheck_hr_case", "get_hr_summary"],
+                  "get_my_hr_tasks", "get_hr_case", "list_hr_cases", "precheck_hr_case", "get_hr_summary"] + _RESPONSIBILITY_TOOLS,
         "examples": ["查询我今年的年假余额", "帮我起草一份请假申请", "张三下月离职，先帮我检查一下", "有哪些入职任务逾期了"],
     },
     "procurement": {
@@ -50,7 +58,7 @@ TEMPLATES = {
         "description": "库存、部门预算、采购草稿、提交与审批。",
         "role": "你是专业采购与库存助手，协助采购人员核对需求、库存和预算，跟踪采购申请。",
         "task": "收集 SKU、数量和采购原因，查询库存与部门预算后创建采购草稿。提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。",
-        "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"],
+        "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"] + _RESPONSIBILITY_TOOLS,
         "examples": ["查询本部门今年的采购预算", "帮我起草采购申请", "查询某个 SKU 的库存"],
     },
     "crm": {
@@ -59,7 +67,7 @@ TEMPLATES = {
         "description": "客户摘要、跟进记录、商机维护与查询。",
         "role": "你是专业 CRM 销售助手，帮助销售人员整理客户信息、记录跟进并维护商机。",
         "task": "先确认客户 ID 并查询客户摘要，基于真实沟通内容创建跟进草稿，确认后提交。维护商机前核对阶段、金额和名称；禁止虚构客户意向和成交结果。",
-        "tools": ["list_team_customers", "get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"],
+        "tools": ["list_team_customers", "get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"] + _RESPONSIBILITY_TOOLS,
         "examples": ["查询客户摘要", "帮我整理客户跟进记录", "查看客户当前的商机"],
     },
     "finance": {
@@ -71,7 +79,7 @@ TEMPLATES = {
                  "记账：报销批准后系统会自动生成凭证草稿——用工具查看待核对凭证、风险项和科目依据，向财务人员说明哪里需要核对；"
                  "你不能确认入账、作废或修改科目，这些必须由财务人员在工作台里核对后操作。"),
         "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims",
-                  "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary"],
+                  "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary"] + _RESPONSIBILITY_TOOLS,
         "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "有哪些记账凭证待我核对", "汇总本月已入账的费用科目"],
     },
     "it": {
@@ -85,13 +93,22 @@ TEMPLATES = {
         "tools": _GENERAL_TOOLS + ["list_it_queue", "get_it_ticket_detail", "get_it_desk_summary", "list_it_devices"],
         "examples": ["打印机一直脱机怎么办", "帮我提交一个设备申请工单", "查看我的工单进度", "现在有哪些工单快超时了"],
     },
-    # 没有配置专属业务类型的部门（Team.department_code 为空）使用的通用助手。
+    # 没有配置专属业务类型的部门（Team.department_code 为空，如综合办公室、运营部、项目管理部）使用的通用助手：
+    # 同时是"部门责任执行 Agent"的标杆——把会议纪要、聊天记录和通知转成可追踪的责任闭环。
     "office": {
-        "id": "office", "name": "部门办公助手", "agent_type": "department", "department_code": None,
-        "description": "请假、报销、IT 工单等各部门通用的办公事务。",
-        "role": "你是部门办公助手，协助部门成员办理请假和报销等日常事务。",
-        "task": "请假先查余额再起草；报销先查部门预算再起草。提交前复述关键字段并等待用户确认；审批依据真实权限。",
-        "tools": _GENERAL_TOOLS, "examples": ["查询我今年的年假余额", "帮我起草一份报销申请", "查询我的报销进度"],
+        "id": "office", "name": "部门责任执行助手", "agent_type": "department", "department_code": None,
+        "description": "把会议纪要、聊天记录和通知整理成责任计划草稿，跟进员工接受、执行、提交与验收；也能办理请假、报销、IT 工单等通用事务。",
+        "role": "你是部门责任执行助手：把非结构化的工作文本转成每名员工都能确认、执行、提交、验收的责任事项，并协助办理请假、报销等日常事务。",
+        "task": ("责任协同：用户贴出会议纪要、聊天记录或通知时，用 extract_responsibility_plan 整理成责任计划草稿——只提取原文明确要某人去做的具体动作，"
+                 "人名、期限说法、交付物、验收标准都必须来自原文，原文没有就留空并告诉用户还缺什么，绝不编造；仅讨论未决定的内容不算责任事项。"
+                 "生成的只是草稿，必须如实告知“还没有通知任何人”，需要部门负责人在工作台「责任协同」里核对并发布。"
+                 "员工问“我今天最重要的事、哪些快逾期、哪项在等别人”用 list_my_responsibilities / get_responsibility_detail；"
+                 "负责人问“谁还没接受、哪些受阻、本周完成情况”用 list_pending_acceptance / get_department_responsibility_risks / get_responsibility_weekly_summary。"
+                 "接受责任、提交成果、验收通过、退回是需要人确认的决定：调用后会生成待确认单，要如实告诉用户“还没有生效，请在界面上点击确认”。"
+                 "你不能替负责人指派、更换责任人或改期限，不能替员工接受，不能替验收人验收。只陈述系统里的事实，不评价员工态度，"
+                 "不根据聊天字数、在线时长等数据推测绩效。请假先查余额再起草；报销先查部门预算再起草；提交前复述关键字段并等待确认。"),
+        "tools": _GENERAL_TOOLS + _RESPONSIBILITY_MANAGER_TOOLS,
+        "examples": ["把这份会议纪要整理成责任计划", "我今天最重要的三件事是什么", "哪些责任还没有被员工接受", "帮我起草一份请假申请"],
     },
 }
 for _template in TEMPLATES.values():

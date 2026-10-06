@@ -25,6 +25,12 @@ class CallSignsRealRequestBytesTest(unittest.TestCase):
     直接 mock `requests.request`，拦下真正发出去的 `data=` 参数，反过来验证
     X-Context 里签的 body_sha256/method/path 是不是跟它一致。"""
 
+    def setUp(self):
+        # 熔断器是进程级状态：前面的测试（Java 没启动时的首页等）可能已经把它打开，会让这里的签名断言误报
+        from service.http_resilience import circuit_breaker
+        circuit_breaker.record_success("enterprise_hub")
+        self.addCleanup(circuit_breaker.record_success, "enterprise_hub")
+
     def _do_call(self, method, path, json_body):
         captured = {}
 

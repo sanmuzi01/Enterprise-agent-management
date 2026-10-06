@@ -46,7 +46,8 @@ export interface HomeCard {
   label: string
   value: number | string
   hint: string
-  section: 'todos' | 'business' | 'office' | 'overview'
+  section: 'todos' | 'business' | 'office' | 'overview' | 'collab'
+  tab?: string
   tone: 'normal' | 'warn' | 'danger'
 }
 

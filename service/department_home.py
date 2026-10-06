@@ -19,8 +19,11 @@ logger = get_logger("department_home")
 BUSINESS_LABELS = {"finance": "财务记账", "it": "IT 服务台", "hr": "人事办理", "sales": "客户与商机", "procurement": "采购业务"}
 
 
-def _card(key: str, label: str, value: Any, hint: str, section: str, tone: str = "normal") -> Dict[str, Any]:
-    return {"key": key, "label": label, "value": value, "hint": hint, "section": section, "tone": tone}
+def _card(key: str, label: str, value: Any, hint: str, section: str, tone: str = "normal", tab: Optional[str] = None) -> Dict[str, Any]:
+    card = {"key": key, "label": label, "value": value, "hint": hint, "section": section, "tone": tone}
+    if tab:
+        card["tab"] = tab   # 责任协同分区里直接打开哪个视图
+    return card
 
 
 async def _safe(name: str, loader: Callable[[], Awaitable[Any]]) -> Optional[Any]:
@@ -37,7 +40,7 @@ async def _safe(name: str, loader: Callable[[], Awaitable[Any]]) -> Optional[Any
 async def build_home(db, user_id: int, team_id: int) -> Dict[str, Any]:
     from service import (crm_workspace_service as crm, department_workspace_service as oa, finance_voucher_service as vouchers,
                          finance_workspace_service as fin, hr_service as hr, it_service as it,
-                         procurement_workspace_service as proc)
+                         procurement_workspace_service as proc, responsibility_service as resp)
     await require_team_member_async(db, user_id, team_id, "leave")   # 请假是所有部门通用的模块：只校验成员身份
     row = (await db.execute(text("SELECT name, department_code FROM teams WHERE id = :t"), {"t": team_id})).first()
     code = row.department_code
@@ -66,6 +69,27 @@ async def build_home(db, user_id: int, team_id: int) -> Dict[str, Any]:
             pending += len(rows or [])
         cards.append(_card("approvals", "待我审批", pending, "请假、报销、采购、IT 申请、人事事项", "office",
                            "warn" if pending else "normal"))
+
+    # ---- 责任协同（所有部门：员工看自己的责任，负责人另看部门维度）----
+    mine = await _safe("responsibility", lambda: resp.mine_async(db, user_id, team_id))
+    if mine is not None:
+        overdue, due_soon = mine.get("overdue", 0), mine.get("dueSoon", 0)
+        cards.append(_card("resp_accept", "待我接受", mine.get("pendingAccept", 0), "指派给我、等我确认的责任事项", "collab",
+                           "warn" if mine.get("pendingAccept") else "normal", "mine"))
+        cards.append(_card("resp_doing", "我的执行中", mine.get("inProgress", 0),
+                           f"其中逾期 {overdue} 项" if overdue else (f"{due_soon} 项两天内到期" if due_soon else "我已接受、正在做的责任"),
+                           "collab", "danger" if overdue else "warn" if due_soon else "normal", "mine"))
+        if mine.get("blocked"):
+            cards.append(_card("resp_blocked", "我的受阻", mine["blocked"], "我报告了阻塞、等待解决的责任", "collab", "warn", "mine"))
+        if mine.get("pendingReview"):
+            cards.append(_card("resp_review", "待我验收", mine["pendingReview"], "员工提交了成果，等我对照验收标准验收", "collab", "warn", "review"))
+        if mine.get("isHead"):
+            team_overdue = mine.get("teamOverdue", 0)
+            cards.append(_card("resp_team_overdue", "部门逾期", team_overdue, "部门里已过截止日期仍未结束的责任", "collab",
+                               "danger" if team_overdue else "normal", "team"))
+            rate = mine.get("weekCompletionRate")
+            cards.append(_card("resp_week", "本周责任完成率", "—" if rate is None else f"{rate:g}%", "本周到期的责任里已验收完成的比例",
+                               "collab", "normal", "team"))
 
     # ---- 部门专业业务 ----
     if code == "finance":

@@ -47,6 +47,10 @@ class WorkflowDefinition:
     order: int = 100
     baseline_minutes: float = 10.0   # 手工办理一次的估算时间（分钟），管理员可在后台调整
     extra: Dict[str, Any] = field(default_factory=dict)
+    # 整理结果落地前的确定性补充（如按企业成员名单匹配姓名、换算期限）：(db, user_id, team_id, 整理结果, 原文) → 整理结果
+    enrich: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None
+    # 自定义保存：不走通用的"POST 一个 Java 草稿接口"，而是由工作流自己校验并写入：(db, user_id, work, 核对后内容) → 业务结果
+    apply: Optional[Callable[..., Awaitable[Dict[str, Any]]]] = None
 
     def available_for(self, department_code: Optional[str]) -> bool:
         return self.departments is None or department_code in self.departments

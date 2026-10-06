@@ -626,6 +626,31 @@ class ResponsibilityIntegrationTest {
     }
 
     @Test
+    void draftIsInvisibleToAssigneesUntilPublished() {
+        Map<String, Object> plan = createPlan(List.of(fullTask("联调首页")));   // 负责人起草，alice 被列为主责
+        long task = taskId(plan, 0);
+        assertThat(get("/responsibility/plans/" + plan.get("id"), member(alice)).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(get("/responsibility/tasks/" + task, member(alice)).getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(list(get("/responsibility/plans", member(alice)))).isEmpty();
+        assertThat(list(get("/responsibility/tasks?view=mine", member(alice)))).isEmpty();
+        assertThat(act(task, "accept", null, member(alice)).getStatusCode()).isIn(HttpStatus.FORBIDDEN, HttpStatus.BAD_REQUEST, HttpStatus.NOT_FOUND);
+        post("/responsibility/plans/" + plan.get("id") + "/publish", Map.of("eligible", eligible()), headOf());
+        assertThat(get("/responsibility/plans/" + plan.get("id"), member(alice)).getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(list(get("/responsibility/plans", member(alice)))).hasSize(1);
+    }
+
+    @Test
+    void pendingReviewCountIgnoresTheCurrentDepartmentFilter() {
+        long task = taskId(publishedPlan("联调首页"), 0);
+        act(task, "accept", null, member(alice));
+        act(task, "submit", Map.of("summary", "已做好"), member(alice));
+        // carol 作为验收人，当前所在部门是 otherTeam，但她能看到 team 里等她验收的成果
+        Who carolElsewhere = new Who(carol, List.of(otherTeam), List.of(team));
+        assertThat(map(get("/responsibility/mine?teamId=" + otherTeam, carolElsewhere)).get("pendingReview")).isEqualTo(1);
+        assertThat(list(get("/responsibility/tasks?view=review", carolElsewhere))).hasSize(1);
+    }
+
+    @Test
     void eventsAreAppendOnly() {
         for (Method method : RespEventRepository.class.getMethods()) {
             String name = method.getName().toLowerCase();

@@ -57,6 +57,7 @@ def child_env() -> dict:
     env["APP_ENV"] = "development"
     # 演示时同一台机器会频繁切换多个账号，默认的“每 IP 5 分钟 20 次登录”会误伤；只放宽演示环境
     env.setdefault("LOGIN_IP_RATE_LIMIT", "300")
+    env.setdefault("LOGIN_USER_RATE_LIMIT", "100")   # 同一个演示账号每 5 分钟默认最多 8 次，彩排和反复演示会触发
     env["PYTHONIOENCODING"] = "utf-8"
     return env
 

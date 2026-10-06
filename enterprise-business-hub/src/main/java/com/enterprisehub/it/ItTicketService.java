@@ -361,7 +361,8 @@ public class ItTicketService {
         double resolveHours = 0;
         double responseHours = 0;
         int responded = 0;
-        for (Object[] row : tickets.resolvedTimings(scope, from, now)) {
+        // MySQL DATETIME 只有秒精度，写入时会四舍五入：刚解决的工单 resolved_at 可能比 now 晚不到一秒，上界要留出余量
+        for (Object[] row : tickets.resolvedTimings(scope, from, now.plusSeconds(2))) {
             Instant created = (Instant) row[0];
             Instant first = (Instant) row[1];
             Instant done = (Instant) row[2];

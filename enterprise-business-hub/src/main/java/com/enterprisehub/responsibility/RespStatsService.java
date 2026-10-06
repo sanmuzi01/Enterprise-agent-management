@@ -44,6 +44,9 @@ public class RespStatsService {
         List<RespTask> all = tasks.findAll((root, q, cb) -> cb.and(root.get("teamId").in(scope), cb.notEqual(root.get("status"), RespTask.DRAFT)));
         LocalDate today = today();
         long me = actor.userId();
+        // 等我验收的不受当前部门限制：企业管理员可能在别的部门担任验收人
+        List<RespTask> reviewing = tasks.findAll((root, q, cb) -> cb.and(root.get("teamId").in(actor.accessibleTeams()),
+                cb.equal(root.get("reviewerUserId"), me), cb.equal(root.get("status"), RespTask.PENDING_REVIEW)));
         List<RespTask> mine = all.stream().filter(t -> Objects.equals(t.getResponsibleUserId(), me)).toList();
         result.put("pendingAccept", count(mine, RespTask.PENDING_ACCEPT));
         result.put("inProgress", count(mine, RespTask.IN_PROGRESS));
@@ -51,8 +54,7 @@ public class RespStatsService {
         result.put("overdue", mine.stream().filter(t -> t.isOpenForWork() && t.getDueDate() != null && t.getDueDate().isBefore(today)).count());
         result.put("dueSoon", mine.stream().filter(t -> t.isOpenForWork() && t.getDueDate() != null
                 && !t.getDueDate().isBefore(today) && !t.getDueDate().isAfter(today.plusDays(2))).count());
-        result.put("pendingReview", all.stream().filter(t -> Objects.equals(t.getReviewerUserId(), me)
-                && RespTask.PENDING_REVIEW.equals(t.getStatus())).count());
+        result.put("pendingReview", reviewing.size());
         List<RespTask> assigned = all.stream().filter(t -> Objects.equals(t.getAssignedByUserId(), me)).toList();
         result.put("assignedNotAccepted", count(assigned, RespTask.PENDING_ACCEPT) + count(assigned, RespTask.NEGOTIATING));
         Set<Long> heads = scope.stream().filter(actor::isHead).collect(Collectors.toSet());

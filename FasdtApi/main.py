@@ -37,6 +37,7 @@ from FasdtApi.finance_vouchers import router as finance_vouchers_router
 from FasdtApi.it_service import router as it_service_router
 from FasdtApi.hr_cases import router as hr_cases_router
 from FasdtApi.orchestration import router as orchestration_router
+from FasdtApi.responsibility import router as responsibility_router
 from FasdtApi.automation_work import router as automation_work_router
 from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
@@ -124,6 +125,7 @@ app.include_router(finance_vouchers_router)
 app.include_router(it_service_router)
 app.include_router(hr_cases_router)
 app.include_router(orchestration_router)
+app.include_router(responsibility_router)
 app.include_router(automation_work_router)
 app.include_router(work_center_router)
 app.include_router(evaluation_router)

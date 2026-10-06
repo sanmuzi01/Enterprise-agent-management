@@ -60,7 +60,10 @@
       <OrchestrationPanel v-if="section === 'overview'" :key="`orch-${deptStore.currentTeamId}`" :team-id="deptStore.currentTeamId!"
         :revision="businessRevision" @open-work="openWork" />
       <AutomationWorkPanel ref="workPanel" v-show="section === 'overview'" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
-        @saved="businessRevision++" />
+        @saved="businessRevision++" @open-result="openResponsibilityPlan" />
+
+      <ResponsibilityModule v-if="section === 'collab'" ref="collabModule" :key="`collab-${deptStore.currentTeamId}`"
+        :team-id="deptStore.currentTeamId!" :initial-tab="collabTab" />
 
       <div :key="`${deptStore.currentTeamId}-${businessRevision}`" class="space-y-5">
         <template v-if="section === 'business'">
@@ -104,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { RefreshCcw } from 'lucide-vue-next'
 import { useCurrentDepartmentStore } from '../stores/currentDepartment'
@@ -122,6 +125,7 @@ import LeaveModule from '../components/LeaveModule.vue'
 import AutomationWorkPanel from '../components/AutomationWorkPanel.vue'
 import OrchestrationPanel from '../components/OrchestrationPanel.vue'
 import ProcurementModule from '../components/ProcurementModule.vue'
+import ResponsibilityModule from '../components/ResponsibilityModule.vue'
 
 const deptStore = useCurrentDepartmentStore()
 const router = useRouter()
@@ -131,7 +135,7 @@ const businessRevision = ref(0)
 const errorMsg = ref('')
 const home = ref<DepartmentHome | null>(null)
 
-type Section = 'overview' | 'business' | 'office' | 'assistant'
+type Section = 'overview' | 'business' | 'collab' | 'office' | 'assistant'
 const section = ref<Section>('overview')
 
 const currentDept = computed(() => deptStore.currentDepartment)
@@ -149,7 +153,7 @@ const hasBusiness = computed(() => !!home.value?.business_label)
 const sections = computed(() => {
   const list: { value: Section; label: string }[] = [{ value: 'overview', label: '概览' }]
   if (home.value?.business_label) list.push({ value: 'business', label: home.value.business_label })
-  list.push({ value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
+  list.push({ value: 'collab', label: '责任协同' }, { value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
   return list
 })
 const sectionKey = (teamId: number) => `dept_section_${teamId}`
@@ -161,9 +165,25 @@ function setSection(value: Section) {
   } catch { /* 记不住上次打开的分区不影响使用 */ }
 }
 
+const collabTab = ref<string | undefined>(undefined)
+const collabModule = ref<InstanceType<typeof ResponsibilityModule> | null>(null)
+
 function openCard(card: HomeCard) {
   if (card.section === 'todos') router.push('/todos')
-  else setSection(card.section as Section)
+  else {
+    collabTab.value = card.section === 'collab' ? card.tab : undefined
+    setSection(card.section as Section)
+    if (card.section === 'collab' && card.tab) void nextTick(() => collabModule.value?.setTab(card.tab as never))
+  }
+}
+
+// 在概览里整理出责任计划草稿后，直接去责任协同里补全并发布
+async function openResponsibilityPlan(planId: number) {
+  collabTab.value = 'plans'
+  setSection('collab')
+  await nextTick()
+  await nextTick()
+  collabModule.value?.openPlan(planId)
 }
 
 async function loadHome() {

@@ -80,6 +80,12 @@ def purge(db, ent):
     users = ",".join(str(u) for u in user_ids) or "0"
     with ent.begin() as conn:
         for sql in (
+            f"DELETE FROM responsibility_event WHERE plan_id IN (SELECT id FROM responsibility_plan WHERE team_id IN ({ids}))",
+            f"DELETE FROM responsibility_deliverable WHERE task_id IN (SELECT id FROM responsibility_task WHERE team_id IN ({ids}))",
+            f"DELETE FROM responsibility_dependency WHERE task_id IN (SELECT id FROM responsibility_task WHERE team_id IN ({ids}))",
+            f"DELETE FROM responsibility_collaborator WHERE task_id IN (SELECT id FROM responsibility_task WHERE team_id IN ({ids}))",
+            f"DELETE FROM responsibility_task WHERE team_id IN ({ids})",
+            f"DELETE FROM responsibility_plan WHERE team_id IN ({ids})",
             f"DELETE FROM hr_case_task WHERE case_id IN (SELECT id FROM hr_case WHERE team_id IN ({ids}))",
             f"DELETE FROM hr_case WHERE team_id IN ({ids})",
             f"DELETE FROM it_ticket_comment WHERE ticket_id IN (SELECT id FROM it_ticket WHERE team_id IN ({ids}))",
@@ -246,7 +252,52 @@ def seed_activity(teams, users):
                 employee_user_id=users["demo_newbie"].id, employee_team_id=t["sales"],
                 effective_date=(TODAY + timedelta(days=5)).isoformat(), position="销售专员")
     call("post", f"/enterprise/hr/cases/{case['id']}/approve", "demo_head", team_id=t["sales"])
-    return {"claim": claim["id"], "ticket": done["id"], "hr_case": case["id"]}
+    plans = seed_responsibility(call, t, users)
+    return {"claim": claim["id"], "ticket": done["id"], "hr_case": case["id"], "plans": plans}
+
+
+def seed_responsibility(call, t, users):
+    """责任协同的历史：一份已闭环的计划（含一次验收退回）和一份进行中的计划（待接受 / 执行中 / 受阻），
+    让部门看板和效率指标一开始就有内容；全部走真实接口。演示现场再用会议纪要现做一份新的。"""
+    emp, newbie, owner = users["demo_emp"].id, users["demo_newbie"].id, users["demo_owner"].id
+    day = lambda n: (TODAY + timedelta(days=n)).isoformat()  # noqa: E731
+
+    def task(title, who, due, deliverable, criteria, evidence, **extra):
+        return {"title": title, "responsible_user_id": who, "reviewer_user_id": owner, "due_date": day(due), "deliverable": deliverable,
+                "acceptance_criteria": criteria, "priority": "NORMAL", "evidence": evidence, **extra}
+
+    review_text = (f"9月新品发布复盘会纪要：demo_emp负责整理发布复盘报告，下周前提交复盘报告，验收标准是包含数据与改进项。"
+                   f"demo_newbie负责汇总客户反馈，下周前提交反馈汇总表，验收标准是覆盖全部客户。demo_emp负责更新销售话术，下周前提交话术文档。")
+    done_plan = call("post", "/enterprise/responsibility/plans", "demo_head", team_id=t["sales"], title="9月新品发布复盘会", source_type="MEETING",
+                     source_text=review_text, summary="复盘新品发布，三项改进事项已分派", tasks=[
+        task("整理发布复盘报告", emp, 5, "复盘报告", "包含数据与改进项", "demo_emp负责整理发布复盘报告，下周前提交复盘报告，验收标准是包含数据与改进项"),
+        task("汇总客户反馈", newbie, 6, "反馈汇总表", "覆盖全部客户", "demo_newbie负责汇总客户反馈，下周前提交反馈汇总表，验收标准是覆盖全部客户"),
+        task("更新销售话术", emp, 7, "话术文档", "覆盖新品的核心卖点", "demo_emp负责更新销售话术，下周前提交话术文档")])
+    call("post", f"/enterprise/responsibility/plans/{done_plan['id']}/publish", "demo_head", team_id=t["sales"], note="按复盘会决定指派")
+    first, second, third = [x["id"] for x in done_plan["tasks"]]
+    for task_id, who in ((first, "demo_emp"), (second, "demo_newbie"), (third, "demo_emp")):
+        call("post", f"/enterprise/responsibility/tasks/{task_id}/accept", who, team_id=t["sales"])
+        call("post", f"/enterprise/responsibility/tasks/{task_id}/submit", who, team_id=t["sales"], summary="已完成，成果见共享盘", link="https://example.com/docs/" + str(task_id))
+    call("post", f"/enterprise/responsibility/tasks/{first}/verify", "demo_owner", team_id=t["hr"], note="符合标准")
+    call("post", f"/enterprise/responsibility/tasks/{second}/rework", "demo_owner", team_id=t["hr"], reason="没有覆盖云帆软件的反馈")
+    call("post", f"/enterprise/responsibility/tasks/{second}/submit", "demo_newbie", team_id=t["sales"], summary="补充了云帆软件的反馈")
+    call("post", f"/enterprise/responsibility/tasks/{second}/verify", "demo_owner", team_id=t["hr"])
+    call("post", f"/enterprise/responsibility/tasks/{third}/verify", "demo_owner", team_id=t["hr"])
+
+    visit_text = ("10月重点客户回访安排：demo_emp负责回访远航物流并记录需求，本月底前完成，验收标准是形成需求记录。"
+                  "demo_newbie负责准备启明教育报价方案，下周前提交报价方案。demo_emp负责对接云帆软件试用账号，下周前完成。")
+    live = call("post", "/enterprise/responsibility/plans", "demo_head", team_id=t["sales"], title="10月重点客户回访安排", source_type="MEETING",
+                source_text=visit_text, summary="三个重点客户本月跟进", tasks=[
+        task("回访远航物流并记录需求", emp, 20, "需求记录", "形成需求记录", "demo_emp负责回访远航物流并记录需求，本月底前完成，验收标准是形成需求记录"),
+        task("准备启明教育报价方案", newbie, 8, "报价方案", "含两档价格方案", "demo_newbie负责准备启明教育报价方案，下周前提交报价方案"),
+        task("对接云帆软件试用账号", emp, 9, "试用账号开通记录", "客户确认可登录", "demo_emp负责对接云帆软件试用账号，下周前完成")])
+    call("post", f"/enterprise/responsibility/plans/{live['id']}/publish", "demo_head", team_id=t["sales"])
+    a, _b, c = [x["id"] for x in live["tasks"]]
+    call("post", f"/enterprise/responsibility/tasks/{a}/accept", "demo_emp", team_id=t["sales"])
+    call("post", f"/enterprise/responsibility/tasks/{a}/progress", "demo_emp", team_id=t["sales"], note="已约好周三上门回访", percent=30)
+    call("post", f"/enterprise/responsibility/tasks/{c}/accept", "demo_emp", team_id=t["sales"])
+    call("post", f"/enterprise/responsibility/tasks/{c}/block", "demo_emp", team_id=t["sales"], reason="等待 IT 开通试用环境账号")
+    return {"completed": done_plan["id"], "in_progress": live["id"]}
 
 
 def main() -> int:
@@ -273,7 +324,7 @@ def main() -> int:
         print("4/4 进行中的业务单据（经真实接口）…")
         try:
             created = seed_activity(teams, users)
-            print(f"    已生成：报销单 #{created['claim']}（含待核对凭证）、IT 工单、人事入职办理 #{created['hr_case']} 等")
+            print(f"    已生成：报销单 #{created['claim']}（含待核对凭证）、IT 工单、人事入职办理 #{created['hr_case']}、责任计划 #{created['plans']['completed']} / #{created['plans']['in_progress']} 等")
         except Exception as exc:  # noqa: BLE001
             print(f"    跳过（需要 Java 业务服务在 {os.getenv('ENTERPRISE_HUB_BASE_URL', 'http://127.0.0.1:8090')} 运行）：{exc}")
     finally:

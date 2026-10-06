@@ -18,6 +18,7 @@ class ChildEnvTest(unittest.TestCase):
         self.assertEqual(env["OFFLINE_DEMO_MODEL"], "1")
         self.assertEqual(env["APP_ENV"], "development")        # 即使外面设成生产，演示脚本也不会把子进程带成生产
         self.assertEqual(env["LOGIN_IP_RATE_LIMIT"], "300")
+        self.assertEqual(env["LOGIN_USER_RATE_LIMIT"], "100")
 
     def test_explicit_login_limit_is_respected(self):
         with patch.dict(os.environ, {"LOGIN_IP_RATE_LIMIT": "5"}):

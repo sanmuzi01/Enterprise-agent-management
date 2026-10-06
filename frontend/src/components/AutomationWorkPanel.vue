@@ -2,8 +2,8 @@
   <section class="rounded-xl border border-blue-200 bg-white p-5 space-y-5" data-testid="automation-panel">
     <div class="flex flex-wrap justify-between gap-3">
       <div>
-        <h2 class="font-semibold text-slate-900">让 AI 帮我整理工作</h2>
-        <p class="mt-1 text-sm text-slate-500">交给 AI 整理材料和提取待办，核对后保存为真实业务草稿。</p>
+        <h2 class="font-semibold text-slate-900">{{ onlyKind ? 'AI 整理会议纪要与工作文本' : '让 AI 帮我整理工作' }}</h2>
+        <p class="mt-1 text-sm text-slate-500">{{ onlyKind ? '粘贴会议纪要、聊天记录或通知，AI 只负责提取行动项并给出依据；补全、指派、接受、验收都由人完成。' : '交给 AI 整理材料和提取待办，核对后保存为真实业务草稿。' }}</p>
       </div>
       <button class="text-sm text-blue-600" :disabled="busy" @click="refresh">刷新成果</button>
     </div>
@@ -16,7 +16,7 @@
     <p v-if="stats" class="text-xs text-slate-500">统计范围：我在本部门的工作。失败 {{ stats.failed }} 次，修改后保存 {{ stats.edited }} 次。耗时为实际模型整理时间，不等同于节省的人工时间。</p>
     <p v-if="error" role="alert" class="rounded bg-red-50 p-3 text-sm text-red-700">{{ error }}</p>
     <div class="grid gap-3 sm:grid-cols-3">
-      <label class="text-sm">工作类型
+      <label v-if="!onlyKind" class="text-sm">工作类型
         <select v-model="kind" :disabled="busy" class="mt-1 w-full rounded border p-2">
           <option v-for="w in availableWorkflows" :key="w.id" :value="w.id">{{ w.title }}</option>
         </select>
@@ -44,12 +44,12 @@
     </label>
     <div v-if="current">
       <div class="flex flex-wrap justify-between gap-2 text-sm">
-        <label for="automation-source">{{ current.source_label }}</label>
+        <label :for="sourceId">{{ current.source_label }}</label>
         <label class="cursor-pointer text-blue-600">导入文字文件
           <input class="sr-only" type="file" accept=".txt,.md,.csv" :disabled="busy" @change="importText" />
         </label>
       </div>
-      <textarea id="automation-source" v-model="source" :disabled="busy" maxlength="15000" rows="6"
+      <textarea :id="sourceId" v-model="source" :disabled="busy" maxlength="15000" rows="6"
         class="mt-2 w-full rounded-lg border p-3 text-sm" :placeholder="current.example" />
       <p class="mb-2 text-xs text-blue-700">{{ current.hint }}</p>
       <p class="text-xs text-slate-500">支持 TXT / Markdown / CSV，最多 15,000 字。本入口不识别图片；费用仅支持人民币。材料发送给你选择的模型。</p>
@@ -96,6 +96,8 @@
         </div>
         <div v-if="selected.status === 'applied'" class="rounded bg-emerald-50 p-3 text-sm text-emerald-800">
           已保存{{ selectedWorkflow?.draft_name }}草稿 #{{ selected.business_result?.id }}。可在下方业务模块查看和继续办理。
+          <button v-if="selected.business_result?.id && selected.kind === 'responsibility'" type="button" data-testid="open-plan-result"
+            class="ml-2 rounded bg-emerald-600 px-2.5 py-1 text-xs text-white hover:bg-emerald-700" @click="emit('open-result', selected.business_result!.id!)">去补全并发布 →</button>
         </div>
         <div v-if="selected.status === 'applied' && followupItems.length" class="space-y-2">
           <h4 class="text-sm font-medium">我的后续待办（保存在本工作成果中）</h4>
@@ -110,8 +112,8 @@
 
     <div class="space-y-2">
       <h3 class="text-sm font-semibold">我的工作成果</h3>
-      <p v-if="!items.length" class="text-sm text-slate-400">还没有成果。提交一份材料，处理记录会保留在这里。</p>
-      <button v-for="work in items" :key="work.id" :disabled="busy" @click="open(work.id)"
+      <p v-if="!visibleItems.length" class="text-sm text-slate-400">还没有成果。提交一份材料，处理记录会保留在这里。</p>
+      <button v-for="work in visibleItems" :key="work.id" :disabled="busy" @click="open(work.id)"
         class="flex w-full flex-wrap items-center justify-between gap-2 rounded-lg border p-3 text-left text-sm hover:bg-slate-50">
         <span>{{ nameOf(work.kind) }} · {{ new Date(work.created_at).toLocaleString() }}</span>
         <span>{{ statusName(work.status) }}<span v-if="followupCount(work)"> · 待办 {{ work.completed_tasks.length }}/{{ followupCount(work) }}</span></span>
@@ -125,19 +127,22 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, provide, reactive, ref, watch } from 'vue'
 import * as api from '../api/automationWork'
+import { getCandidates } from '../api/responsibility'
 import { listConfigs, type LlmConfig } from '../api/llmConfig'
 import { getTeamCustomers, type CustomerDto } from '../api/departmentCrm'
 import { getErrorMessage } from '../utils/request'
 import WorkflowForm from './WorkflowForm.vue'
 
-const props = defineProps<{ teamId: number }>()
-const emit = defineEmits<{ saved: [] }>()
+const props = defineProps<{ teamId: number; onlyKind?: string }>()
+// 同一页可能同时挂着两个面板（概览 + 责任协同），输入框 id 不能重复；概览里的保持原来的 id
+const sourceId = computed(() => (props.onlyKind ? `automation-source-${props.onlyKind}` : 'automation-source'))
+const emit = defineEmits<{ saved: []; 'open-result': [id: number] }>()
 // 工作类型、表单、校验规则都来自后端工作流注册表（GET /enterprise/automation/workflows）。
 const catalog = ref<api.WorkflowInfo[]>([])
 const workflowById = computed(() => Object.fromEntries(catalog.value.map(w => [w.id, w])) as Record<string, api.WorkflowInfo>)
-const availableWorkflows = computed(() => catalog.value.filter(w => w.available))
+const availableWorkflows = computed(() => catalog.value.filter(w => w.available && (!props.onlyKind || w.id === props.onlyKind)))
 const kind = ref<api.WorkKind>('')
 const current = computed(() => workflowById.value[kind.value])
 const nameOf = (k: string) => workflowById.value[k]?.name || k
@@ -149,6 +154,7 @@ const busy = computed(() => generating.value || saving.value || loading.value)
 const selected = ref<api.Work | null>(null), draft = ref<api.Proposal | null>(null)
 const selectedWorkflow = computed(() => (selected.value ? workflowById.value[selected.value.kind] : undefined))
 const items = ref<api.Work[]>([]), stats = ref<api.WorkStats | null>(null), offset = ref(0)
+const visibleItems = computed(() => (props.onlyKind ? items.value.filter(w => w.kind === props.onlyKind) : items.value))
 const editable = computed(() => selected.value?.status === 'ready')
 const validationMessage = computed(() => {
   const wf = selectedWorkflow.value
@@ -164,6 +170,21 @@ const followupCount = (work: api.Work) => {
   return fu ? (work.proposal?.[fu.key]?.length || 0) : 0
 }
 watch(draft, () => { reviewed.value = false }, { deep: true, flush: 'sync' })
+// 表单里声明了 options_from 的下拉（如主责员工）由当前部门的有效成员动态提供
+const dynamicOptions = reactive<Record<string, { value: number; label: string }[]>>({ members: [], reviewers: [] })
+provide('workflowOptions', dynamicOptions)
+const needsPeople = (form: api.FormField[] | undefined): boolean =>
+  !!form?.some(f => f.options_from || (f.fields && needsPeople(f.fields)))
+let peopleLoaded = false
+watch(selectedWorkflow, async (wf) => {
+  if (peopleLoaded || !needsPeople(wf?.form)) return
+  peopleLoaded = true
+  try {
+    const people = await getCandidates(props.teamId)
+    dynamicOptions.members = people.members.map(m => ({ value: m.user_id, label: m.name + (m.is_head ? '（负责人）' : '') }))
+    dynamicOptions.reviewers = people.reviewers.map(m => ({ value: m.user_id, label: m.name }))
+  } catch { peopleLoaded = false }
+}, { immediate: true })
 const checkLabel = { blocker: '会被拒绝', warning: '需确认', info: '参考' }
 const checkClass = { blocker: 'bg-red-50 text-red-700', warning: 'bg-amber-50 text-amber-800', info: 'bg-slate-50 text-slate-600' }
 // 核对结论对应的内容快照；员工改动后提示结论可能过期。
@@ -234,7 +255,7 @@ async function importText(event: Event) {
 // 协同办理面板开始整理某一步后，直接在这里打开对应的工作成果核对
 defineExpose({ open, refresh })
 onMounted(async () => {
-  try { const data = await api.getWorkflows(props.teamId); catalog.value = data.workflows; kind.value = data.default_id || '' }
+  try { const data = await api.getWorkflows(props.teamId); catalog.value = data.workflows; kind.value = props.onlyKind && data.workflows.some(w => w.id === props.onlyKind && w.available) ? props.onlyKind : (data.default_id || '') }
   catch (e) { error.value = getErrorMessage(e, '加载工作类型失败') }
   await refresh()
   try { models.value = (await listConfigs()).filter(m => m.is_active && m.kind !== 'embedding'); modelName.value = models.value[0]?.model_name || '' } catch (e) { error.value = getErrorMessage(e, '加载模型失败') }

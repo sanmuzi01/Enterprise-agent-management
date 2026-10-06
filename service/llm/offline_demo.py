@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 MODEL_NAME = "demo-offline"
-NOTICE = "【离线演示模型】当前是规则抽取，不是真实大模型：仅能整理请假、报销、IT 工单、采购、客户跟进材料。"
+NOTICE = "【离线演示模型】当前是规则抽取，不是真实大模型：仅能整理请假、报销、IT 工单、采购、客户跟进、会议纪要责任计划材料。"
 
 
 def enabled() -> bool:
@@ -133,7 +133,57 @@ def _crm(source: str) -> Dict[str, Any]:
             "tasks": tasks[:20], "warnings": warnings}
 
 
-_EXTRACTORS = {"leave": _leave, "expense": _expense, "ticket": _ticket, "procurement": _procurement, "crm": _crm}
+_DUE = re.compile(r"(下下?周[一二三四五六日天]|本周[一二三四五六日天]|这周[一二三四五六日天]|周[一二三四五六日天]|\d{1,2}月\d{1,2}[日号]"
+                  r"|下个?月底|月底|\d{1,2}月底|明天|后天|今天|[一二三四五六七八九十\d]+天[后内])")
+_NAME = r"([A-Za-z0-9_\-]{3,20}|[一-龥]{2,3})"
+_ACT = r"(?:负责|牵头|跟进|完成|提交|整理|准备|输出|梳理|联调|发布|协调)"
+
+
+def _responsibility(source: str) -> Dict[str, Any]:
+    """规则抽取：只摘出原文里点名了人、带动作的句子；讨论、征求意见的句子进 unresolved。人名是否真是员工由系统另行匹配。"""
+    clauses = _clauses(source)
+    tasks: List[Dict[str, Any]] = []
+    decisions: List[Dict[str, str]] = []
+    unresolved: List[str] = []
+    for clause in clauses:
+        if any(w in clause for w in ("讨论", "考虑", "再议", "待定", "是否", "暂不决定")):
+            unresolved.append(f"仅讨论、尚未形成决定：{clause[:100]}")
+            continue
+        owner = re.search(r"(?:^|[，、：:\s由让请])" + _NAME + r"(?=" + _ACT + ")", clause)
+        if owner:
+            name = owner.group(1)
+            helpers = [n for n in re.findall(r"(?:协助|配合|协办)" + _NAME, clause) if n != name]
+            reviewer = re.search(r"(?:由|请)?" + _NAME + r"(?:验收|审核|把关)", clause)
+            due = _DUE.search(clause)
+            deliverable = re.search(r"(?:提交|输出|交付)([^，。；;]{2,30})", clause)
+            criteria = re.search(r"验收标准(?:是|为)?([^，。；;]{2,60})", clause)
+            urgent = any(w in clause for w in ("紧急", "务必", "尽快"))
+            tasks.append({
+                "title": (clause.split("，")[0] if len(clause.split("，")[0]) >= 4 else clause)[:80], "responsible_name": name, "collaborator_names": helpers[:5],
+                "reviewer_name": reviewer.group(1) if reviewer else None, "due_text": due.group(1) if due else None,
+                "due_date": None, "deliverable": deliverable.group(1).strip() if deliverable else None,
+                "acceptance_criteria": criteria.group(1).strip() if criteria else None,
+                "priority": "URGENT" if urgent else "NORMAL", "depends_on": [], "evidence": clause[:500]})
+        elif any(w in clause for w in ("决定", "同意", "通过", "已确定", "确定为")):
+            decisions.append({"content": clause[:300], "evidence": clause[:500]})
+        elif any(w in clause for w in ("需要", "要", "安排", "跟进", "确定")) and _DUE.search(clause):
+            # 有事有期限但没有点名责任人：也列成一项，由系统标成"待补充主责员工"，不替人选
+            due = _DUE.search(clause)
+            tasks.append({"title": clause[:80], "responsible_name": None, "collaborator_names": [], "reviewer_name": None,
+                          "due_text": due.group(1), "due_date": None, "deliverable": None, "acceptance_criteria": None,
+                          "priority": "NORMAL", "depends_on": [], "evidence": clause[:500]})
+            unresolved.append(f"没有点名责任人：{clause[:100]}")
+    kind = ("MEETING" if "会议" in source or "纪要" in source else "CHAT" if "群" in source or "聊天" in source
+            else "EMAIL" if "邮件" in source else "NOTICE" if "通知" in source else "OTHER")
+    head = next((c for c in clauses if "会议" in c or "纪要" in c or "通知" in c), "")
+    title = (head[:30] if head else "工作责任计划") or "工作责任计划"
+    return {"title": title, "source_type": kind, "summary": "；".join(d["content"] for d in decisions)[:1000],
+            "decisions": decisions[:30], "tasks": tasks[:30], "unresolved": unresolved[:30],
+            "warnings": [] if tasks else ["没有识别到点名负责人的行动项"]}
+
+
+_EXTRACTORS = {"leave": _leave, "expense": _expense, "ticket": _ticket, "procurement": _procurement, "crm": _crm,
+               "responsibility": _responsibility}
 
 
 def _workflow_kind(system_prompt: str) -> Optional[str]:

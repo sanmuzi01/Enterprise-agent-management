@@ -168,6 +168,22 @@ AUTOMATION_FILES = [
     "FasdtApi/orchestration.py",
     "frontend/src/components/OrchestrationPanel.vue",
     "migrations/versions/20261006_0001_orchestration.py",
+    # 部门责任执行
+    "FasdtApi/responsibility.py",
+    "service/responsibility_service.py",
+    "service/tools/responsibility.py",
+    "service/workflows/responsibility.py",
+    "service/workflows/date_text.py",
+    "service/reminders/responsibility_rules.py",
+    "frontend/src/api/responsibility.ts",
+    "frontend/src/components/ResponsibilityModule.vue",
+    "frontend/src/components/ResponsibilityPlanPanel.vue",
+    "frontend/src/components/ResponsibilityTaskPanel.vue",
+    "scripts/e2e_responsibility.py",
+    "scripts/e2e_responsibility_browser.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V9__responsibility.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/responsibility/ResponsibilityService.java",
+    "docs/demo-backup/responsibility/index.html",
     # 演示包装
     "scripts/demo.py",
     "scripts/seed_enterprise_demo.py",
@@ -246,6 +262,8 @@ def check_automation_wired() -> None:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/finance/vouchers 路由")
     if "app.include_router(hr_cases_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/hr 路由")
+    if "app.include_router(responsibility_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/responsibility 路由")
     if "app.include_router(it_service_router)" not in main_py:
         raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/it 路由")
     if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):
@@ -256,6 +274,8 @@ def check_automation_wired() -> None:
                   if not (w.form and w.instructions and w.source_label and callable(w.write) and callable(w.evidence))]
     if incomplete:
         raise SystemExit("工作流声明不完整: " + ", ".join(incomplete))
+    if "responsibility" not in {w.id for w in all_workflows()}:
+        raise SystemExit("责任计划整理工作流没有注册")
     print(f"OK 已挂载，已注册工作流 {[w.id for w in all_workflows()]}")
 
 

@@ -583,7 +583,7 @@ public class ResponsibilityService {
         if (teamScope.isEmpty()) {
             return List.of();
         }
-        Set<Long> involvedPlans = new HashSet<>();
+        Set<Long> involvedPlans = new HashSet<>();   // 只含已发布的计划：草稿对相关员工不可见
         for (RespTask t : tasks.findAll((root, q, cb) -> cb.and(root.get("teamId").in(teamScope), cb.or(
                 cb.equal(root.get("responsibleUserId"), actor.userId()), cb.equal(root.get("reviewerUserId"), actor.userId()),
                 cb.equal(root.get("assignedByUserId"), actor.userId()))))) {
@@ -596,8 +596,9 @@ public class ResponsibilityService {
             List<Predicate> p = new ArrayList<>();
             p.add(root.get("teamId").in(teamScope));
             Predicate seesAll = root.get("teamId").in(teamScope.stream().filter(actor::isHead).toList());
-            Predicate mine = cb.or(cb.equal(root.get("createdBy"), actor.userId()),
-                    involvedPlans.isEmpty() ? cb.disjunction() : root.get("id").in(involvedPlans));
+            Predicate involved = involvedPlans.isEmpty() ? cb.disjunction()
+                    : cb.and(root.get("id").in(involvedPlans), cb.notEqual(root.get("status"), RespPlan.DRAFT));
+            Predicate mine = cb.or(cb.equal(root.get("createdBy"), actor.userId()), involved);
             p.add(teamScope.stream().anyMatch(actor::isHead) ? cb.or(seesAll, mine) : mine);
             if (status != null && !status.isBlank()) {
                 p.add(cb.equal(root.get("status"), status.trim().toUpperCase()));
@@ -884,10 +885,16 @@ public class ResponsibilityService {
         return plan;
     }
 
-    /** 非负责人只能看到自己有关的计划：创建的、或在其中担任主责/协办/验收/指派。 */
+    /**
+     * 非负责人只能看到自己有关的计划：创建的、或在其中担任主责/协办/验收/指派。
+     * 草稿只有创建人和负责人能看——AI 草稿里的人选还没经负责人确认，不能提前让相关员工看到。
+     */
     private void requirePlanVisible(RespActor actor, RespPlan plan) {
         if (actor.isHead(plan.getTeamId()) || plan.getCreatedBy() == actor.userId()) {
             return;
+        }
+        if (RespPlan.DRAFT.equals(plan.getStatus())) {
+            throw notFound("责任计划不存在");
         }
         List<RespTask> list = tasks.findByPlanIdOrderBySeq(plan.getId());
         Map<Long, Set<Long>> collab = collaboratorMap(list);

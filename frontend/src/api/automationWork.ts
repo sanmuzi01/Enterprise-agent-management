@@ -15,6 +15,7 @@ export interface FormField {
   placeholder?: string
   wide?: boolean
   options?: { value: string; label: string }[]
+  options_from?: 'members' | 'reviewers'
   item?: string
   fields?: FormField[]
   unique_by?: string
@@ -39,7 +40,7 @@ export interface Work {
   id: string; team_id: number; kind: WorkKind; status: string; model_name: string; sensitivity: string
   customer_id: number | null; elapsed_ms: number; total_tokens: number | null; edited: boolean
   error_message: string | null; created_at: string; proposal: Proposal | null
-  business_result: { id?: number; status?: string } | null; completed_tasks: number[]; source_text?: string
+  business_result: { id?: number; status?: string; title?: string; taskCount?: number } | null; completed_tasks: number[]; source_text?: string
 }
 export interface WorkStats {
   total: number; applied: number; ready: number; failed: number; elapsed_ms: number; total_tokens: number; edited: number

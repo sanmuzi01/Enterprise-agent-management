@@ -21,9 +21,11 @@ MODULE_DEPARTMENTS: Dict[str, Optional[Set[str]]] = {
     "leave": None,
     "ticket": None,   # 提交 IT 工单是所有部门员工都能做的；处理工单/设备台账另见 department_staff_scope
     "hr_case": None,  # 人事事项涉及所有部门（员工、负责人、办理方），具体权限见 service/hr_service.py
+    "responsibility": None,   # 责任协同是所有部门通用的：谁能做什么见 service/responsibility_service.py 与 Java 责任模块
 }
 MODULE_LABELS = {"procurement": "采购业务", "crm": "客户与商机（CRM）", "finance": "费用报销", "leave": "请假",
-                 "ticket": "IT 服务工单", "hr_case": "人事事项"}
+                 "ticket": "IT 服务工单", "hr_case": "人事事项",
+                 "responsibility": "责任协同"}
 DEPARTMENT_LABELS = {"hr": "人事", "procurement": "采购", "sales": "销售", "finance": "财务", "it": "IT"}
 
 

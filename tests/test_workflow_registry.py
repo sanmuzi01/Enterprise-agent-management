@@ -31,7 +31,7 @@ def _item_model(model, key):
 
 class DefinitionCompletenessTest(unittest.TestCase):
     def test_builtin_workflows_registered_in_order(self):
-        self.assertEqual([w.id for w in all_workflows()], ["expense", "ticket", "leave", "procurement", "crm"])
+        self.assertEqual([w.id for w in all_workflows()], ["expense", "ticket", "leave", "procurement", "crm", "responsibility"])
 
     def test_every_form_field_exists_in_schema(self):
         for workflow in all_workflows():
@@ -66,9 +66,10 @@ class CatalogTest(unittest.TestCase):
         return [w["id"] for w in catalog(code)["workflows"] if w["available"]]
 
     def test_department_availability(self):
-        self.assertEqual(self.ids("sales"), ["expense", "ticket", "leave", "crm"])
-        self.assertEqual(self.ids("procurement"), ["expense", "ticket", "leave", "procurement"])
-        self.assertEqual(self.ids(None), ["expense", "ticket", "leave"])
+        # 责任计划整理对所有部门开放（责任协同是各部门通用能力）
+        self.assertEqual(self.ids("sales"), ["expense", "ticket", "leave", "crm", "responsibility"])
+        self.assertEqual(self.ids("procurement"), ["expense", "ticket", "leave", "procurement", "responsibility"])
+        self.assertEqual(self.ids(None), ["expense", "ticket", "leave", "responsibility"])
 
     def test_default_follows_department(self):
         expected = {"sales": "crm", "procurement": "procurement", "hr": "leave", "finance": "expense",

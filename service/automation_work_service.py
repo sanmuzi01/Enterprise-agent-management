@@ -14,7 +14,7 @@ from service.automation_spec import extraction_prompt, parse_answer, validate_pr
 from service.workflows import catalog as workflow_catalog, get_workflow
 from service.workflows.business_checks import run_checks
 from service.data_egress_policy import is_model_allowed
-from service.exceptions import Conflict, InvalidInput, NotFound, PermissionDenied
+from service.exceptions import AppError, Conflict, InvalidInput, NotFound, PermissionDenied
 from service.llm.llm_service import async_chat_with_usage
 from service.llm.llm_config_service import async_get_api_config
 from service.quota_service import enforce_quota_async
@@ -127,6 +127,8 @@ async def generate(db, user_id, data):
         ), timeout=90)
         work.total_tokens = int(usage.get("total_tokens", 0)) if usage else None
         result = parse_answer(data.kind, answer, data.source_text)
+        if workflow.enrich:
+            result = await workflow.enrich(db, user_id, data.team_id, result, data.source_text)
         serialized = encode(result)
         if len(serialized.encode("utf-8")) > 50000:
             raise InvalidInput("整理结果过长，请拆分材料")
@@ -203,10 +205,14 @@ async def apply_work(db, user_id, work_id, proposal):
     await db.commit()
     # A retry always uses the persisted body and the SAME Java idempotency key.
     try:
-        target = get_workflow(work.kind).write(json.loads(accepted), work)
-        result = await asyncio.to_thread(hub.call, "POST", target.path, user_id, work.team_id,
-                                        [target.scope], target.operation, json_body=target.body,
-                                        idempotency_key=f"automation-{work.id}")
+        workflow = get_workflow(work.kind)
+        if workflow.apply:
+            result = await workflow.apply(db, user_id, work, json.loads(accepted))
+        else:
+            target = workflow.write(json.loads(accepted), work)
+            result = await asyncio.to_thread(hub.call, "POST", target.path, user_id, work.team_id,
+                                            [target.scope], target.operation, json_body=target.body,
+                                            idempotency_key=f"automation-{work.id}")
         work.business_result_json = encode(result)
         work.status = "applied"
         work.applied_at = work.applied_at or utcnow()
@@ -219,6 +225,14 @@ async def apply_work(db, user_id, work_id, proposal):
         if exc.status_code in DEFINITE_REJECTIONS:
             work.status = "ready"
             work.error_message = f"业务系统未接受：{exc.detail}。请修改后重新保存，或将原文带回重新整理"[:300]
+        else:
+            work.status = "retry"
+            work.error_message = "业务服务暂未接受保存，请检查服务及业务权限后按原内容重试"
+    except AppError as exc:
+        # 自定义保存（workflow.apply）抛出的领域异常：400/403/404 同样证明业务系统没有接受，可以解除锁定
+        if exc.http_status in DEFINITE_REJECTIONS:
+            work.status = "ready"
+            work.error_message = f"业务系统未接受：{exc.message}。请修改后重新保存，或将原文带回重新整理"[:300]
         else:
             work.status = "retry"
             work.error_message = "业务服务暂未接受保存，请检查服务及业务权限后按原内容重试"
