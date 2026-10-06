@@ -43,3 +43,6 @@ tests_e2e/.e2e_data/
 prompt/prompts/*.yaml
 !prompt/prompts/1.yaml
 !prompt/prompts/5.yaml
+
+# 一键演示环境的日志与进程号（scripts/demo.py）
+.demo/

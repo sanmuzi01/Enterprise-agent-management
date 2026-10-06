@@ -24,7 +24,7 @@ from utils.timeutil import utcnow
 RULES: List[Tuple[str, Optional[str], Tuple[str, ...]]] = [
     ("hr_case", "hr", ("入职", "离职", "转正", "调岗", "办理入职", "办离职")),
     ("leave", None, ("请假", "年假", "病假", "事假", "休假", "调休")),
-    ("expense", None, ("报销", "发票", "差旅费", "打车费", "住宿费", "餐费")),
+    ("expense", None, ("报销", "发票", "差旅费", "打车费", "住宿费", "餐费", "高铁票", "机票", "火车票")),
     ("procurement", "procurement", ("采购", "购买", "买一批", "买些", "订购", "办公用品", "SKU")),
     ("ticket", "it", ("电脑", "笔记本", "账号", "权限", "密码", "打印机", "网络", "VPN", "邮箱", "显示器",
                       "故障", "报修", "开通", "系统登录", "蓝屏")),
@@ -32,12 +32,33 @@ RULES: List[Tuple[str, Optional[str], Tuple[str, ...]]] = [
 ]
 KIND_LABELS = {"hr_case": "人事事项", "leave": "请假", "expense": "报销", "procurement": "采购申请",
                "ticket": "IT 工单", "crm": "客户跟进"}
-_SPLIT = re.compile(r"[。；;！!？?，,\n]+|(?:另外|此外|同时|还要|还需要|还得|以及|并且|顺便|然后)")
+_STRONG = re.compile(r"[。；;！!？?\n]+|(?:另外|此外|同时|还要|还需要|还得|以及|并且|顺便|然后)")
+_COMMA = re.compile(r"[，,]+")
 
 
 def split_clauses(text: str) -> List[str]:
-    parts = [p.strip(" ，,、：:") for p in _SPLIT.split(text or "")]
-    return [p for p in parts if len(p) >= 2]
+    """先按句号、分号和“另外/还要”等连接词切；一句话里逗号前后明显是不同类事务（如“请年假，报销打车费”）才继续按逗号切，
+    否则整句保留（“高铁票 260 元，发票号 G001”是同一笔费用，不能拆开）。"""
+    result: List[str] = []
+    for piece in _STRONG.split(text or ""):
+        piece = piece.strip(" ，,、：:")
+        if len(piece) < 2:
+            continue
+        parts = [p.strip(" ，,、：:") for p in _COMMA.split(piece) if p.strip(" ，,、：:")]
+        kinds = {classify(p)[0] for p in parts} - {None}
+        if len(kinds) < 2:
+            result.append(piece)
+            continue
+        pending = ""
+        for part in parts:
+            if classify(part)[0] is None:
+                pending += ("，" if pending else "") + part      # 没有命中的并入后面第一个命中的
+                continue
+            result.append((pending + "，" if pending else "") + part)
+            pending = ""
+        if pending:
+            result[-1] += "，" + pending
+    return result
 
 
 def classify(clause: str) -> Tuple[Optional[str], List[str]]:
@@ -52,12 +73,17 @@ def classify(clause: str) -> Tuple[Optional[str], List[str]]:
 def plan_steps(text: str) -> List[Dict[str, Any]]:
     """拆分 + 归类；相邻同类句子合并为一步，没有命中的句子并入上一步作为补充说明。"""
     steps: List[Dict[str, Any]] = []
+    leading = ""   # 开头没有命中的句子，并入后面第一个命中的步骤，不丢
     for clause in split_clauses(text):
         kind, hits = classify(clause)
         if kind is None:
             if steps:
                 steps[-1]["clause"] += "；" + clause
+            else:
+                leading += ("；" if leading else "") + clause
             continue
+        if leading:
+            clause, leading = leading + "；" + clause, ""
         # 入转调离的办理清单本身就含开通账号、配发设备等 IT 任务：紧跟在人事事项后面的 IT 需求并入，不另开工单
         if steps and (steps[-1]["kind"] == kind or (steps[-1]["kind"] == "hr_case" and kind == "ticket")):
             steps[-1]["clause"] += "；" + clause

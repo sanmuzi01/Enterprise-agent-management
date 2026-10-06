@@ -19,6 +19,24 @@
 
     <p v-if="errorMsg" class="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{{ errorMsg }}</p>
 
+    <section class="mb-5 rounded-lg border border-slate-200 bg-white" data-testid="readiness">
+      <div class="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+        <p class="text-sm font-semibold text-slate-900">运行就绪</p>
+        <p class="text-xs" :class="readiness?.ok ? 'text-emerald-700' : 'text-red-700'">{{ readiness ? (readiness.ok ? '各环节都已就绪' : '有环节没起来，按提示处理') : '检查中…' }}</p>
+      </div>
+      <ul class="divide-y divide-slate-100">
+        <li v-for="c in readiness?.checks || []" :key="c.key" class="flex items-start gap-3 px-4 py-2.5" :data-testid="`readiness-${c.key}`">
+          <component :is="c.ok ? CheckCircle2 : AlertTriangle" :size="16" class="mt-0.5 shrink-0"
+            :class="c.level === 'error' ? 'text-red-500' : c.level === 'warn' ? 'text-amber-500' : 'text-emerald-500'" />
+          <div class="min-w-0 text-sm">
+            <p class="font-medium text-slate-800">{{ c.label }}</p>
+            <p class="text-xs text-slate-500">{{ c.message }}</p>
+            <p v-if="c.fix" class="text-xs text-indigo-600">处理：{{ c.fix }}</p>
+          </div>
+        </li>
+      </ul>
+    </section>
+
     <section class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <article class="rounded-lg border border-slate-200 bg-white p-4">
         <div class="flex items-center justify-between">
@@ -139,7 +157,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { AlertTriangle, CheckCircle2, Database, RefreshCcw, Server, ShieldCheck, Workflow } from 'lucide-vue-next'
-import { getDiagnose, type HealthStatus } from '../../api/system'
+import { getDiagnose, getReadiness, type HealthStatus, type ReadinessItem } from '../../api/system'
 import { getErrorMessage } from '../../utils/request'
 import { getReminderStatus, runReminder, type ReminderRuleStatus } from '../../api/workCenter'
 
@@ -161,10 +179,13 @@ const redisOk = computed(() => {
 
 const backendText = (value?: string) => value === 'redis' ? 'Redis' : '内存'
 
+const readiness = ref<{ ok: boolean; checks: ReadinessItem[] } | null>(null)
+
 const loadHealth = async () => {
   loading.value = true
   errorMsg.value = ''
   try {
+    readiness.value = await getReadiness().catch(() => null)
     health.value = await getDiagnose()
   } catch (e: any) {
     errorMsg.value = getErrorMessage(e, '系统诊断加载失败')

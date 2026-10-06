@@ -168,6 +168,14 @@ AUTOMATION_FILES = [
     "FasdtApi/orchestration.py",
     "frontend/src/components/OrchestrationPanel.vue",
     "migrations/versions/20261006_0001_orchestration.py",
+    # 演示包装
+    "scripts/demo.py",
+    "scripts/seed_enterprise_demo.py",
+    "scripts/demo_walkthrough.py",
+    "service/llm/offline_demo.py",
+    "service/readiness.py",
+    "docs/demo-script.md",
+    "docs/demo-backup/index.html",
 ]
 
 YAML_CONFIGS = [

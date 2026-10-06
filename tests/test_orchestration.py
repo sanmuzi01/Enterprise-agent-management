@@ -34,6 +34,20 @@ class PlannerTest(unittest.TestCase):
         self.assertIn("ThinkPad T14", steps[0]["clause"])
         self.assertIn("显示器", steps[0]["clause"])
 
+    def test_one_expense_stays_whole_across_commas_and_leading_text_is_kept(self):
+        steps = orch.plan_steps("上周五出差高铁票 260 元，发票号 G8891；出租车 48 元，暂无发票。另外我的笔记本电脑蓝屏了，需要报修，整个组都等着用")
+        self.assertEqual([s["kind"] for s in steps], ["expense", "ticket"])
+        self.assertIn("高铁票 260 元，发票号 G8891", steps[0]["clause"])
+        self.assertIn("出租车 48 元", steps[0]["clause"])
+        self.assertIn("整个组都等着用", steps[1]["clause"])
+        lead = orch.plan_steps("麻烦帮个忙，我要请年假")
+        self.assertEqual([s["kind"] for s in lead], ["leave"])
+        self.assertIn("麻烦帮个忙", lead[0]["clause"])
+
+    def test_commas_split_only_when_kinds_differ(self):
+        steps = orch.plan_steps("下周二请一天年假，报销上周打车费 86 元")
+        self.assertEqual([s["kind"] for s in steps], ["leave", "expense"])
+
     def test_hr_case_and_nothing_matched(self):
         self.assertEqual([s["kind"] for s in orch.plan_steps("新同事下周一入职，需要开通账号和配电脑")], ["hr_case"])
         self.assertEqual(orch.plan_steps("今天天气不错"), [])

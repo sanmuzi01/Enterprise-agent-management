@@ -31,6 +31,9 @@ class LLMFactory:
 
     @classmethod
     def create(cls, model_name: str, api_key: str, api_url: str = None) -> BaseLLM:
+        from service.llm import offline_demo
+        if model_name == offline_demo.MODEL_NAME and offline_demo.enabled():
+            return offline_demo.OfflineDemoClient(api_key=api_key, api_url=api_url, model_name=model_name)
         client_class = cls._MODEL_MAP.get(model_name) or OpenAICompatibleClient
         logger.info(f"创建大模型客户端: {model_name} ({client_class.__name__})")
         return client_class(api_key=api_key, api_url=api_url, model_name=model_name)

@@ -289,6 +289,12 @@ async def system_diagnose(current_user: User = Depends(get_current_user_async)):
     return await _build_health_payload()
 
 
+@app.get("/system/readiness", summary="运行就绪检查（需要登录）：数据库、迁移、企业业务服务、模型、提醒任务、演示数据")
+async def system_readiness(current_user: User = Depends(get_current_user_async)):
+    from service import readiness
+    return await readiness.collect()
+
+
 @app.get("/metrics", summary="Prometheus 指标")
 async def prometheus_metrics():
     return await async_metrics_response()

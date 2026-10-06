@@ -1,0 +1,295 @@
+"""演示企业数据：一家虚构的“星河科技（演示）”——5 个部门、11 个固定账号、已发布的部门助手与中央助手、
+业务系统里的预算/产品/客户/设备/假期余额，以及一批“正在发生”的真实业务单据（经真实接口产生，不是直接写表）：
+待审批请假、已批准报销与待核对凭证、IT 工单（待接单/已解决/待审批）、进行中的入职办理。
+
+用法（项目根目录；需要 MySQL；第 3 步需要 Java 业务服务在运行，没有就跳过并提示）：
+    .venv\\Scripts\\python.exe scripts\\seed_enterprise_demo.py            # 已存在就不重复建
+    .venv\\Scripts\\python.exe scripts\\seed_enterprise_demo.py --reset    # 先清掉旧演示数据再建
+    .venv\\Scripts\\python.exe scripts\\seed_enterprise_demo.py --purge    # 只清理
+设置 OFFLINE_DEMO_MODEL=1 时，所有演示账号的模型都用离线演示模型（不联网、无需 Key）。
+绝不在生产环境运行。固定密码只用于演示，见 docs/demo-script.md。
+"""
+import asyncio
+import os
+import pathlib
+import sys
+from datetime import datetime, timedelta, timezone
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:  # noqa: BLE001
+    pass
+
+from service.config_validation import is_production  # noqa: E402
+
+if is_production():
+    print("拒绝执行：APP_ENV=production，演示脚本会建固定密码的账号，不能对生产库跑。")
+    sys.exit(1)
+
+os.environ.setdefault("OFFLINE_DEMO_MODEL", "1")
+
+from tests import _route_client as rc  # noqa: E402  先导入：设置非生产环境变量
+
+from dotenv import load_dotenv  # noqa: E402
+from sqlalchemy import create_engine, text  # noqa: E402
+
+load_dotenv(ROOT / ".env")
+
+from models.async_db import AsyncSessionLocal  # noqa: E402
+from models.init_db import SessionLocal, bootstrap_database  # noqa: E402
+
+PASSWORD = "Demo@12345"
+ORG_NAME = "星河科技（演示）"
+MODEL = "demo-offline"
+TODAY = datetime.now(timezone(timedelta(hours=8))).date()
+
+# 账号名 → (显示用途, 所在部门, 部门角色, 企业角色)
+ACCOUNTS = {
+    "demo_owner": ("企业所有者（管理员）", "hr", "member", "owner"),
+    "demo_hr": ("人事专员", "hr", "member", "member"),
+    "demo_hr2": ("人事专员（复核）", "hr", "member", "member"),
+    "demo_fin": ("财务专员", "finance", "member", "member"),
+    "demo_fin2": ("财务负责人", "finance", "admin", "member"),
+    "demo_it": ("IT 工程师", "it", "member", "member"),
+    "demo_it2": ("IT 工程师（二线）", "it", "member", "member"),
+    "demo_head": ("销售部负责人", "sales", "admin", "member"),
+    "demo_emp": ("销售员工", "sales", "member", "member"),
+    "demo_newbie": ("销售新人（待入职办理）", "sales", "member", "member"),
+    "demo_buyer": ("采购专员", "procurement", "member", "member"),
+}
+TEAMS = {"hr": "人事部", "finance": "财务部", "it": "IT 部", "sales": "销售部", "procurement": "采购部"}
+
+
+def enterprise_engine():
+    from urllib.parse import quote_plus
+    user = os.getenv("ENTERPRISE_DB_USER") or os.getenv("DB_USER", "root")
+    password = os.getenv("ENTERPRISE_DB_PASSWORD") or os.getenv("DB_PASSWORD", "")
+    host, port = os.getenv("ENTERPRISE_DB_HOST", "127.0.0.1"), os.getenv("ENTERPRISE_DB_PORT", "3306")
+    name = os.getenv("ENTERPRISE_DB_NAME", "enterprise_business")
+    return create_engine(f"mysql+pymysql://{user}:{quote_plus(password)}@{host}:{port}/{name}?charset=utf8mb4")
+
+
+def purge(db, ent):
+    org_ids = [r[0] for r in db.execute(text("SELECT id FROM organizations WHERE name = :n"), {"n": ORG_NAME}).all()]
+    team_ids = [r[0] for r in db.execute(text("SELECT id FROM teams WHERE organization_id IN (SELECT id FROM organizations WHERE name = :n)"),
+                                         {"n": ORG_NAME}).all()] if org_ids else []
+    user_ids = [r[0] for r in db.execute(text("SELECT id FROM `user` WHERE name LIKE 'demo\\_%'")).all()]
+    ids = ",".join(str(t) for t in team_ids) or "0"
+    users = ",".join(str(u) for u in user_ids) or "0"
+    with ent.begin() as conn:
+        for sql in (
+            f"DELETE FROM hr_case_task WHERE case_id IN (SELECT id FROM hr_case WHERE team_id IN ({ids}))",
+            f"DELETE FROM hr_case WHERE team_id IN ({ids})",
+            f"DELETE FROM it_ticket_comment WHERE ticket_id IN (SELECT id FROM it_ticket WHERE team_id IN ({ids}))",
+            f"DELETE FROM it_ticket WHERE team_id IN ({ids})",
+            f"DELETE FROM it_device_event WHERE device_id IN (SELECT id FROM it_device WHERE managing_team_id IN ({ids}))",
+            f"DELETE FROM it_device WHERE managing_team_id IN ({ids})",
+            f"DELETE FROM voucher_entry WHERE voucher_id IN (SELECT id FROM voucher WHERE team_id IN ({ids}))",
+            f"DELETE FROM voucher WHERE team_id IN ({ids})",
+            f"DELETE FROM expense_line WHERE expense_claim_id IN (SELECT id FROM expense_claim WHERE team_id IN ({ids}))",
+            f"DELETE FROM expense_claim WHERE team_id IN ({ids})",
+            f"DELETE FROM expense_budget WHERE team_id IN ({ids})",
+            f"DELETE FROM department_budget WHERE team_id IN ({ids})",
+            f"DELETE FROM purchase_order WHERE purchase_request_id IN (SELECT id FROM purchase_request WHERE team_id IN ({ids}))",
+            f"DELETE FROM purchase_request_line WHERE purchase_request_id IN (SELECT id FROM purchase_request WHERE team_id IN ({ids}))",
+            f"DELETE FROM purchase_request WHERE team_id IN ({ids})",
+            f"DELETE FROM leave_request WHERE applicant_user_id IN ({users})",
+            f"DELETE FROM leave_balance WHERE user_id IN ({users})",
+            f"DELETE FROM opportunity WHERE team_id IN ({ids})",
+            f"DELETE FROM follow_up WHERE author_user_id IN ({users})",
+            f"DELETE FROM contact WHERE customer_id IN (SELECT id FROM customer WHERE team_id IN ({ids}))",
+            f"DELETE FROM customer WHERE team_id IN ({ids})",
+            "DELETE FROM product WHERE sku IN ('DEMO-PAPER', 'DEMO-CHAIR', 'DEMO-PEN', 'DEMO-MOUSE')",
+            f"DELETE FROM audit_event WHERE user_id IN ({users})",
+        ):
+            try:
+                conn.execute(text(sql))
+            except Exception as exc:  # noqa: BLE001 —— 个别表在老版本业务库里可能不存在
+                print(f"  （跳过：{sql[:60]}… {str(exc)[:60]}）")
+    if user_ids:
+        rc._purge_users("id IN (" + users + ")")
+    if team_ids:
+        agents = [r[0] for r in db.execute(text(f"SELECT id FROM agent WHERE team_id IN ({ids})")).all()]
+        db.commit()
+        if agents:
+            print("  （部门助手随用户清理一并删除）")
+        db.execute(text(f"DELETE FROM team_members WHERE team_id IN ({ids})"))
+        db.execute(text(f"DELETE FROM teams WHERE id IN ({ids})"))
+    for org in org_ids:
+        db.execute(text("DELETE FROM organization_members WHERE organization_id = :o"), {"o": org})
+        db.execute(text("DELETE FROM organizations WHERE id = :o"), {"o": org})
+    db.commit()
+    print(f"已清理：{len(org_ids)} 个企业、{len(team_ids)} 个部门、{len(user_ids)} 个演示账号")
+
+
+def create_structure(db):
+    from models.user_dao import create_user
+    from service.auth_service import hash_password
+    from tests.test_enterprise_access import _add_org_member, _add_team_member
+    users = {}
+    for name in ACCOUNTS:
+        users[name] = create_user(db, name=name, password=hash_password(PASSWORD), age=30)
+    owner = users["demo_owner"]
+    db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
+               {"n": ORG_NAME, "o": owner.id})
+    db.commit()
+    org = db.execute(text("SELECT id FROM organizations WHERE name = :n ORDER BY id DESC LIMIT 1"), {"n": ORG_NAME}).scalar()
+    teams = {}
+    for code, label in TEAMS.items():
+        db.execute(text("INSERT INTO teams (organization_id, name, owner_user_id, status, department_code, created_at) "
+                        "VALUES (:o, :n, :u, 'active', :c, NOW())"), {"o": org, "n": label, "u": owner.id, "c": code})
+        db.commit()
+        teams[code] = db.execute(text("SELECT id FROM teams WHERE organization_id = :o AND department_code = :c"),
+                                 {"o": org, "c": code}).scalar()
+    for name, (_, team, team_role, org_role) in ACCOUNTS.items():
+        _add_org_member(db, org, users[name].id, org_role)
+        _add_team_member(db, teams[team], users[name].id, team_role)
+    return org, teams, users
+
+
+async def create_agents(org, teams, users):
+    from service import agent_admin_service, department_agent_service
+    owner = users["demo_owner"].id
+    async with AsyncSessionLocal() as db:
+        for code, team in teams.items():
+            await department_agent_service.on_team_saved(db, team, owner, created=True)
+            status = await department_agent_service.agent_status(db, team)
+            if status.get("agent"):
+                await agent_admin_service.update_managed_agent(db, status["agent"]["id"], owner, model_name=MODEL)
+            await department_agent_service.publish(db, team, owner)
+        central = await agent_admin_service.create_managed_agent(
+            db, owner, "星河中央助手", "central", model_name=MODEL, template_id="central", organization_id=org)
+        await agent_admin_service.update_managed_agent(db, central["id"], owner, lifecycle_status="published",
+                                                       expected_row_version=central.get("row_version"))
+
+
+def connect_models(db, users):
+    from models.user_dao import get_user_by_id  # noqa: F401
+    from service.llm.llm_config_service import save_config
+
+    class U:
+        def __init__(self, id):
+            self.id = id
+    for user in users.values():
+        save_config(db, U(user.id), MODEL, "offline-demo")
+
+
+def seed_business(ent, teams, users):
+    year = TODAY.year
+    with ent.begin() as conn:
+        for code, team in teams.items():
+            conn.execute(text("INSERT INTO expense_budget (team_id, year, remaining_amount) VALUES (:t, :y, :a)"),
+                         {"t": team, "y": year, "a": 200000})
+        conn.execute(text("INSERT INTO department_budget (team_id, year, remaining_amount) VALUES (:t, :y, 80000)"),
+                     {"t": teams["procurement"], "y": year})
+        for sku, name, unit, price, qty, safe in (("DEMO-PAPER", "A4 复印纸", "包", 22.5, 40, 50), ("DEMO-CHAIR", "人体工学椅", "把", 680, 12, 5),
+                                                  ("DEMO-PEN", "签字笔（盒）", "盒", 18, 200, 30), ("DEMO-MOUSE", "无线鼠标", "个", 79, 25, 10)):
+            conn.execute(text("INSERT INTO product (sku, name, unit, unit_price, on_hand_qty, safety_stock_qty) VALUES (:s,:n,:u,:p,:q,:f)"),
+                         {"s": sku, "n": name, "u": unit, "p": price, "q": qty, "f": safe})
+        types = {r[1]: r[0] for r in conn.execute(text("SELECT id, code FROM leave_type")).all()}
+        for user in users.values():
+            for code, days in (("annual", 10), ("sick", 15), ("personal", 5)):
+                conn.execute(text("INSERT INTO leave_balance (user_id, leave_type_id, year, remaining_days) VALUES (:u,:t,:y,:d)"),
+                             {"u": user.id, "t": types[code], "y": year, "d": days})
+        for name, industry in (("远航物流", "物流"), ("启明教育", "教育"), ("云帆软件", "软件服务")):
+            conn.execute(text("INSERT INTO customer (name, industry, owner_user_id, team_id, created_at) VALUES (:n,:i,:o,:t,NOW())"),
+                         {"n": name, "i": industry, "o": users["demo_emp"].id, "t": teams["sales"]})
+    return types
+
+
+def seed_activity(teams, users):
+    """经真实接口产生进行中的业务：需要 Java 业务服务在运行。"""
+    client = rc.make_client()
+
+    def headers(name):
+        return {"Authorization": f"Bearer {rc.mint_token(users[name].id)}"}
+
+    def call(method, path, who, **body):
+        response = getattr(client, method)(path, headers=headers(who), **({"json": body} if body else {}))
+        if response.status_code >= 400:
+            raise RuntimeError(f"{method.upper()} {path} → {response.status_code} {response.text[:200]}")
+        return response.json() if response.content else None
+
+    t = teams
+    # 财务：一张有风险的报销（无票据）已批准 → 自动生成待核对凭证；另一张还在等负责人审批
+    claim = call("post", "/enterprise/finance/mine", "demo_emp", team_id=t["sales"], lines=[
+        {"category": "TRAVEL", "amount": 860, "description": "客户现场培训差旅", "invoice_no": "DEMO-G1001"},
+        {"category": "MEAL", "amount": 188, "description": "客户晚餐招待", "invoice_no": "DEMO-F2002"},
+        {"category": "OTHER", "amount": 45, "description": "停车费"}])
+    call("post", f"/enterprise/finance/{claim['id']}/submit", "demo_emp")
+    call("post", f"/enterprise/finance/{claim['id']}/decide", "demo_head", team_id=t["sales"], action="approve", note="同意")
+    pending = call("post", "/enterprise/finance/mine", "demo_emp", team_id=t["sales"], lines=[
+        {"category": "OFFICE_SUPPLY", "amount": 129, "description": "打印耗材", "invoice_no": "DEMO-P3003"}])
+    call("post", f"/enterprise/finance/{pending['id']}/submit", "demo_emp")
+    # 人事：一张请假等负责人审批
+    start = (TODAY + timedelta(days=10)).isoformat()
+    leave = call("post", "/enterprise/oa/leave/mine", "demo_emp", team_id=t["sales"], leave_type_code="annual",
+                 start_date=start, end_date=start, reason="家庭事务")
+    call("post", f"/enterprise/oa/leave/{leave['id']}/submit", "demo_emp")
+    # IT：设备入库；一张故障待接单、一张已解决待确认、一张设备申请待负责人批准
+    for asset, kind, model in (("DEMO-NB-001", "LAPTOP", "ThinkPad T14"), ("DEMO-NB-002", "LAPTOP", "ThinkPad T14"),
+                               ("DEMO-MN-001", "MONITOR", "Dell U2723QE")):
+        call("post", "/enterprise/it/desk/devices", "demo_it", team_id=t["it"], asset_no=asset, device_type=kind, model=model,
+             warranty_until=(TODAY + timedelta(days=700)).isoformat())
+    call("post", "/enterprise/it/tickets", "demo_emp", team_id=t["sales"], category="INCIDENT", priority="HIGH",
+         title="三楼打印机一直脱机", description="三楼打印机卡纸后一直脱机，整个销售部都没法打印，下午客户会议要用资料")
+    done = call("post", "/enterprise/it/tickets", "demo_emp", team_id=t["sales"], category="INCIDENT",
+                title="VPN 连不上", description="在家连 VPN 提示认证失败，没法远程办公")
+    call("post", f"/enterprise/it/desk/tickets/{done['id']}/assign", "demo_it", team_id=t["it"], take=True)
+    call("post", f"/enterprise/it/desk/tickets/{done['id']}/resolve", "demo_it", team_id=t["it"], resolution="重置了 VPN 证书并重新开通远程访问权限")
+    call("post", "/enterprise/it/tickets", "demo_newbie", team_id=t["sales"], category="DEVICE",
+         title="新人申请笔记本", description="新入职，需要一台笔记本电脑用于外勤拜访客户")
+    # 人事：新人入职办理（已批准，办理清单进行中）
+    case = call("post", "/enterprise/hr/cases", "demo_hr", team_id=t["hr"], case_type="ONBOARDING",
+                employee_user_id=users["demo_newbie"].id, employee_team_id=t["sales"],
+                effective_date=(TODAY + timedelta(days=5)).isoformat(), position="销售专员")
+    call("post", f"/enterprise/hr/cases/{case['id']}/approve", "demo_head", team_id=t["sales"])
+    return {"claim": claim["id"], "ticket": done["id"], "hr_case": case["id"]}
+
+
+def main() -> int:
+    ent = enterprise_engine()
+    bootstrap_database()
+    db = SessionLocal()
+    try:
+        if "--purge" in sys.argv:
+            purge(db, ent)
+            return 0
+        if "--reset" in sys.argv:
+            purge(db, ent)
+        elif db.execute(text("SELECT 1 FROM `user` WHERE name = 'demo_owner'")).first():
+            print("演示数据已存在。要重建加 --reset。")
+            print_hint()
+            return 0
+        print("1/4 建企业、部门、账号…")
+        org, teams, users = create_structure(db)
+        print("2/4 部门助手与模型连接…")
+        asyncio.run(create_agents(org, teams, users))
+        connect_models(db, users)
+        print("3/4 业务系统数据（预算、产品、客户、假期余额）…")
+        seed_business(ent, teams, users)
+        print("4/4 进行中的业务单据（经真实接口）…")
+        try:
+            created = seed_activity(teams, users)
+            print(f"    已生成：报销单 #{created['claim']}（含待核对凭证）、IT 工单、人事入职办理 #{created['hr_case']} 等")
+        except Exception as exc:  # noqa: BLE001
+            print(f"    跳过（需要 Java 业务服务在 {os.getenv('ENTERPRISE_HUB_BASE_URL', 'http://127.0.0.1:8090')} 运行）：{exc}")
+    finally:
+        db.close()
+    print_hint()
+    return 0
+
+
+def print_hint():
+    print("\n" + "-" * 60)
+    print(f"  登录 http://localhost:5173，所有演示账号密码：{PASSWORD}")
+    for name, (purpose, team, _, org_role) in ACCOUNTS.items():
+        print(f"   {name:<12} {TEAMS[team]:<6} {purpose}")
+    print("  演示脚本见 docs/demo-script.md")
+    print("-" * 60)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

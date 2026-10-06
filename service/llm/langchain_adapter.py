@@ -41,6 +41,9 @@ def create_langchain_llm(
     api_url: Optional[str] = None,
 ) -> ChatOpenAI:
     """创建支持用户隔离配置的 OpenAI-compatible LangChain LLM。"""
+    from service.llm import offline_demo
+    if model_name == offline_demo.MODEL_NAME and offline_demo.enabled():
+        return offline_demo.langchain_model()
     api_config = get_api_config(db, user_id, model_name)
     if not api_config:
         raise ValueError(f"请先在【模型配置】中配置 {model_name} 的 API Key")
