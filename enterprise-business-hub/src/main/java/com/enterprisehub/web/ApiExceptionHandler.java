@@ -16,10 +16,41 @@ import java.util.Map;
 @RestControllerAdvice
 public class ApiExceptionHandler {
 
+    private static final org.slf4j.Logger LOG = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
+
     @ExceptionHandler(ResponseStatusException.class)
     public ResponseEntity<Map<String, Object>> handle(ResponseStatusException ex) {
         String message = ex.getReason() != null ? ex.getReason() : "请求未被业务服务接受";
-        return ResponseEntity.status(ex.getStatusCode())
-                .body(Map.of("status", ex.getStatusCode().value(), "message", message));
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("status", ex.getStatusCode().value());
+        body.put("message", message);
+        String traceId = org.slf4j.MDC.get("traceId");
+        if (traceId != null) {
+            body.put("traceId", traceId);
+        }
+        return ResponseEntity.status(ex.getStatusCode()).body(body);
+    }
+
+    /**
+     * 未预期的异常：完整堆栈只在服务端日志里写一次（带 traceId），响应里只有 traceId，不暴露内部信息。
+     * FastAPI 收到 500 会把它记成问题中心里的“业务服务出错”，用户看到的是统一错误提示。
+     */
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, Object>> handleUnexpected(Exception ex) throws Exception {
+        // Spring MVC 自己认识的请求错误（参数校验、类型不匹配、JSON 解析失败、方法/媒体类型不支持…）原样交还给框架，保持原来的 4xx 行为
+        if (ex instanceof org.springframework.web.ErrorResponse || ex instanceof org.springframework.beans.TypeMismatchException
+                || ex instanceof org.springframework.http.converter.HttpMessageNotReadableException
+                || ex instanceof jakarta.validation.ConstraintViolationException) {
+            throw ex;
+        }
+        LOG.error("未处理的异常: {}", ex.toString(), ex);
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("status", 500);
+        body.put("message", "业务服务处理出错");
+        String traceId = org.slf4j.MDC.get("traceId");
+        if (traceId != null) {
+            body.put("traceId", traceId);
+        }
+        return ResponseEntity.status(500).body(body);
     }
 }

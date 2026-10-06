@@ -11,6 +11,9 @@ from service.exceptions import AppError, Conflict, InvalidInput, NotFound, Permi
 
 def translate_hub_error(exc: hub.EnterpriseHubError) -> AppError:
     status = exc.status_code
+    if isinstance(exc, hub.HubUnavailable):
+        code = "JAVA_SERVICE_UNAVAILABLE" if status == 503 else "JAVA_SERVICE_ERROR"
+        return AppError("企业业务服务暂时不可用", code=code, http_status=status)
     if status == 400:
         return InvalidInput(exc.detail)
     if status == 403:

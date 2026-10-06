@@ -35,8 +35,20 @@ class EnterpriseHubError(Exception):
         super().__init__(f"[{status_code}] {detail}")
 
 
+class HubUnavailable(EnterpriseHubError):
+    """业务中心连不上、超时、熔断中，或持续返回 5xx：是依赖故障，不是业务拒绝。status_code 固定 503（持续 500 的是 502）。"""
+
+    def __init__(self, status_code: int = 503, detail: str = "企业业务服务暂时不可用"):
+        super().__init__(status_code, detail)
+
+
 def _base_url() -> str:
     return os.getenv("ENTERPRISE_HUB_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
+
+
+def _current_trace_id():
+    from service.observability.context import current_trace_id
+    return current_trace_id()
 
 
 def _secret() -> str:
@@ -74,7 +86,7 @@ def sign_context(
         "operation": operation,
         "is_org_admin": is_org_admin,
         "is_team_admin": is_team_admin,
-        "trace_id": str(uuid.uuid4()),
+        "trace_id": _current_trace_id() or str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "nonce": uuid.uuid4().hex,
         "method": method.upper(),
@@ -200,10 +212,24 @@ def call(
             method, f"{_base_url()}{path}", headers=headers, data=body_bytes, timeout=timeout,
         )
 
-    response = request_with_retry(
-        SERVICE_NAME, sender,
-        timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
-    )
+    from service.http_resilience import CircuitOpenError
+    try:
+        response = request_with_retry(
+            SERVICE_NAME, sender,
+            timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
+        )
+    except CircuitOpenError as exc:
+        raise HubUnavailable(503, str(exc)) from None
+    except (requests.Timeout, requests.ConnectionError):
+        # 不带原始堆栈往上抛：连不上就是连不上，一行说明足够，避免日志里一次故障刷出几十行堆栈
+        raise HubUnavailable(503, "企业业务服务连接失败或超时") from None
+    except requests.HTTPError as exc:
+        # 重试用尽后仍是 408/409/425/429/5xx：按真实状态码交给调用方（409 是幂等键处理中，调用方依赖它）
+        failed = exc.response
+        status = failed.status_code if failed is not None else 502
+        if status >= 500:
+            raise HubUnavailable(503 if status in (502, 503, 504) else 502, _error_detail(failed) if failed is not None else "企业业务服务处理出错") from None
+        raise EnterpriseHubError(status, _error_detail(failed)) from None
     if response.status_code >= 400:
         raise EnterpriseHubError(response.status_code, _error_detail(response))
     if not response.content:

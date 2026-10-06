@@ -47,6 +47,7 @@ const router = createRouter({
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },
+        { path: 'issues', name: 'AdminIssues', component: () => import('../views/admin/AdminIssues.vue') },
         { path: 'diagnose', name: 'AdminDiagnose', component: () => import('../views/admin/AdminDiagnose.vue') },
       ],
     },

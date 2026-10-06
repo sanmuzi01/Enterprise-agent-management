@@ -168,6 +168,16 @@ AUTOMATION_FILES = [
     "FasdtApi/orchestration.py",
     "frontend/src/components/OrchestrationPanel.vue",
     "migrations/versions/20261006_0001_orchestration.py",
+    # 可观测性与问题中心
+    "service/observability/context.py",
+    "service/observability/redact.py",
+    "service/observability/error_codes.py",
+    "service/observability/issues.py",
+    "service/observability/sentry_setup.py",
+    "FasdtApi/issues.py",
+    "frontend/src/views/admin/AdminIssues.vue",
+    "migrations/versions/20261007_0002_system_issue.py",
+    "scripts/drill_java_down.py",
     # 文件导入
     "service/document_intake.py",
     "service/automation_batch_service.py",

@@ -255,6 +255,71 @@ class AgentHandoff(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class SystemIssue(Base):
+    """问题中心：同一种故障（按 fingerprint 聚合）只有一条，发生多少次累计多少次。不放用户、请求内容等会让同一问题被拆散的信息。"""
+    __tablename__ = "system_issue"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_system_issue_fingerprint"),
+        Index("idx_system_issue_status", "status", "last_seen_at"),
+        Index("idx_system_issue_dept", "department_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_no = Column(String(40), nullable=True)
+    fingerprint = Column(String(64), nullable=False)
+    title = Column(String(255), nullable=False)
+    severity = Column(String(10), nullable=False, default="medium")      # low / medium / high / critical
+    category = Column(String(20), nullable=False, default="code")        # code / dependency / security / data / task
+    status = Column(String(20), nullable=False, default="OPEN")          # OPEN / ACKNOWLEDGED / INVESTIGATING / MITIGATED / RESOLVED / REGRESSED
+    service = Column(String(40), nullable=False)
+    operation = Column(String(200), nullable=True)
+    error_code = Column(String(60), nullable=False)
+    department_id = Column(Integer, nullable=True)
+    responsible_user_id = Column(Integer, nullable=True)
+    last_trace_id = Column(String(64), nullable=True)
+    sentry_event_id = Column(String(64), nullable=True)
+    affected_resource_type = Column(String(40), nullable=True)
+    affected_resource_id = Column(String(64), nullable=True)
+    occurrence_count = Column(Integer, nullable=False, default=1)
+    retryable = Column(Integer, nullable=False, default=0)
+    first_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    acknowledged_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    root_cause = Column(Text, nullable=True)
+    resolution = Column(Text, nullable=True)
+    fix_version = Column(String(80), nullable=True)
+    resolved_by = Column(Integer, nullable=True)
+    verified_by = Column(Integer, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    regress_count = Column(Integer, nullable=False, default=0)
+
+
+class IssueOccurrence(Base):
+    """某个问题的单次发生（只保留最近一批，用来看 trace_id 和上下文）。detail 已脱敏。"""
+    __tablename__ = "issue_occurrence"
+    __table_args__ = (Index("idx_issue_occ_issue", "issue_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_id = Column(Integer, nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    release = Column(String(80), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    message = Column(String(500), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    occurred_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class IssueEvent(Base):
+    """问题的处理记录：谁、何时、做了什么（确认、指派、备注、解决、验收、回归）。只追加。"""
+    __tablename__ = "issue_event"
+    __table_args__ = (Index("idx_issue_event_issue", "issue_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_id = Column(Integer, nullable=False)
+    actor_user_id = Column(Integer, nullable=True)      # 空 = 系统（自动回归、依赖恢复）
+    action = Column(String(30), nullable=False)
+    note = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class OrchestrationPlan(Base):
     """跨部门协同办理：一段话拆成的多个部门步骤。只是计划，业务数据都由各步骤关联的 AI 工作成果经人工核对后写入。"""
     __tablename__ = "orchestration_plan"

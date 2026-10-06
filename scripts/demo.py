@@ -98,8 +98,10 @@ def spawn(name: str, command: list, cwd: pathlib.Path, env: dict) -> int:
 
 def pid_alive(pid: int) -> bool:
     if os.name == "nt":
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True, errors="replace").stdout
-        return str(pid) in out
+        # CSV 输出按列精确比对 PID：用“PID 字符串是否出现在输出里”会把 99 误判成 1999 的存活
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True, text=True,
+                             errors="replace").stdout
+        return any(len(cells := line.strip().strip('"').split('","')) > 1 and cells[1] == str(pid) for line in out.splitlines())
     try:
         os.kill(pid, 0)
         return True

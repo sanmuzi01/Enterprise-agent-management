@@ -38,6 +38,7 @@ from FasdtApi.it_service import router as it_service_router
 from FasdtApi.hr_cases import router as hr_cases_router
 from FasdtApi.orchestration import router as orchestration_router
 from FasdtApi.responsibility import router as responsibility_router
+from FasdtApi.issues import admin_router as issues_admin_router, dept_router as issues_dept_router
 from FasdtApi.automation_work import router as automation_work_router
 from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
@@ -97,8 +98,8 @@ app.add_middleware(
     allow_origins=_env_list("CORS_ALLOW_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
-    expose_headers=["X-Request-ID", "X-Process-Time"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "traceparent"],
+    expose_headers=["X-Request-ID", "X-Trace-ID", "X-Process-Time"],
 )
 app.add_middleware(OperationLogMiddleware)
 app.add_middleware(RequestContextMiddleware)
@@ -126,6 +127,8 @@ app.include_router(it_service_router)
 app.include_router(hr_cases_router)
 app.include_router(orchestration_router)
 app.include_router(responsibility_router)
+app.include_router(issues_admin_router)
+app.include_router(issues_dept_router)
 app.include_router(automation_work_router)
 app.include_router(work_center_router)
 app.include_router(evaluation_router)
@@ -138,14 +141,86 @@ app.include_router(approval_router)
 
 _error_logger = get_logger("app_error")
 
+from service.observability import dependency_events  # noqa: E402
+
+dependency_events.install()
+from service.observability import sentry_setup  # noqa: E402
+
+sentry_setup.init()
+
+
+def _trace_of(request: Request) -> str:
+    from service.observability import context as trace_context
+    return getattr(request.state, "trace_id", None) or trace_context.current_trace_id() or trace_context.new_trace_id()
+
+
+def _operation_of(request: Request) -> str:
+    route = request.scope.get("route")
+    return f"{request.method} {getattr(route, 'path', None) or request.url.path}"
+
+
+def _error_response(request: Request, *, http_status: int, code: str, detail: str | None = None, issue_no: str | None = None,
+                    retry_after: int | None = None) -> JSONResponse:
+    """统一错误结构。detail 保持兼容（前端一直读它）；其余字段给排障和重试用，永远不含内部堆栈。"""
+    from service.observability.error_codes import spec_for
+    spec = spec_for(code, http_status)
+    trace_id = _trace_of(request)
+    body = {"detail": detail or spec.message, "code": code, "message": detail or spec.message, "trace_id": trace_id,
+            "retryable": spec.retryable, "suggestion": spec.suggestion}
+    if issue_no:
+        body["issue_no"] = issue_no
+    wait = retry_after if retry_after is not None else spec.retry_after
+    headers = {"X-Trace-ID": trace_id, "X-Request-ID": getattr(request.state, "request_id", trace_id)}
+    if wait and spec.retryable:
+        body["retry_after"] = wait
+        headers["Retry-After"] = str(wait)
+    return JSONResponse(status_code=http_status, content=body, headers=headers)
+
+
+async def _report_issue(request: Request, *, code: str, http_status: int, exc: BaseException, message: str) -> str | None:
+    """5xx 与依赖故障进问题中心（同一种故障聚合成一条）；记录失败不影响响应。"""
+    from starlette.concurrency import run_in_threadpool
+    from service.observability import context as trace_context
+    from service.observability.issues import record_occurrence
+    from service.observability import sentry_setup
+    team = request.query_params.get("team_id")
+    event_id = await run_in_threadpool(lambda: sentry_setup.capture(
+        exc, trace_id=_trace_of(request), operation=_operation_of(request), error_code=code,
+        department_id=int(team) if team and team.isdigit() else None))
+    result = await run_in_threadpool(
+        lambda: record_occurrence(sentry_event_id=event_id, error_code=code, http_status=http_status, operation=_operation_of(request), exc=exc, message=message,
+                                  trace_id=_trace_of(request), department_id=int(team) if team and team.isdigit() else None,
+                                  extra={"method": request.method, "path": str(request.url.path)}))
+    return result["issue_no"] if result else None
+
 
 @app.exception_handler(AppError)
 async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-    """领域异常统一出口：按 code 记一行日志，按 http_status 返回 {detail, code}。"""
+    """领域异常统一出口：按 code 记一行日志，按 http_status 返回统一错误结构；依赖/系统故障（5xx）同时进问题中心。"""
+    from service.observability.error_codes import should_report
     log = _error_logger.warning if exc.http_status < 500 else _error_logger.error
     log(f"[{exc.code}] {request.method} {request.url.path} -> {exc.message}"
         + (f" | {exc.context}" if exc.context else ""))
-    return JSONResponse(status_code=exc.http_status, content={"detail": exc.message, "code": exc.code})
+    issue_no = None
+    if should_report(exc.code, exc.http_status):
+        issue_no = await _report_issue(request, code=exc.code, http_status=exc.http_status, exc=exc, message=exc.message)
+    return _error_response(request, http_status=exc.http_status, code=exc.code, detail=exc.message, issue_no=issue_no,
+                           retry_after=exc.context.get("retry_after") if exc.context else None)
+
+
+@app.exception_handler(Exception)
+async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """未处理的异常：只在服务端记一份完整堆栈，用户拿到的是 trace_id 和问题编号，没有内部细节。
+    Java 业务服务不可用/熔断等依赖故障有明确的错误码，不当成代码缺陷。"""
+    from service.observability.dependency_errors import classify
+    code, status = classify(exc)
+    _error_logger.error(f"[{code}] {request.method} {request.url.path} trace={_trace_of(request)} {type(exc).__name__}: {exc}",
+                        exc_info=(status == 500))
+    issue_no = await _report_issue(request, code=code, http_status=status, exc=exc, message=f"{type(exc).__name__}: {exc}")
+    return _error_response(request, http_status=status, code=code, issue_no=issue_no)
+
+
+app.state.unhandled_handler = _handle_unexpected_error   # RequestContextMiddleware 就地使用，避免同一次故障被重复打印堆栈
 
 
 @app.get("/")

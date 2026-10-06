@@ -84,6 +84,7 @@ import { useRoute, RouterLink, RouterView } from 'vue-router'
 import {
   LayoutDashboard, Users, ListChecks, BarChart3, ScrollText,
   Stethoscope, ShieldCheck, LogOut, Library, Wallet, Menu, Zap, Building2, Gauge,
+  Bug,
 } from 'lucide-vue-next'
 import { useUserStore } from '../../stores/user'
 import ThemeToggle from '../../components/ThemeToggle.vue'
@@ -111,6 +112,7 @@ const navItems = [
   { path: '/admin/organization', label: '组织架构', icon: Building2 },
   { path: '/admin/skills', label: '技能管理', icon: Zap },
   { path: '/admin/plans', label: '套餐配额', icon: Wallet },
+  { path: '/admin/issues', label: '问题中心', icon: Bug },
   { path: '/admin/diagnose', label: '系统诊断', icon: Stethoscope },
 ]
 

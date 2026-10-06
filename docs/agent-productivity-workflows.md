@@ -200,6 +200,24 @@
 
 测试：`tests/test_automation_batch.py`（13 项：进度、并发上限、单份失败与重试、额度、幂等、限制、权限、中断恢复）、`scripts/e2e_batch_browser.py`（真实浏览器）。
 
+## 故障追踪与问题中心（trace_id、统一错误、Sentry、问题聚合）
+
+目标：任何一次故障都能从用户看到的提示一路查到根因，并变成可分配、可验证、可关闭的工作事项。这是“可观测性与可靠事件架构”的第一部分；Kafka Outbox、OpenTelemetry Collector、Loki/Tempo、云日志是后续部分（见文末）。
+
+- **trace_id**：前端每个请求带 `X-Request-ID`（也认 W3C `traceparent`），后端折算成 32 位 trace_id，放进 contextvars；**日志每一行都带它**（`LOG_FORMAT=json` 输出结构化日志，trace_id 是字段而不是索引标签），对 Java 业务服务的签名上下文里用的也是它，Java 的日志（MDC）、错误响应、`X-Trace-ID` 响应头都是同一个值——前端、FastAPI、Java 的同一次请求可以用一个 id 串起来。
+- **统一错误结构**：`{detail, code, message, trace_id, retryable, retry_after?, suggestion, issue_no?}`（`detail` 保持兼容）。错误码目录在 `service/observability/error_codes.py`：预期的业务异常（校验、权限、不存在、冲突、限流）只提示用户，**不进问题中心也不进 Sentry**；依赖不可用、代码缺陷、任务最终失败才进。未处理的异常在中间件里就地转换，用户只看到 trace_id 和问题编号，没有堆栈和内部地址；同一次故障只打印一份堆栈。
+- **Java 业务服务不可用**：连接失败、超时、熔断、持续 5xx 统一成 `JAVA_SERVICE_UNAVAILABLE`（503，可重试，建议等待时间），一行说明，不带底层堆栈；重试用尽的 409/429 等保留真实状态码。熔断**只在状态变化时**产生事件：打开时登记一次依赖故障，恢复时在同一个问题上写“依赖恢复”，不会每个失败请求都告警。
+- **脱敏**（`service/observability/redact.py`）：日志、Sentry、问题中心落地前统一过滤——Authorization/Cookie/密码/令牌/手机号/身份证/文档正文/模型提示词等字段整个替换，字符串里的 Bearer、`sk-…`、JWT、手机号、`password=…` 被遮盖，异常堆栈里的消息同样处理。
+- **Sentry（可选）**：设置 `SENTRY_DSN` 才启用，未设置时是空操作。只上报该上报的故障，上报前去掉请求头/Cookie/请求体/用户信息，带 environment、release、service、trace_id、operation、error_code、department_id 标签；`sentry_event_id` 回写到问题上。Vue 与 Java 端的接入尚未做。
+- **问题中心**（管理后台“问题中心”，`/admin/issues`；部门负责人 `/enterprise/issues?team_id=` 只读本部门、不含安全类、不含技术细节）：同一种故障按 fingerprint（服务 + 错误码 + 异常类型 + 规范化的调用栈 + 操作 + 依赖；trace_id、用户、请求内容、行号不参与）只有一条，累计发生次数，只保留最近 50 次发生。状态 `OPEN → ACKNOWLEDGED → INVESTIGATING → MITIGATED → RESOLVED`，已解决的问题再次出现自动变 `REGRESSED` 并清除验收。**关闭有门槛**：必须有负责人、根因、处理说明、修复版本；验收必须是另一位管理员。每步写入处理记录（只增不改），可跳转到 Grafana 链路 / Sentry / 日志（配置 `GRAFANA_URL`、`SENTRY_ISSUE_URL`、`LOG_SEARCH_URL` 后出现）。指标：未关闭数、复发数、平均确认时间（MTTA）、平均恢复时间（MTTR）。
+- **其他**：`scripts/demo.py` 的 `pid_alive` 改为按列精确比对 PID（原来 99 会被误判成 1999 存活）；日志输出被重定向到文件/管道时统一 UTF-8。
+
+故障演练：`scripts\drill_java_down.py`（前提 `scripts\demo.py start`）——停掉真实的 Java 进程，验证统一错误、只产生一个问题、熔断只告警一次、重启后恢复并写“依赖恢复”；已通过。
+
+测试：`tests/test_observability.py`（34 项：trace 传播、脱敏、日志、错误码目录、fingerprint 稳定性、100 次发生只一个问题、状态机门槛与验收分离、复发、统一错误契约、依赖归类、熔断只告警一次、管理员/部门负责人访问边界、Sentry 清洗）。
+
+**尚未做（后续阶段）**：Vue 与 Java 的 Sentry 接入和前端异常上报；OpenTelemetry SDK/Collector 与 Loki、Tempo、云日志的部署配置；Kafka（KRaft）与 Outbox/Inbox、重试主题与死信队列、DLQ 管理页、批量任务迁移到消费者；Agent 执行记录（AgentRun）纳入问题追踪；更多故障演练（停 Kafka、重复投递、数据库死锁、进程重启后批量任务继续）。这些依赖 Docker 里的 Kafka / Loki / Tempo 等基础设施，需要在本机拉取镜像后才能真实验证。
+
 ## 部门责任执行（会议纪要 → 责任事项 → 接受 → 执行 → 提交 → 验收）
 
 把非结构化的工作文本（会议纪要、聊天记录、邮件、通知）转成**每名员工都能确认、执行、提交、验收**的责任事项。入口：部门工作台 → **责任协同**（所有部门通用；综合办公室、运营部、项目管理部这类没有专属业务的部门，其“部门责任执行助手”是标杆）。

@@ -17,9 +17,11 @@ const createRequestId = () => {
 
 export const getErrorMessage = (err: any, fallback = '请求失败') => {
   const requestId = err?.response?.headers?.['x-request-id'] || err?.config?.headers?.[REQUEST_ID_HEADER]
+  // 系统故障（5xx）时后端会给出问题编号：用户只要把它报给管理员，就能在问题中心直接找到这次故障
+  const issueNo = err?.response?.data?.issue_no
   const status = err?.response?.status
   const rawDetail = err?.response?.data?.detail || err?.response?.data?.message || err?.response?.data?.error
-  const withRequestId = (message: string) => requestId ? `${message}（请求ID：${requestId}）` : message
+  const withRequestId = (message: string) => issueNo ? `${message}（问题编号：${issueNo}）` : requestId ? `${message}（请求ID：${requestId}）` : message
 
   const statusMessages: Record<number, string> = {
     400: '提交内容有误，请检查填写项后再试',
