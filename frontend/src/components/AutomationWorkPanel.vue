@@ -59,6 +59,8 @@
       <button class="mt-3 rounded-lg bg-blue-600 px-4 py-2 text-sm text-white disabled:opacity-40"
         :disabled="busy || !modelName || source.trim().length < 10 || (current.needs_customer && !customerId) || sensitivity === 'restricted'"
         @click="generate">{{ generating ? '正在整理，结果会自动保存…' : '开始整理' }}</button>
+      <AutomationBatchPanel v-if="!current.needs_customer" class="mt-4" :team-id="teamId" :kind="kind" :model-name="modelName" :sensitivity="sensitivity"
+        :disabled="!modelName || sensitivity === 'restricted'" :key="`batch-${kind}`" @open="open" @takeover="takeoverText" @changed="refresh" />
     </div>
 
     <div v-if="selected" class="rounded-xl border border-slate-200 p-4 space-y-3">
@@ -137,6 +139,7 @@ import { listConfigs, type LlmConfig } from '../api/llmConfig'
 import { getTeamCustomers, type CustomerDto } from '../api/departmentCrm'
 import { getErrorMessage } from '../utils/request'
 import WorkflowForm from './WorkflowForm.vue'
+import AutomationBatchPanel from './AutomationBatchPanel.vue'
 
 const props = defineProps<{ teamId: number; onlyKind?: string }>()
 // 同一页可能同时挂着两个面板（概览 + 责任协同），输入框 id 不能重复；概览里的保持原来的 id
@@ -246,6 +249,8 @@ async function apply() {
 }
 async function toggleTask(index: number, done: boolean) { if (!selected.value) return; saving.value = true; try { select(await api.setTask(selected.value.id, index, done)); await refresh() } catch (e) { error.value = getErrorMessage(e) } finally { saving.value = false } }
 function reuse() { if (!selected.value) return; source.value = selected.value.source_text || ''; kind.value = selected.value.kind; customerId.value = selected.value.customer_id; modelName.value = selected.value.model_name; sensitivity.value = selected.value.sensitivity || 'internal'; lastInput = ''; selected.value = null; draft.value = null }
+// 批量整理里失败的一份：把原文带回输入框，手动修改后单份整理
+function takeoverText(text: string) { source.value = text; selected.value = null; draft.value = null; importNote.value = '已把失败材料的原文带回输入框，可修改后重新整理。'; document.getElementById(sourceId.value)?.focus() }
 const importing = ref(false), importNote = ref('')
 async function importText(event: Event) {
   const input = event.target as HTMLInputElement, file = input.files?.[0]

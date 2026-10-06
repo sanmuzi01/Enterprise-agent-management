@@ -207,6 +207,7 @@ class AutomationWork(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "request_key", name="uq_automation_request"),
         Index("idx_automation_owner_team", "user_id", "team_id", "created_at"),
+        Index("idx_automation_batch", "batch_id"),
     )
     id = Column(String(36), primary_key=True)
     user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
@@ -229,6 +230,9 @@ class AutomationWork(Base):
     edited = Column(Integer, nullable=False, default=0)
     applied_at = Column(DateTime, nullable=True)
     apply_attempts = Column(Integer, nullable=False, default=0)
+    batch_id = Column(String(36), nullable=True)       # 批量整理：同一批次的材料共用，None = 单份整理
+    batch_index = Column(Integer, nullable=True)                   # 在批次里的顺序（从 0 开始）
+    batch_name = Column(String(255), nullable=True)                # 批次里这份材料的名称（通常是文件名）
     created_at = Column(DateTime, nullable=False, default=utcnow)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 

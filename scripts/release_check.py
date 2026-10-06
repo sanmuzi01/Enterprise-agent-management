@@ -170,6 +170,10 @@ AUTOMATION_FILES = [
     "migrations/versions/20261006_0001_orchestration.py",
     # 文件导入
     "service/document_intake.py",
+    "service/automation_batch_service.py",
+    "frontend/src/components/AutomationBatchPanel.vue",
+    "migrations/versions/20261007_0001_automation_batch.py",
+    "scripts/e2e_batch_browser.py",
     "tests/test_document_intake.py",
     # 部门责任执行
     "FasdtApi/responsibility.py",

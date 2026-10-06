@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field, ConfigDict
 
 from models.async_db import get_async_db
@@ -23,6 +23,22 @@ class GenerateRequest(BaseModel):
     source_text: str = Field(min_length=10, max_length=15000)
     customer_id: int | None = Field(default=None, gt=0)
     sensitivity: Literal["internal", "confidential", "restricted"] = "internal"
+
+
+class BatchItem(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    name: str = Field(default="", max_length=255)
+    text: str = Field(min_length=1, max_length=15000)
+
+
+class BatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    batch_id: UUID
+    team_id: int = Field(gt=0)
+    kind: str = Field(min_length=1, max_length=30)
+    model_name: str = Field(min_length=1, max_length=100)
+    sensitivity: Literal["internal", "confidential", "restricted"] = "internal"
+    items: list[BatchItem] = Field(min_length=1, max_length=10)
 
 
 class ApplyRequest(BaseModel):
@@ -56,6 +72,44 @@ async def import_file(team_id: int = Form(gt=0), sensitivity: Literal["internal"
         raise RateLimited("文件导入过于频繁，请稍后重试") from None
     content = await file.read(document_intake.MAX_BYTES + 1)
     return await document_intake.extract_text(db, user.id, team_id, file.filename or "", content, sensitivity)
+
+
+@router.post("/batches")
+async def create_batch(data: BatchRequest, background: BackgroundTasks, db=Depends(get_async_db),
+                       user: User = Depends(get_current_user_async)):
+    """批量整理：立即返回批次（材料排队中），整理在后台进行；用 GET /batches/{id} 看进度。"""
+    from service import automation_batch_service as batches
+    try:
+        require_limit(f"automation_batch:{user.id}", "AUTOMATION_BATCH_RATE_LIMIT", 6,
+                      "AUTOMATION_RATE_WINDOW_SECONDS", 60, "批量整理")
+    except LimitExceeded:
+        raise RateLimited("批量整理请求过于频繁，请稍后重试") from None
+    batch = await batches.create_batch(db, user.id, data)
+    queued = batches.queued_ids(batch)
+    if queued:
+        background.add_task(batches.run_items, queued, user.id)
+    return batch
+
+
+@router.get("/batches")
+async def list_batches(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    from service import automation_batch_service as batches
+    return await batches.list_batches(db, user.id, team_id)
+
+
+@router.get("/batches/{batch_id}")
+async def get_batch(batch_id: UUID, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    from service import automation_batch_service as batches
+    return await batches.get_batch(db, user.id, str(batch_id))
+
+
+@router.post("/batches/{batch_id}/items/{work_id}/retry")
+async def retry_batch_item(batch_id: UUID, work_id: UUID, background: BackgroundTasks, db=Depends(get_async_db),
+                           user: User = Depends(get_current_user_async)):
+    from service import automation_batch_service as batches
+    ids = await batches.retry_item(db, user.id, str(batch_id), str(work_id))
+    background.add_task(batches.run_items, ids, user.id)
+    return await batches.get_batch(db, user.id, str(batch_id))
 
 
 @router.post("")

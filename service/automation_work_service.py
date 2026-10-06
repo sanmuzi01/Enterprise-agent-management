@@ -56,6 +56,7 @@ def payload(work, detail=True):
               "model_name": work.model_name, "sensitivity": work.sensitivity, "customer_id": work.customer_id,
               "elapsed_ms": work.elapsed_ms, "total_tokens": work.total_tokens,
               "edited": bool(work.edited), "error_message": work.error_message,
+              "batch_id": work.batch_id, "batch_name": work.batch_name,
               "created_at": work.created_at.isoformat() + "Z",
               "proposal": json.loads(work.accepted_json or work.proposal_json or "null"),
               "business_result": json.loads(work.business_result_json or "null"),
@@ -83,6 +84,40 @@ async def recover_interrupted(db, user_id, team_id):
         AutomationWork.user_id == user_id, AutomationWork.team_id == team_id,
         AutomationWork.status == "processing", AutomationWork.updated_at < utcnow() - timedelta(minutes=3),
     ).values(status="failed", error_message="处理被中断，请从原文重新整理", updated_at=utcnow()))
+    # 批量整理里排队的材料：后台进程重启后不会再有人处理它们，超过一个批次可能的最长耗时就标成失败，可以重试
+    await db.execute(update(AutomationWork).where(
+        AutomationWork.user_id == user_id, AutomationWork.team_id == team_id,
+        AutomationWork.status == "queued", AutomationWork.updated_at < utcnow() - timedelta(minutes=15),
+    ).values(status="failed", error_message="后台处理被中断，请重试这份材料", updated_at=utcnow()))
+    await db.commit()
+
+
+async def process_work(db, work):
+    """调用模型整理一份材料并把结果写回工作成果（单份整理与批量整理共用）。失败只改这份成果的状态，不抛出。"""
+    workflow = get_workflow(work.kind)
+    data_kind, user_id, team_id = work.kind, work.user_id, work.team_id
+    started = time.monotonic()
+    try:
+        answer, usage = await asyncio.wait_for(async_chat_with_usage(
+            db, user_id, work.model_name, extraction_prompt(data_kind), [], work.source_text, temperature=0,
+        ), timeout=90)
+        work.total_tokens = int(usage.get("total_tokens", 0)) if usage else None
+        result = parse_answer(data_kind, answer, work.source_text)
+        if workflow.enrich:
+            result = await workflow.enrich(db, user_id, team_id, result, work.source_text)
+        serialized = encode(result)
+        if len(serialized.encode("utf-8")) > 50000:
+            raise InvalidInput("整理结果过长，请拆分材料")
+        work.proposal_json = serialized
+        work.status = "ready"
+        work.business_checks_json = encode(await run_checks(workflow, user_id, team_id, result, work))
+    except InvalidInput as exc:
+        work.status, work.error_message = "failed", exc.message
+    except Exception:
+        # Do not persist provider responses, credentials or source excerpts in error messages.
+        work.status, work.error_message = "failed", "模型整理失败或超时，请检查模型连接后重新整理"
+    work.elapsed_ms = int((time.monotonic() - started) * 1000)
+    work.updated_at = utcnow()
     await db.commit()
 
 
@@ -120,29 +155,7 @@ async def generate(db, user_id, data):
     except IntegrityError:
         await db.rollback()
         raise Conflict("该材料正在处理，请刷新工作成果") from None
-    started = time.monotonic()
-    try:
-        answer, usage = await asyncio.wait_for(async_chat_with_usage(
-            db, user_id, data.model_name, extraction_prompt(data.kind), [], data.source_text, temperature=0,
-        ), timeout=90)
-        work.total_tokens = int(usage.get("total_tokens", 0)) if usage else None
-        result = parse_answer(data.kind, answer, data.source_text)
-        if workflow.enrich:
-            result = await workflow.enrich(db, user_id, data.team_id, result, data.source_text)
-        serialized = encode(result)
-        if len(serialized.encode("utf-8")) > 50000:
-            raise InvalidInput("整理结果过长，请拆分材料")
-        work.proposal_json = serialized
-        work.status = "ready"
-        work.business_checks_json = encode(await run_checks(get_workflow(data.kind), user_id, data.team_id, result, work))
-    except InvalidInput as exc:
-        work.status, work.error_message = "failed", exc.message
-    except Exception:
-        # Do not persist provider responses, credentials or source excerpts in error messages.
-        work.status, work.error_message = "failed", "模型整理失败或超时，请检查模型连接后重新整理"
-    work.elapsed_ms = int((time.monotonic() - started) * 1000)
-    work.updated_at = utcnow()
-    await db.commit()
+    await process_work(db, work)
     # Membership might have been revoked while the model was running.
     await authorize(db, user_id, data.team_id)
     return payload(work)

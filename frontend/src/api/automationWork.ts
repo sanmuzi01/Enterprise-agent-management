@@ -70,6 +70,25 @@ export async function importFile(teamId: number, file: File, sensitivity: string
   form.append('file', file)
   return (await request.post<ImportedText>('/enterprise/automation/import', form, { timeout: 90000, headers: { 'Content-Type': 'multipart/form-data' } })).data
 }
+export interface BatchItem extends Work { batch_name: string | null; batch_index: number | null }
+export interface Batch {
+  batch_id: string; kind: string; team_id: number; model_name: string; sensitivity: string; created_at: string
+  total: number; done: number; finished: boolean
+  counts: Record<'queued' | 'processing' | 'ready' | 'applying' | 'retry' | 'applied' | 'failed', number>
+  items: BatchItem[]
+}
+export interface BatchBrief { batch_id: string; kind: string; created_at: string; total: number; active: number; failed: number; finished: boolean }
+/** 批量整理：立即返回（材料排队中），整理在后台进行；batch_id 由客户端生成，重复提交不会重复整理。 */
+export async function createBatch(data: {
+  batch_id: string; team_id: number; kind: string; model_name: string; sensitivity: string; items: { name: string; text: string }[]
+}) { return (await request.post<Batch>('/enterprise/automation/batches', data, { timeout: 30000 })).data }
+export async function getBatch(id: string) { return (await request.get<Batch>(`/enterprise/automation/batches/${id}`, { skipErrorToast: true })).data }
+export async function listBatches(teamId: number) {
+  return (await request.get<BatchBrief[]>('/enterprise/automation/batches', { params: { team_id: teamId }, skipErrorToast: true })).data
+}
+export async function retryBatchItem(batchId: string, workId: string) {
+  return (await request.post<Batch>(`/enterprise/automation/batches/${batchId}/items/${workId}/retry`)).data
+}
 export async function applyWork(id: string, proposal: Proposal) {
   return (await request.post<Work>(`/enterprise/automation/${id}/apply`, { proposal }, { timeout: 60000 })).data
 }
