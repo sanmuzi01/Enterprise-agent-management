@@ -73,6 +73,7 @@
                 <td class="px-3 py-2.5">
                   <input :aria-label="`${r.name}手工基准（分钟）`" type="number" min="0.5" max="600" step="0.5" class="h-7 w-16 rounded border border-slate-200 px-1.5 text-xs"
                     :value="r.baseline_minutes" @change="saveBaseline(r.kind, ($event.target as HTMLInputElement).value)" /> 分
+                  <span class="ml-1 block text-[11px]" :class="r.baseline_source === 'measured' ? 'text-emerald-700' : 'text-slate-400'" data-testid="baseline-source">{{ r.baseline_source === 'measured' ? `实测（${r.baseline_samples} 个样本）` : r.baseline_source === 'admin' ? '管理员设定' : '默认值，未实测' }}</span>
                 </td>
                 <td class="px-3 py-2.5">{{ hours(r.estimated_saved_minutes) }}</td>
                 <td class="px-3 py-2.5">{{ r.tokens_per_applied ?? '—' }}<span v-if="r.cost_per_applied !== null" class="block text-[11px] text-slate-400">≈ ¥{{ r.cost_per_applied }}</span></td>

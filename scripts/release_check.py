@@ -184,6 +184,10 @@ AUTOMATION_FILES = [
     "service/events/handlers.py",
     "migrations/versions/20261007_0003_outbox.py",
     "scripts/drill_batch_restart.py",
+    "service/pilot_service.py",
+    "scripts/pilot_report.py",
+    "docs/pilot-plan.md",
+    "migrations/versions/20261007_0005_pilot.py",
     "service/observability/agent_runs.py",
     "migrations/versions/20261007_0004_agent_run_trace.py",
     # 文件导入

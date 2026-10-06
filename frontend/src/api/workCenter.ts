@@ -49,7 +49,7 @@ export interface MetricsRow {
   median_generate_seconds: number | null; median_apply_seconds: number | null
   business_blocked: number; duplicate_drafts: number; users: number
   tokens: number; tokens_per_applied: number | null; cost_per_applied: number | null
-  baseline_minutes?: number; estimated_saved_minutes: number | null
+  baseline_minutes?: number; baseline_source?: 'measured' | 'admin' | 'default'; baseline_samples?: number; estimated_saved_minutes: number | null
 }
 export interface AutomationMetrics {
   days: number; team_id: number | null; team_name: string | null

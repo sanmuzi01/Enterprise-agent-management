@@ -67,8 +67,9 @@ def _token_price() -> Optional[float]:
 
 
 async def baselines(db) -> Dict[str, float]:
-    saved = {row.kind: row.minutes for row in (await db.execute(select(WorkflowBaseline))).scalars().all()}
-    return {w.id: saved.get(w.id, w.baseline_minutes) for w in all_workflows()}
+    """每类工作实际使用的手工办理基准（分钟）：员工实测样本足够时用实测中位数，否则管理员设定，再否则默认值。"""
+    from service import pilot_service
+    return {kind: info["minutes"] for kind, info in (await pilot_service.baseline_details(db)).items()}
 
 
 async def set_baseline(db, user_id: int, kind: str, minutes: float) -> Dict[str, float]:
@@ -126,13 +127,17 @@ async def metrics(db, days: int = 30, team_id: Optional[int] = None) -> Dict[str
     if team_id is not None:
         query = query.where(AutomationWork.team_id == team_id)
     works = (await db.execute(query)).scalars().all()
-    base = await baselines(db)
+    from service import pilot_service
+    details = await pilot_service.baseline_details(db)
+    base = {kind: info["minutes"] for kind, info in details.items()}
     by_kind = {w.id: [] for w in all_workflows()}
     for work in works:
         by_kind.setdefault(work.kind, []).append(work)
     rows = []
     for kind, items in by_kind.items():
         row = summarize(kind, items, base.get(kind, 10.0))
+        info = details.get(kind, {})
+        row["baseline_source"], row["baseline_samples"] = info.get("source"), info.get("samples", 0)
         try:
             row["name"] = get_workflow(kind).name
         except InvalidInput:

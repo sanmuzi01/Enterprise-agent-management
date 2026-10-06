@@ -109,3 +109,12 @@ async def automation_metrics_view(days: int = Query(default=30, ge=1, le=365), t
 async def set_baseline(kind: str, data: BaselineUpdate, db=Depends(get_async_db),
                        user: User = Depends(get_current_admin_user_async)):
     return await automation_metrics.set_baseline(db, user.id, kind, data.minutes)
+
+
+@router.get("/admin/pilot-report", summary="试点效果报告（汇总，无个人明细）")
+async def pilot_report(days: int = Query(default=30, ge=1, le=365), team_id: Optional[int] = None, format: str = Query(default="json", pattern="^(json|md)$"),
+                       db=Depends(get_async_db), user: User = Depends(get_current_admin_user_async)):
+    from fastapi.responses import PlainTextResponse
+    from service import pilot_service
+    data = await pilot_service.report(db, days, team_id)
+    return PlainTextResponse(pilot_service.to_markdown(data), media_type="text/markdown; charset=utf-8") if format == "md" else data
