@@ -44,6 +44,24 @@
       </table>
     </div>
 
+    <section class="space-y-2 rounded-lg border border-slate-200 bg-white p-4 text-sm" data-testid="dead-letters">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h3 class="font-semibold text-slate-900">死信队列</h3>
+        <p v-if="eventStats" class="text-xs text-slate-500">待发布 {{ eventStats.unpublished }}（最久 {{ eventStats.oldest_unpublished_seconds }} 秒）· 重试中 {{ eventStats.retrying }} · 死信 {{ eventStats.dead_letters }}</p>
+      </div>
+      <p class="text-xs text-slate-500">事件重试用尽后停在这里，不会再自动处理。修复原因后“重新投递”，或写明原因后“丢弃”；两种操作都会留审计记录。</p>
+      <ul class="divide-y divide-slate-100">
+        <li v-for="d in dead" :key="d.id" class="flex flex-wrap items-center justify-between gap-2 py-2" :data-testid="`dead-${d.id}`">
+          <span class="min-w-0"><span class="block truncate">{{ d.consumer }} · {{ d.event_type }}</span>
+            <span class="block truncate text-xs text-slate-400">{{ d.error }}（已重试 {{ d.attempts }} 次 · {{ time(d.created_at) }}）</span></span>
+          <span class="flex gap-2 text-xs">
+            <button class="rounded border border-slate-200 px-2 py-1 hover:bg-slate-50" :disabled="busy" @click="redeliver(d.id)">重新投递</button>
+            <button class="rounded border border-red-200 px-2 py-1 text-red-600 hover:bg-red-50" :disabled="busy" @click="discard(d.id)">丢弃</button></span>
+        </li>
+        <li v-if="!dead.length" class="py-3 text-center text-slate-400">没有等待处理的死信</li>
+      </ul>
+    </section>
+
     <section v-if="detail" class="space-y-3 rounded-lg border border-indigo-200 bg-white p-4 text-sm" data-testid="issue-detail">
       <div class="flex items-start justify-between gap-3">
         <div><p class="text-xs text-slate-400">{{ detail.issue_no }} · {{ detail.service }} · {{ detail.operation }}</p><h3 class="font-semibold text-slate-900">{{ detail.title }}</h3></div>
@@ -96,7 +114,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import * as api from '../../api/issues'
-import type { Issue, IssueDetail, IssueSummary } from '../../api/issues'
+import type { DeadLetter, EventStats, Issue, IssueDetail, IssueSummary } from '../../api/issues'
 import { getErrorMessage } from '../../utils/request'
 
 const STATUS: Record<string, string> = { OPEN: '新发现', ACKNOWLEDGED: '已确认', INVESTIGATING: '排查中', MITIGATED: '已缓解', RESOLVED: '已解决', REGRESSED: '问题复发' }
@@ -109,6 +127,8 @@ const detail = ref<IssueDetail | null>(null)
 const status = ref('active'), severity = ref(''), keyword = ref('')
 const loading = ref(false), busy = ref(false), error = ref('')
 const form = ref('')
+const dead = ref<DeadLetter[]>([])
+const eventStats = ref<EventStats | null>(null)
 const values = reactive({ note: '', root_cause: '', resolution: '', fix_version: '' })
 
 const minutes = (v: number | null) => (v === null ? '—' : v >= 60 ? `${(v / 60).toFixed(1)} 小时` : `${v} 分钟`)
@@ -133,6 +153,21 @@ async function load() {
   } catch (e) { error.value = getErrorMessage(e, '加载问题列表失败') } finally { loading.value = false }
 }
 
+async function loadDead() {
+  try { [dead.value, eventStats.value] = await Promise.all([api.listDeadLetters(), api.getEventStats()]) } catch (e) { error.value = getErrorMessage(e, '加载死信队列失败') }
+}
+async function redeliver(id: number) {
+  if (!window.confirm('确认已经修复原因，重新投递这条事件？')) return
+  busy.value = true
+  try { await api.redeliverDeadLetter(id); await loadDead() } catch (e) { error.value = getErrorMessage(e, '重新投递失败') } finally { busy.value = false }
+}
+async function discard(id: number) {
+  const reason = window.prompt('丢弃原因（必填，会留审计记录）')
+  if (!reason || reason.trim().length < 2) return
+  busy.value = true
+  try { await api.discardDeadLetter(id, reason.trim()); await loadDead() } catch (e) { error.value = getErrorMessage(e, '丢弃失败') } finally { busy.value = false }
+}
+
 async function open(id: number) {
   form.value = ''
   try { detail.value = await api.getIssue(id) } catch (e) { error.value = getErrorMessage(e, '加载问题详情失败') }
@@ -148,5 +183,5 @@ async function submit() {
   } catch (e) { error.value = getErrorMessage(e, '操作失败') } finally { busy.value = false }
 }
 
-onMounted(load)
+onMounted(() => { void load(); void loadDead() })
 </script>

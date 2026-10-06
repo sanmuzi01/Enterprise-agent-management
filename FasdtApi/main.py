@@ -38,7 +38,7 @@ from FasdtApi.it_service import router as it_service_router
 from FasdtApi.hr_cases import router as hr_cases_router
 from FasdtApi.orchestration import router as orchestration_router
 from FasdtApi.responsibility import router as responsibility_router
-from FasdtApi.issues import admin_router as issues_admin_router, dept_router as issues_dept_router
+from FasdtApi.issues import admin_router as issues_admin_router, dept_router as issues_dept_router, events_router
 from FasdtApi.automation_work import router as automation_work_router
 from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
@@ -81,9 +81,16 @@ async def lifespan(app: FastAPI):
     # 建表 / 幂等迁移 / 内置管理员初始化：只在服务启动时执行，不在模块导入时执行。
     # DDL 是同步阻塞操作，放线程池避免占用事件循环。
     await run_in_threadpool(bootstrap_database)
+    from service.events import handlers  # noqa: F401  —— 导入即注册所有事件消费者
+    from service.events.runner import Runner, enabled as event_runner_enabled
+    runner = Runner() if event_runner_enabled() else None
+    if runner:
+        runner.start()   # 第一轮会接着处理上次进程退出时遗留的事件
     try:
         yield
     finally:
+        if runner:
+            await runner.stop()
         await async_engine.dispose()
 
 
@@ -129,6 +136,7 @@ app.include_router(orchestration_router)
 app.include_router(responsibility_router)
 app.include_router(issues_admin_router)
 app.include_router(issues_dept_router)
+app.include_router(events_router)
 app.include_router(automation_work_router)
 app.include_router(work_center_router)
 app.include_router(evaluation_router)

@@ -178,6 +178,12 @@ AUTOMATION_FILES = [
     "frontend/src/views/admin/AdminIssues.vue",
     "migrations/versions/20261007_0002_system_issue.py",
     "scripts/drill_java_down.py",
+    # 可靠事件
+    "service/events/outbox.py",
+    "service/events/runner.py",
+    "service/events/handlers.py",
+    "migrations/versions/20261007_0003_outbox.py",
+    "scripts/drill_batch_restart.py",
     # 文件导入
     "service/document_intake.py",
     "service/automation_batch_service.py",

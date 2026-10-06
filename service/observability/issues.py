@@ -87,6 +87,7 @@ def record_occurrence(*, error_code: str, http_status: int = 500, operation: str
         for attempt in range(2):
             issue = db.execute(select(SystemIssue).where(SystemIssue.fingerprint == fingerprint)).scalar_one_or_none()
             is_new = issue is None
+            regressed_now = False
             try:
                 if is_new:
                     issue = SystemIssue(
@@ -104,7 +105,9 @@ def record_occurrence(*, error_code: str, http_status: int = 500, operation: str
                     issue.last_trace_id = trace_id or issue.last_trace_id
                     if sentry_event_id:
                         issue.sentry_event_id = sentry_event_id
+                    regressed_now = False
                     if issue.status == "RESOLVED":   # 已解决的问题再次出现：复发，需要重新处理和验收
+                        regressed_now = True
                         issue.status = "REGRESSED"
                         issue.regress_count = (issue.regress_count or 0) + 1
                         issue.verified_by = issue.verified_at = None
@@ -112,6 +115,8 @@ def record_occurrence(*, error_code: str, http_status: int = 500, operation: str
                                           note=f"问题在修复版本 {issue.fix_version or '—'} 之后再次出现", created_at=now))
                 db.add(IssueOccurrence(issue_id=issue.id, trace_id=trace_id, release=release(), http_status=http_status,
                                        message=redact_text(message)[:500], detail_json=json.dumps(detail, ensure_ascii=False)[:4000], occurred_at=now))
+                if is_new or regressed_now:
+                    _emit_issue_event(db, issue, "issue.created" if is_new else "issue.regressed")   # 与问题记录同一个事务
                 db.commit()
                 break
             except IntegrityError:   # 并发首次出现：另一个请求先建好了，重来一次走“累加”分支
@@ -131,6 +136,15 @@ def record_occurrence(*, error_code: str, http_status: int = 500, operation: str
     finally:
         if db is not None:
             db.close()
+
+
+def _emit_issue_event(db, issue: SystemIssue, event_type: str) -> None:
+    from service.events import outbox
+    outbox.emit(db, topic="platform.issue.v1", event_type=event_type, aggregate_type="system_issue", aggregate_id=issue.id,
+                key=str(issue.id), department_id=issue.department_id,
+                payload={"issue_id": issue.id, "issue_no": issue.issue_no, "title": issue.title, "severity": issue.severity,
+                         "severity_label": SEVERITY_LABELS.get(issue.severity), "error_code": issue.error_code,
+                         "category": issue.category, "regress_count": issue.regress_count or 0})
 
 
 def _prune(db, issue_id: int) -> None:

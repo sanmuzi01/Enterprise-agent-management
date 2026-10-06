@@ -1,7 +1,7 @@
 from typing import Literal
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import BaseModel, Field, ConfigDict
 
 from models.async_db import get_async_db
@@ -75,20 +75,15 @@ async def import_file(team_id: int = Form(gt=0), sensitivity: Literal["internal"
 
 
 @router.post("/batches")
-async def create_batch(data: BatchRequest, background: BackgroundTasks, db=Depends(get_async_db),
-                       user: User = Depends(get_current_user_async)):
-    """批量整理：立即返回批次（材料排队中），整理在后台进行；用 GET /batches/{id} 看进度。"""
+async def create_batch(data: BatchRequest, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    """批量整理：立即返回批次（材料排队中），整理由事件消费者在后台进行；用 GET /batches/{id} 看进度。"""
     from service import automation_batch_service as batches
     try:
         require_limit(f"automation_batch:{user.id}", "AUTOMATION_BATCH_RATE_LIMIT", 6,
                       "AUTOMATION_RATE_WINDOW_SECONDS", 60, "批量整理")
     except LimitExceeded:
         raise RateLimited("批量整理请求过于频繁，请稍后重试") from None
-    batch = await batches.create_batch(db, user.id, data)
-    queued = batches.queued_ids(batch)
-    if queued:
-        background.add_task(batches.run_items, queued, user.id)
-    return batch
+    return await batches.create_batch(db, user.id, data)
 
 
 @router.get("/batches")
@@ -104,11 +99,10 @@ async def get_batch(batch_id: UUID, db=Depends(get_async_db), user: User = Depen
 
 
 @router.post("/batches/{batch_id}/items/{work_id}/retry")
-async def retry_batch_item(batch_id: UUID, work_id: UUID, background: BackgroundTasks, db=Depends(get_async_db),
+async def retry_batch_item(batch_id: UUID, work_id: UUID, db=Depends(get_async_db),
                            user: User = Depends(get_current_user_async)):
     from service import automation_batch_service as batches
-    ids = await batches.retry_item(db, user.id, str(batch_id), str(work_id))
-    background.add_task(batches.run_items, ids, user.id)
+    await batches.retry_item(db, user.id, str(batch_id), str(work_id))
     return await batches.get_batch(db, user.id, str(batch_id))
 
 

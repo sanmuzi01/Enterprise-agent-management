@@ -320,6 +320,76 @@ class IssueEvent(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class OutboxEvent(Base):
+    """事务性发件箱：业务数据和事件在同一个数据库事务里写入，之后由发布器可靠地送出（至少一次）。payload 已脱敏，不含正文。"""
+    __tablename__ = "outbox_event"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_outbox_event_id"),
+        Index("idx_outbox_publish", "published_at", "next_publish_at"),
+        Index("idx_outbox_topic", "topic", "id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    topic = Column(String(80), nullable=False)
+    event_key = Column(String(64), nullable=True)
+    event_type = Column(String(60), nullable=False)
+    schema_version = Column(Integer, nullable=False, default=1)
+    aggregate_type = Column(String(40), nullable=False)
+    aggregate_id = Column(String(64), nullable=False)
+    organization_id = Column(Integer, nullable=True)
+    department_id = Column(Integer, nullable=True)
+    trace_id = Column(String(64), nullable=True)
+    producer = Column(String(40), nullable=False)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    published_at = Column(DateTime, nullable=True)
+    publish_attempts = Column(Integer, nullable=False, default=0)
+    next_publish_at = Column(DateTime, nullable=True)
+    last_error = Column(String(300), nullable=True)
+
+
+class ConsumerInbox(Base):
+    """消费者收件箱：某个消费者已经成功处理过的事件。重复投递同一事件时据此跳过，保证幂等。"""
+    __tablename__ = "consumer_inbox"
+    __table_args__ = (UniqueConstraint("event_id", "consumer", name="uq_inbox_event_consumer"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    processed_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ConsumerRetry(Base):
+    """某个消费者对某个事件的处理租约与重试状态：领取时占位（防止多个进程重复处理），失败后记录次数与下次重试时间。"""
+    __tablename__ = "consumer_retry"
+    __table_args__ = (UniqueConstraint("event_id", "consumer", name="uq_retry_event_consumer"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False)
+    last_error = Column(String(300), nullable=True)
+
+
+class DeadLetter(Base):
+    """死信：重试用尽的事件，等待人工处理（修复后重新投递，或写明原因后丢弃）。"""
+    __tablename__ = "dead_letter"
+    __table_args__ = (Index("idx_dead_letter_status", "status", "id"), Index("idx_dead_letter_event", "event_id", "consumer"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    topic = Column(String(80), nullable=False)
+    event_type = Column(String(60), nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    payload_json = Column(Text, nullable=False)
+    error = Column(String(500), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    status = Column(String(12), nullable=False, default="pending")      # pending / redelivered / discarded
+    discard_reason = Column(String(500), nullable=True)
+    handled_by = Column(Integer, nullable=True)
+    handled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class OrchestrationPlan(Base):
     """跨部门协同办理：一段话拆成的多个部门步骤。只是计划，业务数据都由各步骤关联的 AI 工作成果经人工核对后写入。"""
     __tablename__ = "orchestration_plan"

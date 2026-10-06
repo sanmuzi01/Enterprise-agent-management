@@ -27,3 +27,13 @@ export const getIssueSummary = async () => (await request.get<IssueSummary>('/ad
 export const getIssue = async (id: number) => (await request.get<IssueDetail>(`/admin/issues/${id}`)).data
 export const actOnIssue = async (id: number, body: Record<string, unknown>) =>
   (await request.post<IssueDetail>(`/admin/issues/${id}/actions`, body)).data
+
+export interface DeadLetter {
+  id: number; event_id: string; consumer: string; topic: string; event_type: string; trace_id: string | null; error: string | null
+  attempts: number; status: 'pending' | 'redelivered' | 'discarded'; discard_reason: string | null; created_at: string
+}
+export interface EventStats { unpublished: number; oldest_unpublished_seconds: number; dead_letters: number; retrying: number }
+export const getEventStats = async () => (await request.get<EventStats>('/admin/events/stats')).data
+export const listDeadLetters = async (status = 'pending') => (await request.get<DeadLetter[]>('/admin/events/dead-letters', { params: { status } })).data
+export const redeliverDeadLetter = async (id: number) => (await request.post<DeadLetter>(`/admin/events/dead-letters/${id}/redeliver`)).data
+export const discardDeadLetter = async (id: number, reason: string) => (await request.post<DeadLetter>(`/admin/events/dead-letters/${id}/discard`, { reason })).data

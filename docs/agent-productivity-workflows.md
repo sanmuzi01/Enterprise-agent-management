@@ -196,7 +196,7 @@
 - **每份就是一条普通的 AI 工作成果**（`batch_id` / `batch_name` / `batch_index`）：权限、额度、密级、依据校验、业务系统核对、人工核对后才保存——全部沿用单份整理，批次本身不新增任何业务写入。
 - **每份独立成败**：一份失败（模型答不出结构、额度用尽、成员身份失效）不影响其他份；失败的可以单独重试（`POST /batches/{id}/items/{work_id}/retry`，成功的不能被重试覆盖），也可以“带回原文手动处理”。
 - **限流与幂等**：同一用户同时只能有一个批次在整理；最多同时 2 份调用模型；`batch_id` 由客户端生成，重复提交同一批次返回原批次、不会重复整理（每份的请求编号由批次编号和序号确定）。需要指定客户的工作类型（客户跟进）不支持批量。
-- **进程重启**：后台任务跑在 API 进程里；进程被重启时，排队超过 15 分钟的材料会被标成失败（可重试），不会永远卡在“排队中”。要换成独立的任务队列时，`run_items` 就是入口。
+- **进程重启**：整理由事件消费者（`batch_item_worker`）完成，事件和材料同一个事务登记，进程崩溃后重启会接着处理，不会被标成失败（见“可靠事件”一节）。运行器被关闭（`OUTBOX_RUNNER=0`）超过 60 分钟，排队的材料才会被标成失败（可重试）。
 
 测试：`tests/test_automation_batch.py`（13 项：进度、并发上限、单份失败与重试、额度、幂等、限制、权限、中断恢复）、`scripts/e2e_batch_browser.py`（真实浏览器）。
 
@@ -216,7 +216,26 @@
 
 测试：`tests/test_observability.py`（34 项：trace 传播、脱敏、日志、错误码目录、fingerprint 稳定性、100 次发生只一个问题、状态机门槛与验收分离、复发、统一错误契约、依赖归类、熔断只告警一次、管理员/部门负责人访问边界、Sentry 清洗）。
 
-**尚未做（后续阶段）**：Vue 与 Java 的 Sentry 接入和前端异常上报；OpenTelemetry SDK/Collector 与 Loki、Tempo、云日志的部署配置；Kafka（KRaft）与 Outbox/Inbox、重试主题与死信队列、DLQ 管理页、批量任务迁移到消费者；Agent 执行记录（AgentRun）纳入问题追踪；更多故障演练（停 Kafka、重复投递、数据库死锁、进程重启后批量任务继续）。这些依赖 Docker 里的 Kafka / Loki / Tempo 等基础设施，需要在本机拉取镜像后才能真实验证。
+**尚未做（后续阶段）**：Vue 与 Java 的 Sentry 接入和前端异常上报；OpenTelemetry SDK/Collector 与 Loki、Tempo、云日志的部署配置；真实 Kafka 联调；Agent 执行记录（AgentRun）纳入问题追踪；更多故障演练（停 Kafka、数据库死锁）。发件箱/收件箱/死信与批量任务的崩溃恢复已完成，见下一节。这些依赖 Docker 里的 Kafka / Loki / Tempo 等基础设施，需要先启动 Docker 才能真实验证。
+
+## 可靠事件（发件箱 / 收件箱 / 重试 / 死信）与批量整理的崩溃恢复
+
+业务事件不再“先存库、再发消息”（发送失败就丢），而是**事务性发件箱**：事件和业务数据在同一个数据库事务里写入，之后由发布器可靠送出。实现在 `service/events/`。
+
+- **生产**：`outbox.emit(db, topic, …)` 只往调用方的事务里加一行、不 commit——事务回滚事件就不存在，提交了就一定在。Topic 必须登记（`platform.issue.v1`、`platform.audit.v1`、`enterprise.business-event.v1`、`agent.run-event.v1`、`automation.job.v1`、`notification.command.v1`），拼错会直接报错；消息体统一脱敏、最大 16KB，**只放业务对象的编号，不放正文**。消息格式：`event_id / event_type / schema_version / occurred_at / organization_id / department_id / aggregate_type / aggregate_id / trace_id / producer / payload`。
+- **发布**：发布器把到期的事件送到传输层，成功才标记已发布；失败按指数退避（2、4、8…秒，最多 5 分钟）重试，事件一直在库里，传输层恢复后自动补发。多个进程同时跑也安全（行锁 + SKIP LOCKED）。传输层有两种：默认的**数据库模式**（不需要任何中间件，消费者直接读发件箱表）和 **Kafka**（设置 `KAFKA_BOOTSTRAP_SERVERS`，需要 `confluent-kafka`；`KafkaTransport` 带分区键和 `traceparent / event_id / schema_version / producer` 头——**只用假的 producer 测过消息格式，没有对真实 Kafka 验证过，Kafka 一侧的消费者也还没写**）。
+- **消费**：消费者先领取（带租约，防止多个进程同时处理），成功后写**收件箱**；已在收件箱里的事件再次投递直接跳过，所以重复投递不会重复处理。租约到期还没处理完（进程崩溃）→ 事件自动重新可领取，**重启后继续处理**。一个事件失败不影响其他事件。
+- **失败**：按退避重试，达到上限进入**死信**，不再自动重试，同时在问题中心登记 `KAFKA_CONSUME_FAILED`（同一个消费者的同一类失败聚合成一条）。管理后台“问题中心”页下方的**死信队列**：查看原事件与失败原因、**重新投递**（清掉重试状态，失败次数从头算）或写明原因后**丢弃**，两种操作都留审计；`GET /admin/events/stats` 给出待发布数、最久未发布秒数、重试中、死信数。
+- **运行**：API 进程启动时在事件循环里起一个后台运行器（`OUTBOX_RUNNER=0` 可关闭，此时事件只会堆积、不会丢）；`run_cycle()` 是一轮完整的发布 + 消费。消费者登记在 `service/events/handlers.py`。
+- **已接入的事件**：问题中心——新问题、问题复发（与问题记录同一个事务）→ `issue_notifier` 在严重/高优先级的新问题或复发时通知所有管理员；批量整理——创建批次时每份材料的事件和材料**同一个事务**登记 → `batch_item_worker` 整理。
+
+**批量整理的崩溃恢复**：材料停在“整理中”时进程崩溃，租约到期后事件重新投递，处理函数发现这份材料“整理中”且已超过 100 秒没有更新就接手继续整理（没超过则判断为另一个处理者还在做，稍后重试，不会重复整理）；重试用尽的材料被标成失败（用户能看到原因、可重试），事件进死信，管理员重新投递后会重新整理。
+
+故障演练：`scripts\drill_batch_restart.py`（前提 `scripts\demo.py start`）——提交 10 份材料的批次后立即杀掉真实的后端进程，此时批次还有材料没整理完；重启后全部材料整理完成、没有一份失败、没有进死信、每份恰好处理一次。已通过。
+
+测试：`tests/test_outbox.py`（20 项：事务回滚事件消失、发布失败退避补发、Kafka 适配器格式、重复投递只处理一次、租约防双重处理、崩溃后租约到期继续、按序投递、失败重试到死信并进问题中心、一个坏事件不挡后面的、重新投递/丢弃、问题事件只在新建和复发时产生、通知只给严重问题）、`tests/test_automation_batch.py`（20 项，含重启继续、正在被处理的不重复整理、重试用尽进死信、死信管理接口）。
+
+**仍未做**：真实 Kafka 的联调（Docker 守护进程未运行，没有验证）与 Kafka 一侧的消费者；`platform.audit.v1`、`enterprise.business-event.v1`、`agent.run-event.v1`、`notification.command.v1` 目前只登记了 Topic，还没有生产者；Schema 兼容性测试；OpenTelemetry Collector / Loki / Tempo / 云日志；Vue 与 Java 的 Sentry；Agent 执行记录（AgentRun）。
 
 ## 部门责任执行（会议纪要 → 责任事项 → 接受 → 执行 → 提交 → 验收）
 

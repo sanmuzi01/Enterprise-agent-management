@@ -83,11 +83,12 @@ async def recover_interrupted(db, user_id, team_id):
     await db.execute(update(AutomationWork).where(
         AutomationWork.user_id == user_id, AutomationWork.team_id == team_id,
         AutomationWork.status == "processing", AutomationWork.updated_at < utcnow() - timedelta(minutes=3),
+        AutomationWork.batch_id.is_(None),   # 批量整理的材料由事件消费者接手继续整理，不在这里标失败
     ).values(status="failed", error_message="处理被中断，请从原文重新整理", updated_at=utcnow()))
     # 批量整理里排队的材料：后台进程重启后不会再有人处理它们，超过一个批次可能的最长耗时就标成失败，可以重试
     await db.execute(update(AutomationWork).where(
         AutomationWork.user_id == user_id, AutomationWork.team_id == team_id,
-        AutomationWork.status == "queued", AutomationWork.updated_at < utcnow() - timedelta(minutes=15),
+        AutomationWork.status == "queued", AutomationWork.updated_at < utcnow() - timedelta(minutes=60),
     ).values(status="failed", error_message="后台处理被中断，请重试这份材料", updated_at=utcnow()))
     await db.commit()
 

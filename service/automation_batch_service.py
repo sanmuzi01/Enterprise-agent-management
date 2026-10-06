@@ -8,8 +8,8 @@
 批次靠 batch_id（客户端生成的 UUID）保证幂等：重复提交同一批次不会重复整理。后台处理跑在 API 进程里，
 进程被重启时排队的材料会在 15 分钟后被标成失败（可重试），不会永远卡在“排队中”。
 """
-import asyncio
 import uuid
+from datetime import timedelta
 from typing import Any, Dict, List
 
 from sqlalchemy import case, func, select, update
@@ -100,12 +100,21 @@ async def create_batch(db, user_id: int, data) -> Dict[str, Any]:
         raise Conflict("你有一个批次还在整理中，请等它完成后再提交新的批次")
     await enforce_quota_async(db, user_id)
     for index, item in enumerate(data.items):
+        work_id = str(uuid.uuid4())
         db.add(AutomationWork(
-            id=str(uuid.uuid4()), user_id=user_id, team_id=team.id, request_key=item_key(batch_id, index), kind=data.kind,
+            id=work_id, user_id=user_id, team_id=team.id, request_key=item_key(batch_id, index), kind=data.kind,
             model_name=data.model_name, sensitivity=data.sensitivity, source_text=texts[index], status="queued",
             batch_id=batch_id, batch_index=index, batch_name=(item.name or f"材料 {index + 1}")[:255]))
-    await db.commit()
+        _emit_item(db, team, user_id, batch_id, work_id)
+    await db.commit()   # 材料和它们的事件同一个事务：要么都在、要么都不在，进程随时崩溃也不会出现“排队了但没人处理”
     return batch_payload(batch_id, await _load(db, user_id, batch_id))
+
+
+def _emit_item(db, team, user_id: int, batch_id: str, work_id: str) -> None:
+    from service.events import outbox
+    outbox.emit(db, topic="automation.job.v1", event_type="batch.item.queued", aggregate_type="automation_work", aggregate_id=work_id,
+                key=batch_id, organization_id=team.organization_id, department_id=team.id,
+                payload={"work_id": work_id, "user_id": user_id, "batch_id": batch_id})
 
 
 async def get_batch(db, user_id: int, batch_id: str) -> Dict[str, Any]:
@@ -130,10 +139,10 @@ async def list_batches(db, user_id: int, team_id: int, limit: int = 10) -> List[
              "failed": int(f or 0), "finished": not a} for b, k, c, n, a, f in rows]
 
 
-async def retry_item(db, user_id: int, batch_id: str, work_id: str) -> List[str]:
-    """把批次里失败的一份重新排队，返回需要在后台处理的材料编号。"""
+async def retry_item(db, user_id: int, batch_id: str, work_id: str) -> None:
+    """把批次里失败的一份重新排队：状态改回“排队中”并登记一个新事件（同一个事务）。"""
     works = await _load(db, user_id, batch_id)
-    await authorize(db, user_id, works[0].team_id, works[0].kind)
+    team = await authorize(db, user_id, works[0].team_id, works[0].kind)
     work = next((w for w in works if w.id == work_id), None)
     if work is None:
         raise NotFound("这份材料不在该批次里")
@@ -141,21 +150,37 @@ async def retry_item(db, user_id: int, batch_id: str, work_id: str) -> List[str]
         AutomationWork.id == work.id, AutomationWork.status == "failed", AutomationWork.proposal_json.is_(None),
     ).values(status="queued", error_message=None, updated_at=utcnow()))
     if claimed.rowcount != 1:
+        await db.rollback()
         raise Conflict("只有整理失败的材料能重试")
+    _emit_item(db, team, user_id, batch_id, work.id)
     await db.commit()
-    return [work.id]
 
 
-async def _run_item(work_id: str, user_id: int) -> None:
+STALE_PROCESSING_SECONDS = 100   # 小于事件租约（120 秒）：租约到期被重新投递时，上一个处理者如果真的崩了，这里能接手
+
+
+async def handle_item_event(event: Dict[str, Any]) -> None:
+    """消费者：整理批次里的一份材料。幂等：已经整理完/失败的材料再收到事件直接跳过；
+    进程崩溃时材料停在“整理中”，事件租约到期重新投递后由这里接手继续整理，而不是标成失败。"""
     from models.async_db import AsyncSessionLocal
+    from service.events.runner import TryAgain
+    work_id, user_id = event["payload"]["work_id"], int(event["payload"]["user_id"])
     async with AsyncSessionLocal() as db:
+        stale = utcnow() - timedelta(seconds=STALE_PROCESSING_SECONDS)
         claimed = await db.execute(update(AutomationWork).where(
-            AutomationWork.id == work_id, AutomationWork.user_id == user_id, AutomationWork.status == "queued",
+            AutomationWork.id == work_id, AutomationWork.user_id == user_id,
+            (AutomationWork.status == "queued") | ((AutomationWork.status == "processing") & (AutomationWork.updated_at < stale))
+            # 死信里的事件被管理员重新投递：这份材料当时被标成了失败，现在要重新整理（已有整理结果的不会被覆盖）
+            | ((AutomationWork.status == "failed") & AutomationWork.proposal_json.is_(None)),
         ).values(status="processing", updated_at=utcnow()))
         await db.commit()
+        work = (await db.execute(select(AutomationWork).where(AutomationWork.id == work_id))).scalar_one_or_none()
+        if work is None:
+            return   # 材料已被删除（用户注销等）：没有什么可做的
         if claimed.rowcount != 1:
-            return   # 已被处理，或被其他进程抢走
-        work = (await db.execute(select(AutomationWork).where(AutomationWork.id == work_id))).scalar_one()
+            if work.status == "processing":
+                raise TryAgain("这份材料正在被另一个处理者整理")
+            return   # 已经整理完成或已失败：重复投递，跳过
 
         async def fail(message: str) -> None:
             work.status, work.error_message, work.updated_at = "failed", message[:300], utcnow()
@@ -173,18 +198,9 @@ async def _run_item(work_id: str, user_id: int) -> None:
         await process_work(db, work)
 
 
-async def run_items(work_ids: List[str], user_id: int) -> None:
-    """后台：最多 CONCURRENCY 份同时整理；每份独立成败，任何异常都不会拖垮其他份。"""
-    semaphore = asyncio.Semaphore(CONCURRENCY)
-
-    async def guarded(work_id: str) -> None:
-        async with semaphore:
-            try:
-                await _run_item(work_id, user_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("批量整理中的一份材料处理异常: %s", work_id)
-                await _mark_failed(work_id, user_id)
-    await asyncio.gather(*(guarded(w) for w in work_ids))
+async def handle_item_dead(event: Dict[str, Any], error: str) -> None:
+    """事件重试用尽：把这份材料标成失败（用户能看到原因并重试），不让它永远停在排队/整理中。"""
+    await _mark_failed(event["payload"]["work_id"], int(event["payload"]["user_id"]))
 
 
 async def _mark_failed(work_id: str, user_id: int) -> None:
@@ -197,10 +213,3 @@ async def _mark_failed(work_id: str, user_id: int) -> None:
             await db.commit()
     except Exception:  # noqa: BLE001
         logger.exception("标记失败时出错: %s", work_id)
-
-
-def queued_ids(batch: Dict[str, Any]) -> List[str]:
-    return [item["id"] for item in batch["items"] if item["status"] == "queued"]
-
-
-__all__ = ["create_batch", "get_batch", "list_batches", "retry_item", "run_items", "queued_ids", "encode"]

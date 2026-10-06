@@ -83,3 +83,45 @@ async def department_issue_detail(issue_id: int, team_id: int, db=Depends(get_as
         item.pop("detail", None)
     data.pop("links", None)
     return data
+
+
+events_router = APIRouter(prefix="/admin/events", tags=["事件与死信（管理员）"])
+
+
+class DiscardBody(BaseModel):
+    reason: str = Field(min_length=2, max_length=500)
+
+
+@events_router.get("/stats")
+async def event_stats(_: User = Depends(get_current_admin_user_async)):
+    from service.events import outbox
+    return await _sync(outbox.stats)
+
+
+@events_router.get("/dead-letters")
+async def dead_letters(status: Optional[str] = "pending", _: User = Depends(get_current_admin_user_async)):
+    from service.events import outbox
+    return await _sync(outbox.list_dead_letters, status or None)
+
+
+@events_router.get("/dead-letters/{dead_id}")
+async def dead_letter_detail(dead_id: int, _: User = Depends(get_current_admin_user_async)):
+    from service.events import outbox
+    return await _sync(outbox.get_dead_letter, dead_id)
+
+
+@events_router.post("/dead-letters/{dead_id}/redeliver")
+async def redeliver_dead_letter(dead_id: int, admin: User = Depends(get_current_admin_user_async)):
+    from service.events import outbox
+    result = await _sync(outbox.redeliver, dead_id, admin.id)
+    await audit_service.record_async(admin.id, "event.dead_letter_redeliver", resource_type="dead_letter", resource_id=dead_id)
+    return result
+
+
+@events_router.post("/dead-letters/{dead_id}/discard")
+async def discard_dead_letter(dead_id: int, body: DiscardBody, admin: User = Depends(get_current_admin_user_async)):
+    from service.events import outbox
+    result = await _sync(outbox.discard, dead_id, admin.id, body.reason)
+    await audit_service.record_async(admin.id, "event.dead_letter_discard", resource_type="dead_letter", resource_id=dead_id,
+                                     detail={"reason": body.reason})
+    return result
