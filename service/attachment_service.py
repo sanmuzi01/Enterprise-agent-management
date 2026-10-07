@@ -33,9 +33,14 @@ def _ttl_seconds() -> int:
         return 7 * 86400
 
 
+_WINDOWS_DEVICE_NAMES = {"con", "prn", "aux", "nul", "clock$", *(f"com{i}" for i in range(1, 10)), *(f"lpt{i}" for i in range(1, 10))}
+
+
 def safe_filename(name: str) -> str:
     base = os.path.basename((name or "").replace("\\", "/")).strip().strip(".")
     base = re.sub(r"[^\w\-. 一-鿿()（）]+", "_", base)[:120].strip()
+    if base.split(".")[0].strip().lower() in _WINDOWS_DEVICE_NAMES:
+        base = "_" + base          # 在 Windows 上，写名为 con.txt / NUL 的文件会写进设备，文件根本不会出现
     return base or "file"
 
 

@@ -68,13 +68,11 @@ def _check_signature(kind: str, content: bytes) -> None:
 
 
 def _check_archive(content: bytes) -> None:
+    from service import archive_guard
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as archive:
-            infos = archive.infolist()
-            if len(infos) > MAX_ZIP_MEMBERS or sum(i.file_size for i in infos) > MAX_UNCOMPRESSED_BYTES:
-                raise InvalidInput("文件解压后过大或结构异常，已拒绝处理")
-    except zipfile.BadZipFile:
-        raise InvalidInput("文件已损坏，无法打开") from None
+        archive_guard.inspect_zip(content, max_members=MAX_ZIP_MEMBERS, max_uncompressed=MAX_UNCOMPRESSED_BYTES)
+    except archive_guard.ArchiveRejected as exc:
+        raise InvalidInput(str(exc)) from None
 
 
 def _decode(content: bytes) -> str:

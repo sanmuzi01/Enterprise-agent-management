@@ -17,6 +17,8 @@ import re
 import shutil
 import uuid
 import zipfile
+
+from service import archive_guard
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -76,6 +78,16 @@ def parse_skill_md(text: str) -> Tuple[Dict[str, Any], str]:
             if kv:
                 meta[kv.group(1)] = kv.group(2).strip().strip("'\"")
     return (meta if isinstance(meta, dict) else {}), body
+
+
+def _target_within(base: str, rel: str) -> str:
+    """写文件前的兜底：拼出来的真实路径必须仍在 base 里（不信任任何字符串层面的路径判断）。"""
+    if not archive_guard.safe_member_name(rel):
+        raise SkillImportError("压缩包里含有不安全的文件路径，已拒绝导入")
+    try:
+        return archive_guard.ensure_within(base, os.path.join(base, *rel.split("/")))
+    except archive_guard.ArchiveRejected as exc:
+        raise SkillImportError(str(exc)) from None
 
 
 def _norm(name: str) -> str:
@@ -148,11 +160,14 @@ def import_skill_bundle(
             raise SkillImportError(f"压缩包里有 {len(infos)} 个文件，超过上限 {MAX_ZIP_ENTRIES}，请只打包需要的 Skill 文件夹")
         if sum(i.file_size for i in infos) > MAX_UNCOMPRESSED_BYTES:
             raise SkillImportError("压缩包解压后体积过大，请只打包需要的 Skill 文件夹")
+        for info in infos:
+            if info.file_size > archive_guard.RATIO_FLOOR_BYTES and info.file_size > archive_guard.MAX_RATIO * max(info.compress_size, 1):
+                raise SkillImportError("压缩包里有压缩比异常的文件（疑似压缩炸弹），已拒绝导入")
 
         files: Dict[str, zipfile.ZipInfo] = {}
         for info in infos:
             name = _norm(info.filename)
-            if name.startswith("/") or ".." in name.split("/"):
+            if not archive_guard.safe_member_name(name):       # 含盘符 C:/、UNC、备用数据流、保留设备名、NUL 等 Windows 路径花样
                 raise SkillImportError("压缩包里含有不安全的文件路径，已拒绝导入")
             if name.startswith("__MACOSX/") or os.path.basename(name) == ".DS_Store":
                 continue
@@ -327,7 +342,7 @@ def _install_one(db, user_id: int, zf: zipfile.ZipFile, root: str,
                 data = src.read(MAX_RESOURCE_BYTES + 1)
             if len(data) > MAX_RESOURCE_BYTES:
                 continue
-            target = os.path.join(resource_dir, *store_rel.split("/"))
+            target = _target_within(resource_dir, store_rel)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "wb") as f:
                 f.write(data)
@@ -346,7 +361,7 @@ def _install_one(db, user_id: int, zf: zipfile.ZipFile, root: str,
                         or total_bytes + info.file_size > MAX_BUNDLE_TOTAL_BYTES):
                     skipped += 1
                     continue
-                target = os.path.join(bundle_dir, *rel.split("/"))
+                target = _target_within(bundle_dir, rel)
                 os.makedirs(os.path.dirname(target), exist_ok=True)
                 # 压缩包里声明的大小可以造假，按实际读到的字节数为准
                 limit = min(MAX_BUNDLE_FILE_BYTES, MAX_BUNDLE_TOTAL_BYTES - total_bytes)

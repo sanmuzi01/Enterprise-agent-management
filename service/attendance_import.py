@@ -57,8 +57,16 @@ def _read_csv(content: bytes) -> List[List[Any]]:
     return [row for row in csv.reader(io.StringIO(text), delimiter=delimiter)]
 
 
+MAX_COLUMNS = 100        # 考勤表几十列已经很多；不限制的话，伪造的 dimension 会让每行读出一万多个空单元格
+
+
 def _read_xlsx(content: bytes) -> List[List[Any]]:
     from openpyxl import load_workbook
+    from service import archive_guard
+    try:
+        archive_guard.inspect_zip(content, max_members=500, max_uncompressed=60 * 1024 * 1024)   # 压缩炸弹 / 路径花样：解析前先拒绝
+    except archive_guard.ArchiveRejected as exc:
+        raise InvalidInput(str(exc)) from None
     try:
         workbook = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
     except Exception:  # noqa: BLE001
@@ -67,7 +75,7 @@ def _read_xlsx(content: bytes) -> List[List[Any]]:
         best: List[List[Any]] = []
         for sheet in workbook.worksheets:        # 多个工作表时取行数最多的那个（汇总页、说明页通常很短）
             rows = []
-            for row in sheet.iter_rows(values_only=True):
+            for row in sheet.iter_rows(values_only=True, max_col=MAX_COLUMNS):
                 rows.append(list(row))
                 if len(rows) > MAX_ROWS + HEADER_SEARCH_ROWS:
                     raise InvalidInput(f"一次最多导入 {MAX_ROWS:,} 行，请按月或按部门拆分文件")

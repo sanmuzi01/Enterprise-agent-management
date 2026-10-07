@@ -92,6 +92,13 @@ def import_skill_from_upload(
             unique,
         )
         os.makedirs(package_root, exist_ok=True)
+        from service import archive_guard
+        try:
+            archive_guard.inspect_zip(content, max_members=3000, max_uncompressed=200 * 1024 * 1024)   # 先体检：成员数 / 总大小 / 压缩比 / 路径
+        except archive_guard.ArchiveRejected as exc:
+            logger.warning(f"Skill包未通过安全检查: {exc}")
+            shutil.rmtree(package_root, ignore_errors=True)
+            return None
         with zipfile.ZipFile(BytesIO(content)) as zf:
             unsafe = [n for n in zf.namelist() if not ensure_safe_zip_member(n)]
             if unsafe:
