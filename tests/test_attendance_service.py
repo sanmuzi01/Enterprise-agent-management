@@ -133,6 +133,12 @@ class AttendanceServiceTest(unittest.TestCase):
         self.assertEqual(sorted(body["no_records"]), sorted([self.other_head["name"], self.other_emp["name"]]))
         self.assertEqual(body["new_punches"], body["punches"])
 
+    def test_names_with_inserted_whitespace_still_match(self):
+        """两个字的名字常被导出成“李 四”“李\u3000四”：对比时忽略空白，不该落到“对不上”里。"""
+        spaced = self.emp1["name"][:4] + "\u3000" + self.emp1["name"][4:]
+        result = self.upload(self.hr, [(spaced, f"{MON} 09:00"), (spaced, f"{MON} 18:00")]).json()
+        self.assertEqual((result["unmatched"], result["matched_people"], result["new_punches"]), ([], 1, 2))
+
     def test_alias_is_saved_and_reused_next_time(self):
         rows = [("小王", f"{MON} 09:00"), ("小王", f"{MON} 18:00")]
         first = self.upload(self.hr, rows, aliases={"小王": self.emp1["id"]}).json()

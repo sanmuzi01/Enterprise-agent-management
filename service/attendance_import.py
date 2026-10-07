@@ -1,5 +1,6 @@
 """考勤文件解析：读懂打卡机、钉钉、企业微信等导出的 Excel / CSV。
 
+支持的文件：.xlsx；打卡机常见的“.xls”（其实是 HTML 表格或 Excel 2003 XML 表格，按内容识别）；.csv / 制表符分隔的文本；旧版二进制 .xls 会提示另存为 .xlsx。
 现实里的考勤导出格式五花八门，所以这里不要求固定模板，而是按表头的常见叫法自动识别两种最常见的形态：
 1. **逐条打卡**：每行一次打卡——姓名（或工号）+ 打卡时间（一列完整的日期时间，或“日期”“时间”两列）；
 2. **每日汇总**：每人每天一行——姓名 + 日期 + 上班打卡时间 + 下班打卡时间（钉钉“打卡时间”报表、企业微信“每日统计”常见这种；
@@ -11,6 +12,8 @@
 import csv
 import io
 import re
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -75,16 +78,115 @@ def _read_xlsx(content: bytes) -> List[List[Any]]:
         workbook.close()
 
 
+def _decode(content: bytes) -> str:
+    for encoding in ("utf-8-sig", "gb18030"):
+        try:
+            return content.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    raise InvalidInput("无法识别文件编码，请另存为 UTF-8 或 GBK 的 CSV")
+
+
+class _TableParser(HTMLParser):
+    """把 HTML 里的表格读成行列；多个表格时取行数最多的那个。很多打卡机的“.xls”其实是这种 HTML 文件。"""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.tables: List[List[List[str]]] = []
+        self._depth = 0
+        self._row: Optional[List[str]] = None
+        self._cell: Optional[List[str]] = None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "table":
+            self._depth += 1
+            if self._depth == 1:
+                self.tables.append([])
+        elif tag == "tr" and self._depth == 1:
+            self._row = []
+        elif tag in ("td", "th") and self._depth == 1 and self._row is not None:
+            self._cell = []
+        elif tag == "br" and self._cell is not None:
+            self._cell.append(" ")
+
+    def handle_endtag(self, tag):
+        if tag in ("td", "th") and self._cell is not None and self._row is not None:
+            self._row.append("".join(self._cell).replace("\xa0", " ").replace("\u3000", " ").strip())
+            self._cell = None
+        elif tag == "tr" and self._row is not None and self._depth == 1:
+            if any(self._row):
+                self.tables[-1].append(self._row)
+            self._row = None
+        elif tag == "table" and self._depth:
+            self._depth -= 1
+
+    def handle_data(self, data):
+        if self._cell is not None:
+            self._cell.append(data)
+
+
+def _read_html(content: bytes) -> List[List[Any]]:
+    parser = _TableParser()
+    parser.feed(_decode(content))
+    best = max(parser.tables, key=len, default=[])
+    if not best:
+        raise InvalidInput("文件里没有找到表格，请从考勤系统重新导出")
+    return best
+
+
+def _read_spreadsheet_xml(content: bytes) -> List[List[Any]]:
+    """Excel 2003 的 XML 表格（另存为“XML 电子表格 2003”，扩展名常常也是 .xls）。"""
+    text = _decode(content)
+    if re.search(r"<!(DOCTYPE|ENTITY)", text, re.I):
+        raise InvalidInput("文件包含不安全的 XML 声明，已拒绝；请另存为 .xlsx")
+    try:
+        root = ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError:
+        raise InvalidInput("XML 表格无法解析，请另存为 .xlsx") from None
+    local = lambda tag: tag.rsplit("}", 1)[-1]                      # noqa: E731 —— 忽略命名空间
+    best: List[List[Any]] = []
+    for table in (el for el in root.iter() if local(el.tag) == "Table"):
+        rows: List[List[Any]] = []
+        for row in (el for el in table if local(el.tag) == "Row"):
+            cells: List[Any] = []
+            for cell in (el for el in row if local(el.tag) == "Cell"):
+                index = next((v for k, v in cell.attrib.items() if local(k) == "Index"), None)
+                if index and index.isdigit():
+                    cells.extend([""] * (int(index) - 1 - len(cells)))          # 空单元格被省略时按 Index 补齐
+                data = next((d for d in cell if local(d.tag) == "Data"), None)
+                cells.append("".join(data.itertext()).strip() if data is not None else "")
+            rows.append(cells)
+        if len(rows) > len(best):
+            best = rows
+    if not best:
+        raise InvalidInput("文件里没有找到表格，请从考勤系统重新导出")
+    return best
+
+
+_ZIP = b"PK\x03\x04"
+_OLE = b"\xd0\xcf\x11\xe0"
+
+
 def read_rows(file_name: str, content: bytes) -> List[List[Any]]:
+    """按文件内容（而不是扩展名）判断格式：打卡机导出的“.xls”常常是 HTML 表格或 XML 表格，也有把 .xlsx 改名成 .xls 的。"""
     lower = (file_name or "").lower()
-    if lower.endswith(".xlsx"):
+    if not lower.endswith((".xlsx", ".xls", ".csv", ".txt", ".tsv", ".htm", ".html")):
+        raise InvalidInput("考勤文件支持 .xlsx、.xls（HTML/XML 表格）、.csv 和制表符分隔的文本")
+    if content[:4] == _ZIP:
         return _read_xlsx(content)
-    if lower.endswith((".csv", ".txt")):
+    if content[:4] == _OLE:
+        raise InvalidInput("这是旧版二进制 Excel（.xls），无法直接读取：请用 Excel 或 WPS 打开后另存为 .xlsx 再导入")
+    head = content[:2048].lstrip(b"\xef\xbb\xbf \t\r\n").lower()
+    if head.startswith(b"<"):
+        probe = content[:8192].lower()
+        rows = _read_spreadsheet_xml(content) if (b"<workbook" in probe or b"urn:schemas-microsoft-com:office:spreadsheet" in probe) else _read_html(content)
+    elif lower.endswith((".xlsx", ".xls")):
+        raise InvalidInput("Excel 文件无法打开（内容不是有效的 .xlsx）：请从考勤系统重新导出，或另存为 .xlsx / .csv")
+    else:
         rows = _read_csv(content)
-        if len(rows) > MAX_ROWS + HEADER_SEARCH_ROWS:
-            raise InvalidInput(f"一次最多导入 {MAX_ROWS:,} 行，请按月或按部门拆分文件")
-        return rows
-    raise InvalidInput("考勤文件支持 .xlsx 和 .csv（旧版 .xls 请先另存为 .xlsx）")
+    if len(rows) > MAX_ROWS + HEADER_SEARCH_ROWS:
+        raise InvalidInput(f"一次最多导入 {MAX_ROWS:,} 行，请按月或按部门拆分文件")
+    return rows
 
 
 # ---------------------------------------------------------------- 日期时间

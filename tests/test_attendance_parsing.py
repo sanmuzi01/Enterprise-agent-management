@@ -127,6 +127,63 @@ class RejectionTest(unittest.TestCase):
             imp.parse("a.csv", ("姓名,打卡时间\n" + "张三,2026-10-06 08:58\n" * 20).encode())
 
 
+class PunchMachineFileKindsTest(unittest.TestCase):
+    """打卡机常见的“.xls”其实不是二进制 Excel：HTML 表格、Excel 2003 XML 表格、改了扩展名的 .xlsx。按内容识别，不看扩展名。"""
+
+    HTML = ("<html><head><meta charset=\"gb2312\"></head><body><table><tr><td colspan=3>考勤记录表</td></tr>"
+            "<tr><th>工号</th><th>姓名</th><th>打卡时间</th></tr>"
+            "<tr><td>1001</td><td>张三</td><td>2026-10-06 08:58:11</td></tr>"
+            "<tr><td>1001</td><td>张三</td><td>2026-10-06 18:03:40</td></tr>"
+            "<tr><td>1002</td><td>李&nbsp;四</td><td>2026/10/6 9:31</td></tr></table></body></html>")
+    XML = ("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Workbook xmlns=\"urn:schemas-microsoft-com:office:spreadsheet\" "
+           "xmlns:ss=\"urn:schemas-microsoft-com:office:spreadsheet\"><Worksheet ss:Name=\"明细\"><Table>"
+           "<Row><Cell><Data ss:Type=\"String\">姓名</Data></Cell><Cell><Data ss:Type=\"String\">打卡时间</Data></Cell></Row>"
+           "<Row><Cell><Data ss:Type=\"String\">张三</Data></Cell><Cell><Data ss:Type=\"String\">2026-10-06 08:58:11</Data></Cell></Row>"
+           "<Row><Cell ss:Index=\"2\"><Data ss:Type=\"String\">2026-10-06 18:03:40</Data></Cell></Row>"
+           "</Table></Worksheet></Workbook>")
+
+    def test_html_table_saved_as_xls_in_gbk(self):
+        parsed = imp.parse("打卡记录.xls", self.HTML.encode("gb18030"))
+        self.assertEqual(parsed["format"], "punch_rows")
+        self.assertEqual([(r["name"], r["alt"]) for r in parsed["records"]], [("张三", "1001"), ("张三", "1001"), ("李 四", "1002")])
+        self.assertEqual(parsed["records"][0]["punches"], [datetime(2026, 10, 6, 8, 58, 11)])
+
+    def test_html_table_in_utf8_with_bom(self):
+        parsed = imp.parse("a.xls", b"\xef\xbb\xbf" + self.HTML.replace("gb2312", "utf-8").encode("utf-8"))
+        self.assertEqual(len(parsed["records"]), 3)
+
+    def test_excel_2003_xml_with_skipped_cells(self):
+        parsed = imp.parse("导出.xls", self.XML.encode("utf-8"))
+        self.assertEqual([r["name"] for r in parsed["records"]], ["张三"])           # 第二行省略了姓名单元格：没有姓名，被报告而不是悄悄丢掉
+        self.assertEqual(len(parsed["skipped"]), 1)
+        self.assertIn("没有姓名", parsed["skipped"][0]["reason"])
+
+    def test_xlsx_renamed_to_xls_is_still_read(self):
+        content = xlsx([["姓名", "打卡时间"], ["张三", "2026-10-06 08:58"]], extra_sheet=False)
+        self.assertEqual(len(imp.parse("a.xls", content)["records"]), 1)
+
+    def test_tab_separated_text(self):
+        parsed = imp.parse("a.tsv", "姓名\t打卡时间\n张三\t2026-10-06 08:58\n".encode("utf-8"))
+        self.assertEqual(len(parsed["records"]), 1)
+
+    def test_binary_xls_gets_a_clear_instruction(self):
+        with self.assertRaises(InvalidInput) as ctx:
+            imp.parse("老设备.xls", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"\x00" * 64)
+        self.assertIn("另存为 .xlsx", ctx.exception.message)
+
+    def test_xml_with_entity_declaration_is_refused(self):
+        bomb = '<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet><Table/></Worksheet></Workbook>'
+        with self.assertRaises(InvalidInput) as ctx:
+            imp.parse("a.xls", bomb.encode("utf-8"))
+        self.assertIn("不安全", ctx.exception.message)
+
+    def test_html_without_a_table_and_unknown_extension(self):
+        with self.assertRaises(InvalidInput):
+            imp.parse("a.html", b"<html><body>hello</body></html>")
+        with self.assertRaises(InvalidInput):
+            imp.parse("a.doc", b"x")
+
+
 RULE = {"work_start": "09:00", "work_end": "18:00", "grace_minutes": 5}
 DAY = date(2026, 10, 6)
 

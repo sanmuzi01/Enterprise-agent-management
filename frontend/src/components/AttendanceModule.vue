@@ -69,7 +69,7 @@
       <div>
         <h3 class="mb-1 text-xs font-medium text-slate-500">1. 导入考勤文件</h3>
         <p class="mb-2 text-xs text-slate-400">支持 .xlsx / .csv：打卡机、钉钉、企业微信导出的“打卡明细”或“每日汇总”都可以，系统会自动找表头。重复导入同一份不会产生重复记录。</p>
-        <input id="att-file" type="file" accept=".xlsx,.csv" class="text-xs" data-testid="att-file" @change="onPick" />
+        <input id="att-file" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv,.htm,.html" class="text-xs" data-testid="att-file" @change="onPick" />
         <button class="ml-2 rounded bg-indigo-600 px-3 py-1 text-xs text-white disabled:bg-slate-300" :disabled="busy || !file" @click="upload" data-testid="att-upload">导入</button>
         <div v-if="imported" class="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700" data-testid="att-import-result">
           <p>{{ imported.format_label }}格式，{{ imported.rows }} 行，识别 {{ imported.matched_people }} 人、{{ imported.punches }} 条打卡，新增 {{ imported.new_punches }} 条（{{ imported.duplicate_punches }} 条已存在）。区间 {{ imported.period[0] || '—' }} 至 {{ imported.period[1] || '—' }}。</p>

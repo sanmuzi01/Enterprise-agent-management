@@ -10,6 +10,7 @@
 """
 import asyncio
 import json
+import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -78,7 +79,8 @@ async def import_file(db, user_id: int, team_id: int, file_name: str, content: b
     org = actor["organization_id"]
     parsed = await asyncio.to_thread(attendance_import.parse, file_name, content)
     members = await _org_members(db, org)
-    by_name = {name: uid for uid, name in members.items()}
+    squash = lambda value: re.sub(r"\s+", "", value or "")      # noqa: E731 —— 两个字的名字常被导出成“李 四”“李\u3000四”，对比时忽略所有空白
+    by_name = {squash(name): uid for uid, name in members.items()}
     for alias, target in (aliases or {}).items():            # 人事这次手工指定的对应：先校验再保存
         if int(target) not in members:
             raise InvalidInput(f"「{alias}」对应的账号不是本企业的有效成员")
@@ -88,15 +90,15 @@ async def import_file(db, user_id: int, team_id: int, file_name: str, content: b
         else:
             db.add(AttendanceAlias(organization_id=org, alias=alias.strip()[:80], user_id=int(target), created_by=user_id))
     await db.flush()
-    saved = {a: u for a, u in (await db.execute(select(AttendanceAlias.alias, AttendanceAlias.user_id).where(AttendanceAlias.organization_id == org))).all()}
+    saved = {squash(a): u for a, u in (await db.execute(select(AttendanceAlias.alias, AttendanceAlias.user_id).where(AttendanceAlias.organization_id == org))).all()}
 
     def resolve(record) -> Optional[int]:
         for key in (record["name"], record.get("alt")):
-            if key and key in saved and saved[key] in members:
-                return saved[key]
+            if key and squash(key) in saved and saved[squash(key)] in members:
+                return saved[squash(key)]
         for key in (record["name"], record.get("alt")):
-            if key and key in by_name:
-                return by_name[key]
+            if key and squash(key) in by_name:
+                return by_name[squash(key)]
         return None
 
     unmatched: Dict[str, int] = {}
