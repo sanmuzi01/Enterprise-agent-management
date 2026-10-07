@@ -82,6 +82,8 @@ async def lifespan(app: FastAPI):
     # 建表 / 幂等迁移 / 内置管理员初始化：只在服务启动时执行，不在模块导入时执行。
     # DDL 是同步阻塞操作，放线程池避免占用事件循环。
     await run_in_threadpool(bootstrap_database)
+    from service.observability import otel
+    await run_in_threadpool(otel.init)       # 设置了 OTEL_EXPORTER_OTLP_ENDPOINT 才启用；失败只记警告
     from service.events import handlers  # noqa: F401  —— 导入即注册所有事件消费者
     from service.events.runner import Runner, enabled as event_runner_enabled
     runner = Runner() if event_runner_enabled() else None
@@ -93,6 +95,7 @@ async def lifespan(app: FastAPI):
         if runner:
             await runner.stop()
         await async_engine.dispose()
+        await run_in_threadpool(otel.shutdown)   # 退出前尽量送出队列里的遥测，Collector 不可用时最多等几秒
 
 
 app = FastAPI(lifespan=lifespan)

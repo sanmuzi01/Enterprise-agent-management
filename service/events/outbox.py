@@ -19,7 +19,7 @@ from sqlalchemy import and_, exists, or_, select, update
 from sqlalchemy.exc import IntegrityError
 
 from models.init_db import ConsumerInbox, ConsumerRetry, DeadLetter, OutboxEvent, SessionLocal
-from service.observability import context as trace_context
+from service.observability import context as trace_context, otel
 from service.observability.redact import redact, redact_text
 from utils.logger_handler import get_logger
 from utils.timeutil import utcnow
@@ -103,7 +103,9 @@ def publish_pending(transport: Callable[[Dict[str, Any]], None], limit: int = 10
             _release([c[0] for c in claimed[index:]])
             break
         try:
-            transport(event)
+            with otel.span(f"publish {event['topic']}", kind="producer", trace_id=event.get("trace_id"),
+                           attributes={"messaging.destination.name": event["topic"], "event.type": event["event_type"], "event.id": event_id}):
+                transport(event)
         except Exception as exc:  # noqa: BLE001 —— 传输层故障：退避重试，事件仍在库里
             message = redact_text(f"{type(exc).__name__}: {exc}")[:300]
             _settle(row_id, ok=False, attempts=attempts + 1, error=message)

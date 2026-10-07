@@ -76,7 +76,7 @@ npm run test:coverage
 - 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
 - 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
   文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
-- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1569 项通过、6 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例）。
+- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1707 项通过、6 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 

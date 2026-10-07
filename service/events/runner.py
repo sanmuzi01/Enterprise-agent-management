@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from service.events import outbox
-from service.observability import context as trace_context
+from service.observability import context as trace_context, otel
 from utils.logger_handler import get_logger
 
 logger = get_logger("event_runner")
@@ -57,7 +57,10 @@ async def _deliver(c: Consumer, event: Dict[str, Any], stats: Dict[str, int]) ->
         return "skipped"
     token = trace_context.set_trace(event.get("trace_id") or trace_context.new_trace_id())   # 消费者的日志和问题记录沿用事件的 trace_id
     try:
-        await asyncio.wait_for(c.handler(event), c.timeout_seconds)
+        with otel.span(f"consume {c.name}", kind="consumer", trace_id=event.get("trace_id"),
+                       attributes={"messaging.destination.name": event["topic"], "event.type": event["event_type"], "event.id": event["event_id"],
+                                   "messaging.system": "kafka" if kafka_mode() else "database"}):
+            await asyncio.wait_for(c.handler(event), c.timeout_seconds)
         await asyncio.to_thread(outbox.mark_done, c.name, event["event_id"])
         stats["done"] += 1
         return "done"

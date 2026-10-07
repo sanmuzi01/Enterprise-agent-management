@@ -230,11 +230,15 @@ def call(
         )
 
     from service.http_resilience import CircuitOpenError
+    from service.observability import otel
     try:
-        response = request_with_retry(
-            SERVICE_NAME, sender,
-            timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
-        )
+        with otel.span(f"enterprise_hub {operation}", kind="client",
+                       attributes={"http.request.method": method.upper(), "url.path": path.split("?")[0], "hub.operation": operation}) as current:
+            response = request_with_retry(
+                SERVICE_NAME, sender,
+                timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
+            )
+            otel.set_attributes(current, **{"http.response.status_code": response.status_code})
     except CircuitOpenError as exc:
         raise HubUnavailable(503, str(exc)) from None
     except (requests.Timeout, requests.ConnectionError):

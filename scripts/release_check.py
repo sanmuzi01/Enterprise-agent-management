@@ -33,6 +33,10 @@ REQUIRED_FILES = [
     "docs/deployment.md",
     "docs/release-checklist.md",
     "docs/load-testing.md",
+    "docs/observability-integration.md",
+    "service/observability/otel.py",
+    "scripts/e2e_observability.py",
+    "scripts/e2e_kafka.py",
     "docs/database-migrations.md",
     "docs/testing.md",
     # 知识库空间（阶段1）

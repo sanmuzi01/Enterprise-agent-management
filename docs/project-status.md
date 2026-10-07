@@ -4,7 +4,7 @@
 
 ## 当前验证状态（2026-10-07，以此为准；下文的历史数字是当时的快照）
 
-- **Python 全量**：1569 项通过、6 项跳过（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
+- **Python 全量**：1707 项通过、6 项跳过（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
   **Java**：138 项通过（`enterprise-business-hub` 里 `mvn test`，跑之前先停掉在 8090 的 Java 进程）；前端 `vue-tsc` 与构建通过。
 - **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
   外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
@@ -12,8 +12,10 @@
   页面脚本错误上报、Agent 运行失败追踪、试点数据与预检、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
 - **安全专项**（`docs/security-testing.md`）：SSRF、恶意文件、SQL 注入、XSS、提示注入与工具越权、跨部门 / 跨企业越权、重复与并发都有会失败的测试；
   过程中发现并修复了跨企业提权（企业 B 的管理员能审批企业 A 的请假、批准企业 A 的空间删除）、请假 / 采购 / 报销的并发重复处理与预算 / 余额覆盖、SSRF 的 5 类绕过、压缩炸弹等。
-- **尚未用真实基础设施验证**：Kafka（只测过假生产者）、OpenTelemetry Collector、Loki / Tempo、云日志与 Sentry 的真实上报；
-  详见 `docs/observability-integration.md`（联调后更新）。
+- **真实基础设施联调**（`docs/observability-integration.md`）：Kafka（KRaft 单节点，消费者组 / 手动提交 / 重试 / 死信 Topic，`scripts/e2e_kafka.py` 28 项）、
+  OpenTelemetry Collector → Tempo / Loki、Prometheus、Grafana（`scripts/e2e_observability.py` 40 项，含 Collector / Loki / Tempo 中断后恢复、Sentry 未配置与不可达）。
+  联调中发现并修复了 span 全被丢弃、成功请求没有日志、`/metrics` 被 Host 白名单拒绝等问题。
+  **仍未验证**：真实的云日志账号和 Sentry 项目（没有账号 / DSN，只验证了“未配置或不可达不影响业务”）。
 - **没有真实用户数据**：试点工具齐全（`scripts/pilot_preflight.py`、`scripts/pilot_report.py`），但还没有真实试点样本。
 
 ## 已完成能力
