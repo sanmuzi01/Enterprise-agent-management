@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import os
 import time
 
@@ -18,6 +19,28 @@ def _get_widget_loop() -> "asyncio.AbstractEventLoop":
     if _widget_loop is None or _widget_loop.is_closed():
         _widget_loop = asyncio.new_event_loop()
     return _widget_loop
+
+
+def close_widget_loop() -> None:
+    """进程退出前关闭常驻事件循环。
+
+    不关的话，Windows 的 ProactorEventLoop 在解释器退出时会报
+    `ResourceWarning: unclosed event loop` 和两个 `unclosed socket`（循环内部的自通知 socketpair），
+    此前误以为是 asyncmy 连接泄漏。循环正在别的线程里运行时关不掉，直接放弃（进程马上就退出了）。
+    """
+    global _widget_loop
+    loop, _widget_loop = _widget_loop, None
+    if loop is None or loop.is_closed() or loop.is_running():
+        return
+    try:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except Exception:  # noqa: BLE001 —— 退出阶段的清理失败不能影响进程退出
+        pass
+    finally:
+        loop.close()
+
+
+atexit.register(close_widget_loop)
 
 
 def _env_float(name: str, default: float) -> float:

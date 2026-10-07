@@ -2,6 +2,18 @@
 
 本项目当前处于功能完善后的上线前工程化阶段。核心业务链路已经具备，但还需要继续补齐生产安全、测试、部署验证和可观测性。
 
+## 当前验证状态（2026-10-07，以此为准；下文的历史数字是当时的快照）
+
+- **Python 全量**：1569 项通过、6 项跳过（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
+  **Java**：138 项通过（`enterprise-business-hub` 里 `mvn test`，跑之前先停掉在 8090 的 Java 进程）；前端 `vue-tsc` 与构建通过。
+- **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
+  外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
+- **本阶段新增能力**：部门责任执行、文件导入与批量整理、事务性发件箱/收件箱/死信、trace_id 与统一错误、问题中心、
+  页面脚本错误上报、Agent 运行失败追踪、试点数据与预检、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
+- **尚未用真实基础设施验证**：Kafka（只测过假生产者）、OpenTelemetry Collector、Loki / Tempo、云日志与 Sentry 的真实上报；
+  详见 `docs/observability-integration.md`（联调后更新）。
+- **没有真实用户数据**：试点工具齐全（`scripts/pilot_preflight.py`、`scripts/pilot_report.py`），但还没有真实试点样本。
+
 ## 已完成能力
 
 - 用户系统：注册、登录、当前用户、修改密码、账号禁用。
@@ -115,7 +127,7 @@
   重新定基线后挪到了 `migrations/archive_pre_baseline/`）的过期文件路径，实际跑一遍完整
   `scripts/release_check.py`（含全量测试 + 前端构建）确认真的能走完，不再是失败状态。CI
   （`.github/workflows/ci.yml`）新增 `java` job：真实 MySQL 服务容器 + `mvn test` 跑
-  `enterprise-business-hub` 的 35 个测试，之前 Java 权限逻辑改坏了没有任何自动化能拦截。
+  `enterprise-business-hub` 的 35 个测试（当时的数字，现为 138 个），之前 Java 权限逻辑改坏了没有任何自动化能拦截。
 - 备份恢复：部署文档给出本地 MySQL `mysqldump` 导出 / 恢复命令与应用文件目录清单。
 - 数据库迁移：已加入 Alembic 迁移骨架、基线版本和迁移文档，当前处于兼容过渡期。
 - 部署基础：阿里云 ECS 上走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，

@@ -4,7 +4,7 @@ import os
 import sys
 import time
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from utils.path_tool import get_abs_path
 
@@ -51,7 +51,7 @@ class JsonFormatter(logging.Formatter):
         from service.observability.context import current_fields
         from service.observability.redact import redact_text
         payload = {
-            "timestamp": datetime.utcfromtimestamp(record.created).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+            "timestamp": datetime.fromtimestamp(record.created, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
             "level": record.levelname, "logger": record.name, "service": os.getenv("SERVICE_NAME", "agent-service"),
             "environment": os.getenv("APP_ENV", "development"), "trace_id": getattr(record, "trace_id", "-"),
             "message": redact_text(record.getMessage()),
@@ -81,6 +81,22 @@ class RedactFilter(logging.Filter):
 _REDACT = RedactFilter()
 
 
+class ConsoleLevelFilter(logging.Filter):
+    """控制台日志的最低级别可以用环境变量 CONSOLE_LOG_LEVEL 临时抬高（比如测试时设成 CRITICAL 免得刷屏）。
+
+    每条日志发出时才读取环境变量，所以不依赖模块导入顺序；只影响控制台，文件日志仍按原级别完整记录。
+    未设置或写错时不做任何额外过滤。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        raw = os.getenv("CONSOLE_LOG_LEVEL", "").strip().upper()
+        level = logging.getLevelName(raw) if raw else 0
+        return not isinstance(level, int) or record.levelno >= level
+
+
+_CONSOLE_LEVEL = ConsoleLevelFilter()
+
+
 #日志的格式配置：error info debug
 DEFAULT_LOG_FORMAT = (JsonFormatter() if os.getenv("LOG_FORMAT", "").lower() == "json"
                       else logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - [%(trace_id)s] - %(message)s"))
@@ -104,6 +120,7 @@ def get_logger(
     console_handler.setLevel(console_level)
     console_handler.setFormatter(DEFAULT_LOG_FORMAT)
     console_handler.addFilter(_REDACT)
+    console_handler.addFilter(_CONSOLE_LEVEL)
 
     logger.addHandler(console_handler)
 

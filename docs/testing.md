@@ -57,136 +57,26 @@ npm run test:coverage
    覆盖率过 70% 后把 `--fail-under` 提到 70，之后同样的方法继续提到 75。
 3. 不要为了凑数字给不常用的代码加空测试，也不要为了让数字好看把活跃代码加进 `omit`。
 
-## 已知的无害噪音：Windows 下的 asyncmy teardown ResourceWarning
+## 测试输出里的噪音（已定位并修复）
 
-本机（Windows + ProactorEventLoop）跑全量测试，进程退出前偶尔会打印几行
-`ResourceWarning: unclosed transport` / `unclosed socket`。已经确认过不是真的连接泄漏
-（`tests/_async_helpers.py` 顶部注释记录过根因和第一版修复：`asyncio.run()` 每次新建/
-关闭事件循环，但 `models/async_db.py` 的 `async_engine` 连接池是进程级单例，个别连接的
-关闭动作会落到已经关闭的事件循环之外——真正的 bug 是这会报 `AttributeError`，那部分已经
-用 `run_async`/`run_async_factory` helper 修好了）。这几行 `ResourceWarning` 是
-Windows 专属的、GC 时机相关的诊断噪音，不代表测试结果不可信：
-- 全量测试结果始终是 `OK`（880 个测试全绿），这几行出现在测试统计之后，不影响任何用例的
-  成功/失败判定。
-- CI（`.github/workflows/ci.yml`）跑在 `ubuntu-latest` 上，Linux 用的是 epoll 事件循环，
-  没有 `ProactorEventLoop`，这个噪音在 CI 里根本不会出现。
-- 评估过用 `atexit` 在进程退出前统一 `dispose()` 一次连接池，但那时候原来创建这些连接的
-  事件循环已经关闭，再 dispose 一次只是把同样的告警挪到另一个时间点，不能真正消除，还多
-  引入一个"进程退出阶段跑异步代码"的新脆弱点——收益不确定、风险不低，评估后决定不做，
-  留档说明原因，而不是硬塞一个治标不治本的修复。
+全量测试结束后，Windows 本机曾在统计行之后打印两行 `ResourceWarning: unclosed <socket.socket ... laddr=('127.0.0.1', 5xxxx)>`。
+旧版本文档把它归因于 asyncmy 连接池 teardown，并决定不处理；这个结论是错的：
 
-### Lint（ruff）
+- 用 `socket.socketpair` 探针逐个排查后确认：**真正的来源是 `tests/test_sandbox_gateway.py`**。它启动了两个本地
+  `ThreadingHTTPServer`，tearDown 只调了 `shutdown()`（停止服务循环），没有 `server_close()`（关闭监听 socket），
+  所以两个监听 socket（只有 `laddr`、端口号相邻，正是警告里那两行）一直开到进程退出。已补上 `server_close()`。
+  探针同时证明全量运行创建的 2700 多对事件循环自通知 socket 全部正常关闭——asyncmy 和事件循环都不是来源。
+- 顺带修了一个真实的小问题：`service/background_worker.py` 常驻的 widget 事件循环从不关闭，会在解释器退出时报
+  `unclosed event loop`；现在 `close_widget_loop()` 通过 `atexit` 关闭（循环正在别的线程运行时放弃）。
+- 全量运行（`-W default`）现在没有任何 `ResourceWarning` 和弃用警告：`datetime.utcfromtimestamp()`
+  已改为 `datetime.fromtimestamp(ts, timezone.utc)`；pydantic 的 `class Config` 已改为 `model_config = ConfigDict(...)`；starlette 的“TestClient 将改用 httpx2”提示是第三方库的升级通知，
+  项目代码无可修改，只在 `tests/_route_client.py` 里按这一条消息精确过滤，其他弃用警告照常显示。
 
-```powershell
-npm run lint:py
-```
-
-`pyproject.toml` 里 `select = ["E9", "F"]`：只挡语法错误和 pyflakes（未使用的导入/变量、用到没定义的名字等）——
-大概率是 bug，不是风格问题。**没有**开 ruff 默认更大的规则集（pyupgrade / bugbear / bandit 等），
-现状代码库全量跑一遍有约 2900 条，绝大多数是"能跑但不够新"的风格建议，不是缺陷，硬开只会把 CI 变成没人看的噪音。
-想扩大检查范围：先加一类规则跑一遍看有多少违规，评估要不要一次清干净，再加进 `select`。
-
-### 依赖漏洞扫描
-
-```powershell
-npm run audit:py    # 后端，pip-audit
-npm run audit:npm   # 前端，npm audit（只挡 high/critical）
-```
-
-`pip-audit` 的输出没有统一的严重度字段（不像 npm audit 有 severity），所以后端这边按"能不能修"分类，
-不是按"严重度"分类：**有修复版本却没升级** → 阻断 CI，逼着升级；**上游还没出修复版本** → 记录在
-CI 配置里、写清楚原因，不阻断（阻断了也没用，只会让 CI 一直红）。当前免检名单（`.github/workflows/ci.yml`
-的 `--ignore-vuln` 参数，定期复查，上游出新版本就把对应这条删掉）：
-
-| 依赖 | 漏洞 | 为什么先不阻断 |
-|---|---|---|
-| `asyncmy` 0.2.10 | PYSEC-2026-286，SQL 注入（"通过精心构造的 dict key"） | 上游到最新版 0.2.11 仍未修复；本项目原生 SQL 只在极少数地方用固定参数名的 `text()`，不会把用户输入当 dict key 传给驱动，可利用面很小 |
-| `chromadb` 1.5.9 | PYSEC-2026-311/3813/3814/3815，未授权访问、代码注入、跨租户越权 | 1.5.9 已是最新版，上游未修复；`docker-compose.prod.yml` 里 `chroma` 服务没有 `ports:` 映射，只有 api/worker 能从容器内网访问，不对公网暴露 |
-| `ecdsa` 0.19.2 | PYSEC-2026-1325，Minerva 时序攻击（侧信道泄露私钥） | `python-jose` 的间接依赖；项目 JWT 固定用 `HS256`（对称算法），根本不会走到 `ecdsa` 的签名代码路径；上游明确表示侧信道防护不在其修复范围内 |
-
-前端目前有 1 条 moderate（`echarts` XSS，`GHSA-fgmj-fm8m-jvvx`，修复需升到 6.x 大版本，有破坏性变更，
-未安排）；`--audit-level=high` 不会拦它，`npm audit` 手动跑能看到。
-
-发布前想看完整报告（含以上免检项，不只是阻断的那部分）：
-```powershell
-npm run audit:py
-```
-不带 `--ignore-vuln` 直接跑，看到的就是全部已知漏洞。
-
-## 浏览器冒烟测试（7 个核心流程）
-
-```powershell
-.venv\Scripts\python.exe scripts\e2e_smoke.py                  # 无头跑一遍
-.venv\Scripts\python.exe scripts\e2e_smoke.py --headed          # 弹出浏览器窗口，方便看
-.venv\Scripts\python.exe scripts\e2e_smoke.py --keep-services   # 结束后不关前后端，方便手动排查
-```
-
-真实前端（`vite dev`）+ 真实后端（真实 FastAPI 路由、真实 MySQL、内嵌 ChromaDB）+ 真实浏览器
-（Playwright + Chromium），串起：登录、创建 Agent、绑定知识库空间、发起 SSE 聊天并等回答生成完整、
-查看 RAG 引用来源、普通用户绑定公开 Skill、管理员编辑并回滚 Skill——七个环节共用一套数据，
-一次跑通就是对"这些功能真的接得上"最直接的证据。
-
-**两处换成假实现**（`tests_e2e/fakes.py`），别的都走真实链路：
-
-- 大模型：`service.tools.executor.create_langchain_llm` 换成 LangChain 官方自带的测试替身
-  `FakeListChatModel`（固定回一句话），不发真实网络请求，不花钱。手写一个假 HTTP 服务器去精确
-  模仿 LangChain `ChatOpenAI` 的流式协议试过，细节太容易对不上，改用官方测试替身后完全没有这个问题。
-- 向量化：`service.rag.embedding_service._get_client[_async]` 换成本地哈希词袋 Embedding
-  （中文按单字切、英文数字按连续串切，是词袋能匹配上的关键——整句当一个 token 切，两句几乎永远
-  零重合）。ChromaDB 本身、检索排序、相似度阈值全部走真实逻辑。
-
-后台任务（知识库文档入库）用 `TASK_EXECUTION_MODE=worker` + 进程内一个轮询线程跑
-`service.background_worker.run_once()`——和真的独立 Worker 进程做一样的事，只是不用另开进程
-（ChromaDB 内嵌 PersistentClient 要求全程只有一个进程碰它）。**踩过的坑**：一开始图省事用
-`TASK_EXECUTION_MODE=inline`（FastAPI `BackgroundTasks` 直接在本次请求里跑），实测在这个项目的
-中间件链下背景任务从来不执行，任务永远停在 `queued`——这条路径本来就只有"本地开发"在用、
-生产和大多数本地开发也是起独立 Worker 进程，几乎没有真正被走过。
-
-**这条测试顺手挖出的两个真实生产 bug**（不是测试环境特有的，已经在 `FasdtApi/chat.py` 修掉）：
-
-1. 聊天接口（同步 / 流式两个路由）在收尾阶段重复访问 `current_user.id`。`AsyncSession` 默认
-   `expire_on_commit=True`，本次请求中途只要有一次提交，`current_user` 这个 ORM 对象的所有属性
-   就被标记为"过期"；流式响应收尾（生成器 `finally` 块）时才第一次真正触发这次过期后的隐式懒加载，
-   如果这次访问发生在请求本来的 greenlet 上下文之外，SQLAlchemy 找不到桥接会直接
-   `MissingGreenlet` 崩掉，前端看到"发送失败：服务暂时异常"。修法是在路由最开头把
-   `user_id = current_user.id` 存成普通 int，后面全用这个值，不再重复读那个属性。
-2. `agent_runtime.py` 的异常日志只打了 `error={e}`，遇到消息本身是空字符串的异常（比如这次的
-   `NotImplementedError`）日志里什么都看不出来。顺手加上了异常类型和完整堆栈
-   （`logger.error(..., exc_info=True)`），后续再出问题排查会快很多。
-
-CI 里独立一个 `e2e` job（`.github/workflows/ci.yml`），失败时把失败截图和页面 DOM 快照
-（`tests_e2e/.e2e_data/fail_*.png` / `.html`）打包成 artifact 方便下载查看。
-
-## 企业化改造前的安全收口（Step 0）
-
-在把项目往"单企业私有化部署"方向改造前，先核对了一遍现有能力开关的默认状态，
-只发现一处真实缺口，已修：
-
-- **Skill 导入/创建/编辑/删除/模板/版本回滚**：路由层已经全部是
-  `get_current_admin_user`（[FasdtApi/skill_route.py](../FasdtApi/skill_route.py)），
-  普通用户拿不到这些接口。不需要新增改动。
-- **Skill 脚本目录越界**：[service/skills/loader.py](../service/skills/loader.py) 的
-  `_ensure_managed_dir` 已经用 `realpath` 把 `resource_root`/`scripts_root` 限制在
-  `skills/`、`skills_packages/` 下，同时挡 `../` 和符号链接逃逸；回归测试见
-  `tests/test_skill_script_policy.py` 的
-  `test_loader_refuses_scripts_root_outside_skills_packages` /
-  `test_loader_refuses_resource_root_outside_managed_dirs`。这条是已修复的历史问题，
-  不是仍然存在的漏洞。
-- **脚本沙箱**：生产默认关闭的开关叫 `SANDBOX_ENABLED`（不是 `SANDBOX_ALLOW_USER_SCRIPTS`
-  ——这只是命名，行为一致），`.env.production.example` 里已经是 `false`。
-- **企业接口连接器（真正的缺口）**：`POST /agent/{agent_id}/api-connectors`
-  （[FasdtApi/agent.py](../FasdtApi/agent.py)）原来只要求 `get_current_user`——任何
-  普通用户都能给自己的 Agent 配任意（过 SSRF 校验的）外部 HTTP 接口。单企业部署下，
-  "能不能接入外部系统"应该是管理员审核后统一配置的能力。新增
-  [service/feature_flags.py](../service/feature_flags.py) 统一收口这类开关，
-  `create_api_connector` 现在默认要求管理员，设
-  `FEATURE_USER_API_CONNECTORS=true` 才放开给普通用户自助配置；前端
-  [AgentApiConnectors.vue](../frontend/src/views/AgentApiConnectors.vue) 同步隐藏了
-  非管理员看到的"新增接口工具"表单。回归测试：
-  `tests/test_agent_api_connector_routes.py` 的
-  `test_normal_user_cannot_create_connector_by_default`（默认 403）和
-  `test_feature_flag_lets_normal_user_create_connector`（开关生效）；
-  `tests/test_feature_flags.py` 覆盖开关本身的取值解析。
+**测试日志**：此前一次全量运行有约 1100 行应用日志和 80 行工具注册打印，预期内的故障日志淹没了真正的失败。
+- 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
+- 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
+  文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
+- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1569 项通过、6 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 

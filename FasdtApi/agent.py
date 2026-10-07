@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel,Field
+from pydantic import BaseModel,ConfigDict,Field
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from models.init_db import get_db, User
@@ -32,8 +32,7 @@ class AgentResponse(BaseModel):
     kb_rerank_enabled: int = 0
     kb_force_citation: int = 1
     kb_refuse_when_empty: int = 1
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 class AgentWithSelectedResponse(AgentResponse):
     is_selected: bool
 #创建智能体用

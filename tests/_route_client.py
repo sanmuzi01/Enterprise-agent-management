@@ -14,8 +14,16 @@ import os
 import sys
 import time
 import uuid
+import warnings
+
+# starlette 提示“TestClient 将改用 httpx2”：这是第三方库的升级提示，项目代码无可修改，等依赖整体升级时再处理。
+# 只按这一条消息过滤，其他弃用警告照常显示。
+warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated")
 
 # FasdtApi.main 在模块导入时就会 assert_runtime_config() —— 用非生产环境跑，避免生产校验拦截。
+# 测试默认只在控制台显示 CRITICAL（预期内的故障日志太多会淹没真正的失败）；要看细节：TEST_LOG_LEVEL=INFO。文件日志不受影响。
+os.environ.setdefault("CONSOLE_LOG_LEVEL", os.environ.get("TEST_LOG_LEVEL", "CRITICAL"))
 os.environ.setdefault("ASYNC_DB_POOL", "null")   # 见 models/async_db.py：测试不复用跨事件循环的连接
 _ORIG_APP_ENV = os.environ.get("APP_ENV")
 os.environ["APP_ENV"] = "test"

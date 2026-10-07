@@ -43,6 +43,21 @@ class HelperTest(unittest.TestCase):
         self.assertTrue(demo.pid_alive(os.getpid()))
         self.assertFalse(demo.pid_alive(999999))
 
+    def test_pid_alive_follows_a_real_child_process_through_its_life(self):
+        import subprocess
+        import sys
+        child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        try:
+            self.assertTrue(demo.pid_alive(child.pid))
+        finally:
+            child.kill()
+            child.wait()
+        self.assertFalse(demo.pid_alive(child.pid))                 # 已退出（Windows 上句柄可能还在，必须看退出码）
+
+    def test_pid_alive_rejects_nonsense(self):
+        for pid in (0, -1):
+            self.assertFalse(demo.pid_alive(pid))
+
     def test_healthy_is_false_for_closed_port(self):
         self.assertFalse(demo.healthy("http://127.0.0.1:1/"))
 

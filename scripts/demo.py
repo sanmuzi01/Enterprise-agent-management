@@ -97,14 +97,34 @@ def spawn(name: str, command: list, cwd: pathlib.Path, env: dict) -> int:
 
 
 def pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
     if os.name == "nt":
-        # CSV 输出按列精确比对 PID：用“PID 字符串是否出现在输出里”会把 99 误判成 1999 的存活
-        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"], capture_output=True, text=True,
-                             errors="replace").stdout
-        return any(len(cells := line.strip().strip('"').split('","')) > 1 and cells[1] == str(pid) for line in out.splitlines())
+        # 直接问 Windows API，不解析 tasklist 的文字输出：tasklist 慢（几百毫秒）、输出随系统语言变化、
+        # 在受限环境里还可能被拒绝，之前正是它让这个判断时灵时不灵。
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        handle = kernel32.OpenProcess(0x1000, False, pid)         # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            # 5 = 拒绝访问：进程存在但属于更高权限的账号；87 = 参数无效：没有这个 PID
+            return ctypes.get_last_error() == 5
+        try:
+            code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259                                # STILL_ACTIVE：已退出的进程句柄还可能存在，要看退出码
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
         return True
+    except PermissionError:
+        return True                                                 # 存在，只是不属于当前用户
     except OSError:
         return False
 

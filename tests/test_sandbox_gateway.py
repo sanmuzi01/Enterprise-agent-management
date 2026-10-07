@@ -67,8 +67,9 @@ class GatewayTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        cls.gw.shutdown()
-        cls.upstream.shutdown()
+        for server in (cls.gw, cls.upstream):
+            server.shutdown()
+            server.server_close()        # shutdown 只停止循环；不 server_close 监听 socket 会一直开到进程退出（ResourceWarning 的真正来源）
 
     def setUp(self):
         FakeSandbox.seen.clear()
