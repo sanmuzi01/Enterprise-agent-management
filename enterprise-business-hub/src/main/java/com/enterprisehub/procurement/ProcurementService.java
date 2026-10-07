@@ -106,7 +106,7 @@ public class ProcurementService {
         if (request.getRequesterUserId() == approverUserId) {
             throw badRequest("不能审批自己提交的申请，需要由部门负责人或企业管理员处理");
         }
-        DepartmentBudget budget = budgetRepository.findByTeamIdAndYear(request.getTeamId(), Year.now().getValue())
+        DepartmentBudget budget = budgetRepository.findForUpdate(request.getTeamId(), Year.now().getValue())     // 预算行锁：同部门两张采购同时批准，不能都读到同一份余额
                 .orElseThrow(() -> badRequest("预算记录不存在，无法批准"));
         if (budget.getRemainingAmount().compareTo(request.getTotalAmount()) < 0) {
             throw badRequest("批准时预算不足（可能已被其它已批准的申请占用）");
@@ -196,7 +196,7 @@ public class ProcurementService {
     }
 
     private PurchaseRequest getOwnedDraft(long requestId, long requesterUserId) {
-        PurchaseRequest request = requestRepository.findById(requestId)
+        PurchaseRequest request = requestRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("采购申请不存在"));
         if (request.getRequesterUserId() != requesterUserId) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "采购申请不存在");
@@ -208,7 +208,7 @@ public class ProcurementService {
     }
 
     private PurchaseRequest getSubmitted(long requestId) {
-        PurchaseRequest request = requestRepository.findById(requestId)
+        PurchaseRequest request = requestRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("采购申请不存在"));
         if (request.getStatus() != PurchaseStatus.SUBMITTED) {
             throw badRequest("只有已提交状态的采购申请能审批，当前状态: " + request.getStatus());

@@ -125,7 +125,7 @@ public class FinanceService {
         if (claim.getApplicantUserId() == approverUserId) {
             throw badRequest("不能审批自己提交的报销单，需要由部门负责人或企业管理员处理");
         }
-        ExpenseBudget budget = budgetRepository.findByTeamIdAndYear(claim.getTeamId(), Year.now().getValue())
+        ExpenseBudget budget = budgetRepository.findForUpdate(claim.getTeamId(), Year.now().getValue())     // 预算行锁：同部门两张报销同时批准，不能都读到同一份余额
                 .orElseThrow(() -> badRequest("预算记录不存在，无法批准"));
         if (budget.getRemainingAmount().compareTo(claim.getTotalAmount()) < 0) {
             throw badRequest("批准时预算不足（可能已被其它已批准的报销占用）");
@@ -191,7 +191,7 @@ public class FinanceService {
     }
 
     private ExpenseClaim getOwnedDraft(long requestId, long applicantUserId) {
-        ExpenseClaim claim = claimRepository.findById(requestId)
+        ExpenseClaim claim = claimRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("报销单不存在"));
         if (claim.getApplicantUserId() != applicantUserId) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "报销单不存在");

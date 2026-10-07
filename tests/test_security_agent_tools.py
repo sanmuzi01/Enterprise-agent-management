@@ -53,6 +53,11 @@ READ_TOOLS_USING_POST = {
 }
 
 
+def production_tools():
+    """只看生产代码里的工具：别的测试会往全局注册表里临时注册测试用工具，不属于被审查的清单。"""
+    return [tool for tool in ToolRegistry.get_all_tools() if type(tool).__module__.startswith("service.tools")]
+
+
 def sample_arguments(tool) -> dict:
     """按工具声明的参数模式造一组最小合法参数。"""
     schema = tool.parameters or {}
@@ -65,13 +70,13 @@ def sample_arguments(tool) -> dict:
 
 class ToolSurfaceTest(unittest.TestCase):
     def test_no_tool_exposes_identity_or_credential_parameters(self):
-        for tool in ToolRegistry.get_all_tools():
+        for tool in production_tools():
             exposed = set((tool.parameters or {}).get("properties", {})) & IDENTITY_FIELDS
             with self.subTest(tool=tool.name):
                 self.assertEqual(exposed, set(), f"{tool.name} 暴露了身份/凭证参数：身份必须来自服务端上下文，不能由模型传入")
 
     def test_risk_snapshot_matches_the_registry(self):
-        actual = {tool.name: tool.risk_level for tool in ToolRegistry.get_all_tools()}
+        actual = {tool.name: tool.risk_level for tool in production_tools()}
         added = sorted(set(actual) - set(RISK_SNAPSHOT))
         removed = sorted(set(RISK_SNAPSHOT) - set(actual))
         changed = {n: (RISK_SNAPSHOT[n], actual[n]) for n in actual if n in RISK_SNAPSHOT and RISK_SNAPSHOT[n] != actual[n]}
@@ -80,7 +85,7 @@ class ToolSurfaceTest(unittest.TestCase):
 
     def test_read_only_tools_never_issue_write_requests(self):
         import inspect
-        for tool in ToolRegistry.get_all_tools():
+        for tool in production_tools():
             if tool.risk_level != "read" or tool.name == "run_skill_script" or tool.name in READ_TOOLS_USING_POST:
                 continue
             source = inspect.getsource(type(tool))
@@ -90,7 +95,7 @@ class ToolSurfaceTest(unittest.TestCase):
     def test_every_non_read_tool_is_justified_by_a_reviewed_category(self):
         """写类工具只允许生成草稿 / 记录；改变别人权益或花钱的一律 high_risk。名字里带这些动词的写工具必须是 high_risk。"""
         decisive = ("approve", "reject", "submit", "verify", "accept", "rework", "pay", "delete", "cancel", "publish", "assign", "transfer")
-        for tool in ToolRegistry.get_all_tools():
+        for tool in production_tools():
             if tool.name.split("_")[0] in decisive:           # 以动词开头才算（list_pending_acceptance 只是列出待接受的，不是接受）
                 with self.subTest(tool=tool.name):
                     self.assertEqual(tool.risk_level, "high_risk", f"{tool.name} 看起来是决定性操作，却不是 high_risk")
@@ -135,7 +140,7 @@ class AdapterTest(unittest.TestCase):
 
 class HighRiskToolsTest(unittest.TestCase):
     def test_every_high_risk_tool_defers_to_a_confirmation_and_never_executes(self):
-        high = [tool for tool in ToolRegistry.get_all_tools() if tool.risk_level == "high_risk"]
+        high = [tool for tool in production_tools() if tool.risk_level == "high_risk"]
         self.assertGreaterEqual(len(high), 15)
         for tool in high:
             with self.subTest(tool=tool.name), patch.object(type(tool), "execute", side_effect=AssertionError("高风险工具被模型直接执行了")), \

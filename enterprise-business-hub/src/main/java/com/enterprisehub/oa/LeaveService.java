@@ -90,7 +90,7 @@ public class LeaveService {
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
 
         LeaveBalance balance = leaveBalanceRepository
-                .findByUserIdAndLeaveTypeIdAndYear(request.getApplicantUserId(), request.getLeaveTypeId(),
+                .findForUpdate(request.getApplicantUserId(), request.getLeaveTypeId(),         // 余额行锁：同一个人的两张请假同时批准，不能各扣各的互相覆盖
                         request.getStartDate().getYear())
                 .orElseThrow(() -> badRequest("余额记录不存在，无法批准"));
         if (balance.getRemainingDays() < request.getDays()) {
@@ -159,7 +159,7 @@ public class LeaveService {
     }
 
     private LeaveRequest getOwnedDraft(long requestId, long applicantUserId) {
-        LeaveRequest request = leaveRequestRepository.findById(requestId)
+        LeaveRequest request = leaveRequestRepository.findForUpdate(requestId)       // 行锁：同一张单同时提交，后到的等前一个提交后看到已提交状态
                 .orElseThrow(() -> notFound("请假单不存在"));
         if (request.getApplicantUserId() != applicantUserId) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "请假单不存在");
@@ -171,7 +171,7 @@ public class LeaveService {
     }
 
     private LeaveRequest getSubmitted(long requestId) {
-        LeaveRequest request = leaveRequestRepository.findById(requestId)
+        LeaveRequest request = leaveRequestRepository.findForUpdate(requestId)       // 行锁：同一张单同时审批 / 驳回，只有一个能成功
                 .orElseThrow(() -> notFound("请假单不存在"));
         if (request.getStatus() != LeaveStatus.SUBMITTED) {
             throw badRequest("只有已提交状态的请假单能审批，当前状态: " + request.getStatus());

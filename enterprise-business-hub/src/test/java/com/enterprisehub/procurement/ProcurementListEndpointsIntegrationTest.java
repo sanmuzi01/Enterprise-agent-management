@@ -107,6 +107,9 @@ class ProcurementListEndpointsIntegrationTest {
         }
     }
 
+    /** 非 null 时覆盖签进上下文的 org_team_ids（模拟别的企业的企业管理员）。 */
+    private java.util.List<Long> orgTeamIdsOverride;
+
     private HttpHeaders signedHeaders(HttpMethod method, String path, String bodyJson, long uid, Long headerTeamId,
                                        List<String> scopes, String operation, boolean isOrgAdmin,
                                        boolean isTeamAdmin) {
@@ -118,6 +121,10 @@ class ProcurementListEndpointsIntegrationTest {
             context.put("scopes", scopes);
             context.put("operation", operation);
             context.put("is_org_admin", isOrgAdmin);
+            // 企业管理员只管本企业的部门：签进 org_team_ids（测试里用到的部门编号）；orgTeamIdsOverride 用来模拟“别的企业的管理员”
+            context.put("org_team_ids", orgTeamIdsOverride != null ? orgTeamIdsOverride : (isOrgAdmin
+                    ? java.util.stream.Stream.of(headerTeamId, (Long) teamId, (Long) (teamId + 100), (Long) (teamId + 200)).filter(java.util.Objects::nonNull).distinct().toList()
+                    : java.util.List.<Long>of()));
             context.put("is_team_admin", isTeamAdmin);
             context.put("trace_id", UUID.randomUUID().toString());
             context.put("timestamp", Instant.now().getEpochSecond());

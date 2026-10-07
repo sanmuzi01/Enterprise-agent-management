@@ -1,0 +1,45 @@
+# 安全专项测试
+
+目标：用**会失败的测试**而不是口头保证来确认这些问题——SQL 注入、XSS、SSRF、跨部门 / 跨企业越权、恶意文件、提示注入与 Agent 越权调用工具、重复与并发（重复审批、重复记账）。
+每一类都先写攻击载荷、在真实代码上跑出失败，再修，再让测试留下来防回退。
+
+## 怎么跑
+
+| 内容 | 命令 | 需要 |
+|---|---|---|
+| 全部 Python 测试（含下面所有单元 / 集成安全测试） | `.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"` | MySQL |
+| 前端 XSS 载荷矩阵（真实浏览器 + 真实渲染模块） | `$env:PLAYWRIGHT_CHANNEL='msedge'; .venv\Scripts\python.exe scripts\check_xss_browser.py` | Vite 在 5174 端口 |
+| 跨部门 / 跨企业越权矩阵 + 重复与并发（真实 Java + MySQL） | `.venv\Scripts\python.exe scripts\e2e_security.py` | Java 业务服务在 8090 |
+| Java 全部测试（含跨企业越权用例） | 先停掉 8090 上的 Java，再在 `enterprise-business-hub` 里 `mvn test` | MySQL |
+
+## 覆盖与结果
+
+| 类别 | 测试 | 发现并修复的真实问题 |
+|---|---|---|
+| **SSRF** | `tests/test_security_ssrf.py`：字面 / 数字 / IPv6 / 元数据 / 协议 / 解析器技巧载荷矩阵（生产与开发两套环境）、DNS 重绑定、逐跳重定向、Webhook / 组件数据源 / LLM / GitHub 导入各出站点、静态守卫 | ① `requests` 默认跟随重定向（连接器与 LLM 客户端共 5 处）——公网地址 302 到 `169.254.169.254` 绕过出站校验并带上 API Key；② 阿里云元数据 `100.100.100.200`（共享地址空间）不在 `is_private` 里；③ 数字 IP 写法（`2130706433`、`0x7f000001`）依赖系统解析器；④ 开发环境对任意内网 DNS 结果放行；⑤ 校验与建连接之间的 DNS 重绑定窗口；⑥ 企业接口连接器先读完整个响应再判断大小 |
+| **恶意文件** | `tests/test_security_files.py`：路径载荷矩阵（`..`、盘符、UNC、备用数据流、保留设备名、NUL…）、压缩炸弹与压缩比、伪造头部、文件头伪装、双扩展名、各入口拒绝且不留残留 | ① 考勤导入接受“400KB 压缩、展开 400MB”的 xlsx；② 技能包安装没拦 Windows 盘符 / 备用数据流 / 设备名；③ 旧版能力包 `extractall` 之前没有任何体积与数量限制；④ 附件名 `con.txt` / `NUL` 在 Windows 上写进设备 |
+| **SQL 注入** | `tests/test_security_sql_injection.py`：静态守卫（Python 与 Java 都不允许把变量拼进 SQL，只有登记过的写死标识符）+ 从 OpenAPI 自动枚举约 250 个路由、10 种载荷、普通用户与管理员各跑一遍（5xx、数据库报错泄漏、时间盲注） | 没有注入；顺带发现 `PUT /user/profile` 对新用户必然 500（`UserProfile(created_at=…)`）——已修并加回归测试 |
+| **XSS** | `scripts/check_xss_browser.py`（79 个载荷）+ `tests/test_security_xss_backend.py` | 脚本执行类载荷 DOMPurify 全部挡住；但提示注入可以让模型输出钓鱼表单、`style` / Tailwind `class` 全屏覆盖、外链图片（零点击外泄），现已禁止；导出中文标题的会话必然 500（HTTP 头只能是 Latin-1），改为 RFC 6266 |
+| **提示注入 / 工具越权** | `tests/test_security_agent_tools.py`、`tests/test_security_prompt_injection.py` | 模型输出（及网页 JSON-LD、外部接口返回）深度嵌套会让 JSON 解析 `RecursionError` 变成 500；检索资料可以伪造分隔符与来源编号（`prompt_guard`）；其余边界（身份不来自模型参数、15 个高风险工具永远只生成待确认单、工具风险快照、只读工具不写）都已成立并被测试固定 |
+| **跨部门 / 跨企业越权** | `scripts/e2e_security.py` 第一部分（请假、报销、IT 工单、AI 整理结果、责任计划与任务；同部门同事 / 别部门成员 / 别部门负责人 / 别企业成员与管理员 / 未登录）+ Java `TeamAccessGuardTest`、`LeaveControllerIntegrationTest` + `tests/test_org_admin_scope.py` | **严重**：企业管理员的身份是全局布尔值，企业 B 的管理员可以审批企业 A 的请假、查看企业 A 的 IT 工单。现在签进业务系统的身份按资源所属企业重新计算，并带上该企业的部门范围（`org_team_ids`），Java 要求资源所在部门必须在范围内 |
+| **平台审批** | `tests/test_approval_org_scope.py`：企业 A 的“删除知识库空间”审批，企业 B 的管理员看不到、批不了；未登记所属企业的审批类型对所有人不可见 | `/approvals/pending` 与 `/approvals/{id}/decide` 只要求“是任何一个企业的管理员”：企业 B 的管理员能看到并批准企业 A 的空间删除申请（破坏性操作）。现在按资源所属企业限定，新增审批类型必须在 `approval_service.resource_org_id` 登记 |
+| **重复与并发** | `scripts/e2e_security.py` 第二部分：同一请求并发 8 次；两张不同的单据争同一份余额 / 预算；相同 Idempotency-Key 重放 | **严重**：请假、采购、CRM 确认没有行锁，同一张请假单并发审批 8 次全部成功（8 条“批准”审计），同一个人的两张请假同时批准会覆盖余额，同部门两张报销 / 采购同时批准会把预算花两遍。现已加行锁（请假单与余额、采购单与预算、报销预算、报销单、CRM 跟进） |
+
+## 修复之后的不变式（e2e 里逐条断言）
+
+- 无权身份对同一对象的任何访问都被拒绝（400 / 401 / 403 / 404 / 409），合法角色确实成功（防止“全部拒绝”这种假通过）；
+- 别的企业的管理员即使把 `team_id` 填成本企业的部门也不能越权；
+- 同一张请假单并发提交 / 审批：状态、余额、审计各只发生一次；
+- 同一份整理结果并发保存：只落一份草稿；同一项责任并发接受 / 提交 / 验收：只记一次；
+- 余额 10 天、两张各 6 天的请假同时批准：只批准一张，余额 4 天；预算 1000、两张各 800 的报销同时批准：只批准一张；
+- 同一张报销单并发生成凭证：业务库里只有一张（数据库唯一约束兜底）；
+- 并发冲突以 4xx 或幂等成功返回，不出现 5xx。
+
+## 仍然没有覆盖的（诚实记录）
+
+- 采购申请的预算 / 库存并发没有端到端用例（代码已加锁，评审过，没有造库存数据去压）；
+- Docker / 反向代理层的安全头、TLS、限流在真实部署里的表现；
+- 真实模型被注入后的行为（只能验证输出进入业务系统前的确定性防线，不能验证模型“会不会被说服”）；
+- 依赖库漏洞扫描（CI 里有前端 `npm audit`，Python 依赖没有）；
+- 管理后台（`/admin/organization/...`）按设计只管“默认企业”，由平台管理员账号访问，不是多企业接口，没有做跨企业用例；
+- Python 侧用 `require_org_role` 授权的其他接口只剩平台审批一处会跨资源操作（已修）；以后新增这类接口必须同时限定企业范围（`enterprise_access.admin_org_ids_async`）。

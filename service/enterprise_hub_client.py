@@ -63,6 +63,7 @@ def sign_context(
         *,
         is_org_admin: bool = False,
         is_team_admin: bool = False,
+        org_team_ids: Optional[List[int]] = None,
         method: str,
         path: str,
         body_sha256: str,
@@ -86,6 +87,8 @@ def sign_context(
         "operation": operation,
         "is_org_admin": is_org_admin,
         "is_team_admin": is_team_admin,
+        # 企业管理员的范围：只有该企业的部门（见 enterprise_access.org_admin_scope）；不是企业管理员时为空列表
+        "org_team_ids": list(org_team_ids or []) if is_org_admin else [],
         "trace_id": _current_trace_id() or str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "nonce": uuid.uuid4().hex,
@@ -176,6 +179,16 @@ def _error_detail(response: requests.Response) -> str:
     return f"企业业务服务拒绝了请求（HTTP {response.status_code}）"
 
 
+def _org_admin_scope(user_id: int, team_id: Optional[int]):
+    from models.init_db import SessionLocal
+    from service import enterprise_access
+    db = SessionLocal()
+    try:
+        return enterprise_access.org_admin_scope(db, user_id, team_id)
+    finally:
+        db.close()
+
+
 def call(
         method: str,
         path: str,
@@ -199,8 +212,12 @@ def call(
     计算的 body_sha256 就对不上，每个带请求体的调用都会被拒。"""
     body_bytes = b"" if json_body is None else json.dumps(json_body, ensure_ascii=False).encode("utf-8")
     body_sha256 = hashlib.sha256(body_bytes).hexdigest()
+    org_team_ids: List[int] = []
+    if is_org_admin:
+        # 不信任调用方传来的布尔值：按 team_id 所在的企业重新算（只是企业 B 的管理员不能当企业 A 的管理员）
+        is_org_admin, org_team_ids = _org_admin_scope(user_id, team_id)
     headers = sign_context(
-        user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin,
+        user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin, org_team_ids=org_team_ids,
         method=method, path=path, body_sha256=body_sha256,
     )
     headers["Content-Type"] = "application/json"

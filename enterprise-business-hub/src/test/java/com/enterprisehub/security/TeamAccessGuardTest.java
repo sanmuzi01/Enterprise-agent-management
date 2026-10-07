@@ -52,4 +52,43 @@ class TeamAccessGuardTest {
         assertThatThrownBy(() -> TeamAccessGuard.requireOwnerOrTeamAccess(42L, 43L, 1L, false, false, 2L))
                 .isInstanceOf(ResponseStatusException.class);
     }
+
+    // ---- 企业管理员只管自己的企业（org_team_ids）----
+
+    private static RequestContext contextWithOrgTeams(java.util.List<Long> orgTeamIds) {
+        return new RequestContext(1L, 5L, java.util.List.of(), "op", true, false, orgTeamIds, "t", 0L, "n", "GET", "/x", "");
+    }
+
+    @Test
+    void orgAdmin_canOnlyActOnTeamsOfTheirOwnOrganization() {
+        RequestContextHolder.set(contextWithOrgTeams(java.util.List.of(5L, 6L)));
+        try {
+            assertThat(TeamAccessGuard.canActOnTeam(5L, true, false, 6L)).isTrue();
+            assertThat(TeamAccessGuard.canActOnTeam(5L, true, false, 999L)).isFalse();      // 别的企业的部门
+            assertThat(TeamAccessGuard.canActOnTeam(null, true, false, null)).isFalse();    // 资源不存在
+        } finally {
+            RequestContextHolder.clear();
+        }
+    }
+
+    @Test
+    void orgAdmin_withoutOrgTeamIds_isDenied_whenThereIsARequestContext() {
+        RequestContextHolder.set(contextWithOrgTeams(null));
+        try {
+            assertThat(TeamAccessGuard.canActOnTeam(5L, true, false, 5L)).isFalse();
+        } finally {
+            RequestContextHolder.clear();
+        }
+    }
+
+    @Test
+    void teamAdminAndMemberRulesAreUnaffectedByOrgTeamIds() {
+        RequestContextHolder.set(contextWithOrgTeams(java.util.List.of(5L, 6L)));
+        try {
+            assertThat(TeamAccessGuard.canActOnTeam(5L, false, true, 5L)).isTrue();
+            assertThat(TeamAccessGuard.canActOnTeam(5L, false, true, 6L)).isFalse();         // 部门负责人不因为企业里有别的部门就能管它们
+        } finally {
+            RequestContextHolder.clear();
+        }
+    }
 }

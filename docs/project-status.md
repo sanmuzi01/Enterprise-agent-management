@@ -10,6 +10,8 @@
   外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
 - **本阶段新增能力**：部门责任执行、文件导入与批量整理、事务性发件箱/收件箱/死信、trace_id 与统一错误、问题中心、
   页面脚本错误上报、Agent 运行失败追踪、试点数据与预检、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
+- **安全专项**（`docs/security-testing.md`）：SSRF、恶意文件、SQL 注入、XSS、提示注入与工具越权、跨部门 / 跨企业越权、重复与并发都有会失败的测试；
+  过程中发现并修复了跨企业提权（企业 B 的管理员能审批企业 A 的请假、批准企业 A 的空间删除）、请假 / 采购 / 报销的并发重复处理与预算 / 余额覆盖、SSRF 的 5 类绕过、压缩炸弹等。
 - **尚未用真实基础设施验证**：Kafka（只测过假生产者）、OpenTelemetry Collector、Loki / Tempo、云日志与 Sentry 的真实上报；
   详见 `docs/observability-integration.md`（联调后更新）。
 - **没有真实用户数据**：试点工具齐全（`scripts/pilot_preflight.py`、`scripts/pilot_report.py`），但还没有真实试点样本。

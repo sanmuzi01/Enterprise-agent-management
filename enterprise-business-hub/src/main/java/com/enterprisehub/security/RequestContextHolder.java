@@ -22,6 +22,11 @@ public final class RequestContextHolder {
         return ctx;
     }
 
+    /** 没有已验证的请求上下文时返回 null（不是经 FastAPI 签名请求进来的调用，比如纯逻辑单测直接调 Service）。 */
+    public static RequestContext currentOrNull() {
+        return CURRENT.get();
+    }
+
     public static void clear() {
         CURRENT.remove();
     }

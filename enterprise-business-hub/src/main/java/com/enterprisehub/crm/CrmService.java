@@ -72,7 +72,7 @@ public class CrmService {
 
     @Transactional
     public FollowUpDto confirmFollowUp(long followUpId, long authorUserId, String traceId) {
-        FollowUp followUp = followUpRepository.findById(followUpId)
+        FollowUp followUp = followUpRepository.findForUpdate(followUpId)
                 .orElseThrow(() -> notFound("跟进记录不存在"));
         if (followUp.getAuthorUserId() != authorUserId) {
             throw notFound("跟进记录不存在");
