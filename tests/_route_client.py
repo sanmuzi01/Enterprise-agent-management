@@ -27,6 +27,46 @@ os.environ.setdefault("CORS_ALLOW_ORIGINS", "http://testserver")
 
 _SUFFIX = f"{int(time.time()) % 100000}{uuid.uuid4().hex[:4]}"
 _created_user_ids: list[int] = []
+_created_issue_ids: list[int] = []
+_issue_tracking_installed = False
+
+
+def _track_issues() -> None:
+    """记下本进程里创建的问题中心记录，cleanup 时一并删除。
+
+    测试会故意制造故障（Agent 运行失败、业务系统不可用、页面脚本错误），问题中心会如实登记；
+    如果不清掉，开发库的问题中心会堆满测试产生的“严重问题”，真实试点前的预检也会被它们污染。
+    只删本进程创建的，不碰别的进程（比如同时在跑的真实服务）产生的问题。
+    """
+    global _issue_tracking_installed
+    if _issue_tracking_installed:
+        return
+    from sqlalchemy import event
+    from models.init_db import SystemIssue
+
+    @event.listens_for(SystemIssue, "after_insert")
+    def _remember(_mapper, _connection, target):  # noqa: ANN001
+        _created_issue_ids.append(target.id)
+    _issue_tracking_installed = True
+
+
+def _purge_issues() -> None:
+    if not _created_issue_ids:
+        return
+    from sqlalchemy import text
+    from models.init_db import SessionLocal
+    ids = ",".join(str(i) for i in set(_created_issue_ids))
+    db = SessionLocal()
+    try:
+        for table in ("issue_event", "issue_occurrence"):
+            db.execute(text(f"DELETE FROM {table} WHERE issue_id IN ({ids})"))
+        db.execute(text(f"DELETE FROM system_issue WHERE id IN ({ids})"))
+        db.commit()
+    except Exception:  # noqa: BLE001 —— 清理失败不能让测试失败
+        db.rollback()
+    finally:
+        db.close()
+        _created_issue_ids.clear()
 
 
 def route_tests_available() -> tuple[bool, str]:
@@ -50,6 +90,7 @@ def route_tests_available() -> tuple[bool, str]:
 
 def make_client():
     from fastapi.testclient import TestClient
+    _track_issues()
     # 别的测试可能刚把 APP_ENV 改成 production 且没还原 —— import main 会跑生产校验，这里强制非生产
     os.environ["APP_ENV"] = "test"
     # 若 main 已被别的测试以旧 TRUSTED_HOSTS / APP_ENV 导入过，重新导入
@@ -86,6 +127,7 @@ def create_user(name_prefix: str, password: str = "Passw0rd!Secure", *, admin: b
     from models.init_db import SessionLocal
     from models.user_dao import create_user as dao_create_user
     from service.auth_service import hash_password
+    _track_issues()
 
     name = f"rt_{name_prefix}_{_SUFFIX}"[:20]
     db = SessionLocal()
@@ -222,6 +264,7 @@ def sweep_test_users() -> int:
 def cleanup():
     """删除本模块建的用户及其级联数据。测试类 tearDownClass 调用。"""
     try:
+        _purge_issues()
         if _created_user_ids:
             _purge_users("id IN (" + ",".join(str(i) for i in set(_created_user_ids)) + ")")
     finally:
