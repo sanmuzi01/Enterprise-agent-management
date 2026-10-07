@@ -1007,6 +1007,7 @@ class AgentRun(Base):
         Index("idx_agent_run_agent_started", "agent_id", "started_at"),
         Index("idx_agent_run_agent_conversation_started", "agent_id", "conversation_id", "started_at"),
         Index("idx_agent_run_status_started", "status", "started_at"),
+        Index("idx_agent_run_agent_status", "agent_id", "status", "started_at"),       # 与迁移 20261007_0004 一致：按助手 + 状态看最近的运行
     )
     id  = Column(Integer ,primary_key=True,autoincrement=True)
     user_id = Column(Integer,ForeignKey("user.id",name="fk_run_user"),nullable=False)
