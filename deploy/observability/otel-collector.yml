@@ -1,0 +1,45 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 256
+  batch:
+    timeout: 1s
+  # 脱敏的第二道防线：应用已经在日志和 span 里去掉了密钥和正文，这里再删一次常见的敏感属性名，防止以后有人忘了
+  attributes/redact:
+    actions:
+      - {key: http.request.header.authorization, action: delete}
+      - {key: http.request.header.cookie, action: delete}
+      - {key: authorization, action: delete}
+      - {key: password, action: delete}
+      - {key: api_key, action: delete}
+exporters:
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls: {insecure: true}
+    sending_queue: {enabled: true, queue_size: 2000}
+    retry_on_failure: {enabled: true, initial_interval: 1s, max_interval: 10s, max_elapsed_time: 120s}
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    sending_queue: {enabled: true, queue_size: 2000}
+    retry_on_failure: {enabled: true, initial_interval: 1s, max_interval: 10s, max_elapsed_time: 120s}
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, batch]
+      exporters: [otlp/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, batch]
+      exporters: [otlphttp/loki]

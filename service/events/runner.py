@@ -49,16 +49,18 @@ def consumer(name: str, topics: List[str], **kwargs):
     return wrap
 
 
-async def _deliver(c: Consumer, event: Dict[str, Any], stats: Dict[str, int]) -> None:
+async def _deliver(c: Consumer, event: Dict[str, Any], stats: Dict[str, int]) -> str:
+    """处理一个事件，返回结果：done / skipped（重复或别人持有租约）/ retry / dead。"""
     previous = await asyncio.to_thread(outbox.claim, c.name, event["event_id"])
     if previous is None:
         stats["skipped"] += 1            # 已处理过（重复投递）或别的进程正在处理
-        return
+        return "skipped"
     token = trace_context.set_trace(event.get("trace_id") or trace_context.new_trace_id())   # 消费者的日志和问题记录沿用事件的 trace_id
     try:
         await asyncio.wait_for(c.handler(event), c.timeout_seconds)
         await asyncio.to_thread(outbox.mark_done, c.name, event["event_id"])
         stats["done"] += 1
+        return "done"
     except Exception as exc:  # noqa: BLE001
         dead = await asyncio.to_thread(outbox.mark_failed, c.name, event, f"{type(exc).__name__}: {exc}", c.max_attempts)
         stats["dead" if dead else "retry"] += 1
@@ -66,6 +68,7 @@ async def _deliver(c: Consumer, event: Dict[str, Any], stats: Dict[str, int]) ->
             logger.warning("消费者 %s 处理事件 %s 失败: %s", c.name, event["event_id"], exc)
         if dead:
             await _report_dead(c, event, exc)
+        return "dead" if dead else "retry"
     finally:
         trace_context.reset_trace(token)
 
@@ -78,6 +81,9 @@ async def _report_dead(c: Consumer, event: Dict[str, Any], exc: BaseException) -
         message=f"事件 {event['event_id']} 重试 {c.max_attempts} 次仍失败：{exc}", trace_id=event.get("trace_id"),
         department_id=event.get("department_id"), extra={"topic": event["topic"], "event_id": event["event_id"]},
         resource_type=event.get("aggregate_type"), resource_id=event.get("aggregate_id")))
+    if kafka_mode():
+        from service.events import kafka_bus
+        await asyncio.to_thread(kafka_bus.publish_dead, c.name, event, f"{type(exc).__name__}: {exc}", c.max_attempts)
     if c.on_dead:
         try:
             await c.on_dead(event, f"{type(exc).__name__}: {exc}")
@@ -85,10 +91,11 @@ async def _report_dead(c: Consumer, event: Dict[str, Any], exc: BaseException) -
             logger.exception("消费者 %s 的死信收尾失败", c.name)
 
 
-async def run_consumers_once(limit: int = 20) -> Dict[str, int]:
+async def run_consumers_once(limit: int = 20, retry_only: bool = False) -> Dict[str, int]:
+    """数据库模式：领取并处理全部可处理的事件。retry_only（Kafka 模式）：只处理已到期的重试 / 过期租约，首次投递由 Kafka 消费者负责。"""
     stats = {"done": 0, "retry": 0, "dead": 0, "skipped": 0}
     for c in list(REGISTRY.values()):
-        events = await asyncio.to_thread(outbox.fetch_deliverable, c.name, c.topics, limit)
+        events = await asyncio.to_thread(outbox.fetch_deliverable, c.name, c.topics, limit, retry_only)
         semaphore = asyncio.Semaphore(max(1, c.concurrency))
 
         async def guarded(event, c=c, semaphore=semaphore):
@@ -104,9 +111,13 @@ def default_transport():
     return outbox.db_transport
 
 
-async def run_cycle(transport=None) -> Dict[str, Any]:
+def kafka_mode() -> bool:
+    return bool(os.getenv("KAFKA_BOOTSTRAP_SERVERS"))
+
+
+async def run_cycle(transport=None, retry_only: Optional[bool] = None) -> Dict[str, Any]:
     published = await asyncio.to_thread(outbox.publish_pending, transport or default_transport())
-    consumed = await run_consumers_once()
+    consumed = await run_consumers_once(retry_only=kafka_mode() if retry_only is None else retry_only)
     return {"published": published, "consumed": consumed}
 
 
@@ -116,6 +127,7 @@ class Runner:
     def __init__(self, interval: float = 1.0):
         self.interval = interval
         self.task: Optional[asyncio.Task] = None
+        self.kafka_tasks: List[asyncio.Task] = []
         self._stop = asyncio.Event()
 
     async def _loop(self) -> None:
@@ -137,14 +149,34 @@ class Runner:
 
     def start(self) -> None:
         self.task = asyncio.create_task(self._loop(), name="event-runner")
+        if kafka_mode():
+            from service.events import kafka_bus
+            for c in list(REGISTRY.values()):
+                self.kafka_tasks.append(asyncio.create_task(self._kafka_consumer(c, kafka_bus), name=f"kafka-consumer-{c.name}"))
+
+    async def _kafka_consumer(self, c: Consumer, kafka_bus) -> None:
+        """一个消费者的 Kafka 循环：Broker 不可用时不退出，等恢复后继续（创建 Topic、订阅都放在重试里）。"""
+        while not self._stop.is_set():
+            try:
+                await asyncio.to_thread(kafka_bus.ensure_topics, sorted(outbox.TOPICS))
+                await kafka_bus.consume_loop(c, _deliver, self._stop)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.warning("Kafka 消费者 %s 异常退出，5 秒后重连", c.name, exc_info=True)
+                try:
+                    await asyncio.wait_for(self._stop.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    pass
 
     async def stop(self) -> None:
         self._stop.set()
-        if self.task:
+        tasks = [t for t in [self.task, *self.kafka_tasks] if t]
+        for task in tasks:
             try:
-                await asyncio.wait_for(self.task, 10)
+                await asyncio.wait_for(task, 15)
             except Exception:  # noqa: BLE001
-                self.task.cancel()
+                task.cancel()
 
 
 def enabled() -> bool:

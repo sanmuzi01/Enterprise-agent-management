@@ -29,6 +29,8 @@ logger = get_logger("outbox")
 PRODUCER = os.getenv("SERVICE_NAME", "agent-service")
 LEASE_SECONDS = int(os.getenv("OUTBOX_LEASE_SECONDS", "120"))
 MAX_PUBLISH_BACKOFF = 300
+FAIL_FAST_AFTER = int(os.getenv("OUTBOX_FAIL_FAST_AFTER", "3"))
+PUBLISH_LEASE_SECONDS = int(os.getenv("OUTBOX_PUBLISH_LEASE_SECONDS", "60"))     # 发布一批事件的租约：进程崩溃后多久会被别的发布器接手
 MAX_PAYLOAD_BYTES = 16 * 1024
 
 # Topic 目录（与方案一致）。新增 Topic 在这里登记，emit 会拒绝未登记的名字，避免拼写错误悄悄产生没人消费的消息。
@@ -75,27 +77,69 @@ def envelope(row: OutboxEvent) -> Dict[str, Any]:
 # ---------------------------------------------------------------- 发布
 
 def publish_pending(transport: Callable[[Dict[str, Any]], None], limit: int = 100) -> Dict[str, int]:
-    """把到期的未发布事件送到传输层。多个进程同时跑也安全（行锁 + SKIP LOCKED）。"""
+    """把到期的未发布事件送到传输层。多个进程同时跑也安全。
+
+    **不能在调用传输层期间持有数据库事务**（真实 Kafka 联调时发现的问题）：以前是 `SELECT … FOR UPDATE` 之后在同一个事务里逐条调用 Kafka，
+    Broker 变慢或刚恢复时这个事务要开几十秒，期间它持有的间隙锁会让业务事务里的 `emit()` 插入超时失败——Kafka 的故障反过来拖垮业务写入。
+    现在分三步：① 很短的事务里领取一批事件并给它们打上发布租约（next_publish_at = 现在 + 租约）；② 事务外逐条调用传输层；
+    ③ 每条结果用各自的短事务回写。进程在②崩溃：租约到期后别的发布器会重新发布（至少一次，消费者的收件箱挡重复）。"""
+    claimed = []
     db = SessionLocal()
-    sent = failed = 0
     try:
-        rows = db.execute(select(OutboxEvent).where(OutboxEvent.published_at.is_(None), or_(OutboxEvent.next_publish_at.is_(None), OutboxEvent.next_publish_at <= utcnow()))
+        now = utcnow()
+        rows = db.execute(select(OutboxEvent).where(OutboxEvent.published_at.is_(None), or_(OutboxEvent.next_publish_at.is_(None), OutboxEvent.next_publish_at <= now))
                           .order_by(OutboxEvent.id).limit(limit).with_for_update(skip_locked=True)).scalars().all()
         for row in rows:
-            try:
-                transport(envelope(row))
-                row.published_at, row.last_error = utcnow(), None
-                sent += 1
-            except Exception as exc:  # noqa: BLE001 —— 传输层故障：退避重试，事件仍在库里
-                row.publish_attempts += 1
-                row.last_error = redact_text(f"{type(exc).__name__}: {exc}")[:300]
-                row.next_publish_at = utcnow() + timedelta(seconds=backoff_seconds(row.publish_attempts))
-                failed += 1
-                logger.warning("事件发布失败 %s（第 %s 次）: %s", row.event_id, row.publish_attempts, row.last_error)
+            claimed.append((row.id, row.event_id, row.publish_attempts, envelope(row)))
+            row.next_publish_at = now + timedelta(seconds=PUBLISH_LEASE_SECONDS)
         db.commit()
     finally:
         db.close()
+
+    sent = failed = streak = 0
+    for index, (row_id, event_id, attempts, event) in enumerate(claimed):
+        if streak >= FAIL_FAST_AFTER:
+            # 传输层连续失败：多半是 Broker 整体不可用，本轮不再逐条等超时；剩下的事件释放租约（不增加失败次数），下一轮再试
+            _release([c[0] for c in claimed[index:]])
+            break
+        try:
+            transport(event)
+        except Exception as exc:  # noqa: BLE001 —— 传输层故障：退避重试，事件仍在库里
+            message = redact_text(f"{type(exc).__name__}: {exc}")[:300]
+            _settle(row_id, ok=False, attempts=attempts + 1, error=message)
+            failed += 1
+            streak += 1
+            logger.warning("事件发布失败 %s（第 %s 次）: %s", event_id, attempts + 1, message)
+        else:
+            _settle(row_id, ok=True, attempts=attempts)
+            sent += 1
+            streak = 0
     return {"sent": sent, "failed": failed}
+
+
+def _settle(row_id: int, *, ok: bool, attempts: int, error: Optional[str] = None) -> None:
+    db = SessionLocal()
+    try:
+        if ok:
+            db.execute(update(OutboxEvent).where(OutboxEvent.id == row_id, OutboxEvent.published_at.is_(None))
+                       .values(published_at=utcnow(), last_error=None, next_publish_at=None))
+        else:
+            db.execute(update(OutboxEvent).where(OutboxEvent.id == row_id, OutboxEvent.published_at.is_(None))
+                       .values(publish_attempts=attempts, last_error=error, next_publish_at=utcnow() + timedelta(seconds=backoff_seconds(attempts))))
+        db.commit()
+    finally:
+        db.close()
+
+
+def _release(row_ids: List[int]) -> None:
+    if not row_ids:
+        return
+    db = SessionLocal()
+    try:
+        db.execute(update(OutboxEvent).where(OutboxEvent.id.in_(row_ids), OutboxEvent.published_at.is_(None)).values(next_publish_at=None))
+        db.commit()
+    finally:
+        db.close()
 
 
 def db_transport(_: Dict[str, Any]) -> None:
@@ -106,18 +150,27 @@ def db_transport(_: Dict[str, Any]) -> None:
 class KafkaTransport:
     """Kafka 传输（可选，需要 confluent-kafka，设置 KAFKA_BOOTSTRAP_SERVERS 启用）。
 
-    注意：这个适配器只用假的 producer 测过消息格式和头；**没有对真实 Kafka broker 验证过**。
+    已在真实 Kafka（KRaft）Broker 上验证：投递、Broker 停机后重试不丢、恢复后继续（scripts/e2e_kafka.py）。
     消息键用 aggregate 的 event_key（同一对象的事件进同一分区，保证有序），头里带 traceparent / event_id / schema_version / producer。
     """
 
-    def __init__(self, producer=None, bootstrap: Optional[str] = None):
+    def __init__(self, producer=None, bootstrap: Optional[str] = None, ensure_topics: bool = True):
+        self.bootstrap = bootstrap or os.environ.get("KAFKA_BOOTSTRAP_SERVERS")
+        self._topics_ready = not ensure_topics or producer is not None      # 传入假 producer（测试）时不去连 Broker 建 Topic
         if producer is None:
             from confluent_kafka import Producer
-            producer = Producer({"bootstrap.servers": bootstrap or os.environ["KAFKA_BOOTSTRAP_SERVERS"], "enable.idempotence": True,
-                                 "acks": "all"})
+            producer = Producer({"bootstrap.servers": self.bootstrap, "enable.idempotence": True, "acks": "all",
+                                 "message.timeout.ms": 15000, "socket.timeout.ms": 10000})
         self.producer = producer
 
+    def _ensure_topics(self) -> None:
+        if not self._topics_ready:
+            from service.events import kafka_bus
+            kafka_bus.ensure_topics(sorted(TOPICS), self.bootstrap)
+            self._topics_ready = True
+
     def __call__(self, event: Dict[str, Any]) -> None:
+        self._ensure_topics()
         errors: List[Any] = []
         headers = [("traceparent", trace_context.traceparent_for(event.get("trace_id")).encode()),
                    ("event_id", event["event_id"].encode()), ("schema_version", str(event["schema_version"]).encode()),
@@ -125,15 +178,22 @@ class KafkaTransport:
         self.producer.produce(event["topic"], key=(event.get("key") or event["aggregate_id"]).encode(),
                               value=json.dumps(event, ensure_ascii=False).encode("utf-8"), headers=headers,
                               on_delivery=lambda err, _msg: errors.append(err) if err else None)
-        self.producer.flush(10)
+        remaining = self.producer.flush(10)
         if errors:
             raise RuntimeError(f"Kafka 投递失败: {errors[0]}")
+        if remaining:
+            # 10 秒内没有收到 Broker 的确认：不能当成发送成功（否则发件箱会标记已发布，之后这条消息又投递失败 = 丢事件）；
+            # 消息可能已经在 producer 队列里稍后送达，所以这里抛错重试，重复由消费者的收件箱挡住（至少一次）。
+            raise RuntimeError("Kafka 投递超时：Broker 没有确认")
 
 
 # ---------------------------------------------------------------- 消费
 
-def fetch_deliverable(consumer: str, topics: List[str], limit: int = 20) -> List[Dict[str, Any]]:
-    """该消费者还没成功处理、没进死信、没被别人持有租约的已发布事件（按发布顺序）。"""
+def fetch_deliverable(consumer: str, topics: List[str], limit: int = 20, retry_only: bool = False) -> List[Dict[str, Any]]:
+    """该消费者还没成功处理、没进死信、没被别人持有租约的已发布事件（按发布顺序）。
+
+    retry_only=True（Kafka 模式的重试扫描）：只要“已经有过处理记录（失败退避 / 租约）且已到期”的事件——
+    首次投递由 Kafka 负责，这里不能抢着处理 Kafka 还没送到的事件。"""
     db = SessionLocal()
     try:
         now = utcnow()
@@ -142,8 +202,10 @@ def fetch_deliverable(consumer: str, topics: List[str], limit: int = 20) -> List
                                      DeadLetter.status.in_(("pending", "discarded"))))
         waiting = exists().where(and_(ConsumerRetry.event_id == OutboxEvent.event_id, ConsumerRetry.consumer == consumer,
                                       ConsumerRetry.next_attempt_at > now))
+        due_retry = exists().where(and_(ConsumerRetry.event_id == OutboxEvent.event_id, ConsumerRetry.consumer == consumer,
+                                        ConsumerRetry.next_attempt_at <= now))
         rows = db.execute(select(OutboxEvent).where(OutboxEvent.published_at.is_not(None), OutboxEvent.topic.in_(topics),
-                                                    ~done, ~parked, ~waiting).order_by(OutboxEvent.id).limit(limit)).scalars().all()
+                                                    ~done, ~parked, due_retry if retry_only else ~waiting).order_by(OutboxEvent.id).limit(limit)).scalars().all()
         return [envelope(r) for r in rows]
     finally:
         db.close()
@@ -152,25 +214,37 @@ def fetch_deliverable(consumer: str, topics: List[str], limit: int = 20) -> List
 def claim(consumer: str, event_id: str, lease_seconds: int = LEASE_SECONDS) -> Optional[int]:
     """领取一个事件的处理权（租约）。成功返回此前已失败的次数，别人持有租约/已处理返回 None。
 
-    先 INSERT、冲突再 UPDATE（带“租约已过期”条件）：不对不存在的行加锁（那会在并发领取时产生间隙锁死锁）。"""
+    先 INSERT、冲突再 UPDATE（带“租约已过期”条件）：不对不存在的行加锁（那会在并发领取时产生间隙锁死锁）。
+
+    拿到租约之后必须**再确认一次收件箱**（真实 Kafka 多实例联调时发现的竞态）：开头的“已处理”检查和后面的插入不是原子的——
+    另一个实例恰好在两步之间处理完成（写收件箱 + 删租约），我们的 INSERT 就会成功，同一个事件被处理第二次。
+    mark_done 在同一个事务里“写收件箱 + 删租约”，所以只要我们的租约插入成功，要么对方还没做完（我们看不到收件箱，但它仍持有它自己的租约→
+    我们的 INSERT 会冲突），要么对方已经提交（我们此刻一定能在收件箱里看到它）。"""
     db = SessionLocal()
     try:
         now = utcnow()
         if db.execute(select(ConsumerInbox.id).where(ConsumerInbox.event_id == event_id, ConsumerInbox.consumer == consumer)).first():
             return None
         lease_until = now + timedelta(seconds=lease_seconds)
+        previous = None
         try:
             db.add(ConsumerRetry(event_id=event_id, consumer=consumer, attempts=0, next_attempt_at=lease_until))
             db.commit()
-            return 0
+            previous = 0
         except IntegrityError:
             db.rollback()
-        taken = db.execute(update(ConsumerRetry).where(ConsumerRetry.event_id == event_id, ConsumerRetry.consumer == consumer,
-                                                       ConsumerRetry.next_attempt_at <= now).values(next_attempt_at=lease_until))
-        db.commit()
-        if taken.rowcount != 1:
-            return None
-        return db.execute(select(ConsumerRetry.attempts).where(ConsumerRetry.event_id == event_id, ConsumerRetry.consumer == consumer)).scalar() or 0
+        if previous is None:
+            taken = db.execute(update(ConsumerRetry).where(ConsumerRetry.event_id == event_id, ConsumerRetry.consumer == consumer,
+                                                           ConsumerRetry.next_attempt_at <= now).values(next_attempt_at=lease_until))
+            db.commit()
+            if taken.rowcount != 1:
+                return None
+            previous = db.execute(select(ConsumerRetry.attempts).where(ConsumerRetry.event_id == event_id, ConsumerRetry.consumer == consumer)).scalar() or 0
+        if db.execute(select(ConsumerInbox.id).where(ConsumerInbox.event_id == event_id, ConsumerInbox.consumer == consumer)).first():
+            db.execute(ConsumerRetry.__table__.delete().where(ConsumerRetry.event_id == event_id, ConsumerRetry.consumer == consumer))
+            db.commit()
+            return None           # 在我们领取之前已经被别人处理完了：把刚插入的租约撤掉
+        return previous
     finally:
         db.close()
 
@@ -252,6 +326,9 @@ def redeliver(db, dead_id: int, actor_id: int) -> Dict[str, Any]:
         raise Conflict("这条死信已经处理过了")
     d.status, d.handled_by, d.handled_at = "redelivered", actor_id, utcnow()
     db.execute(ConsumerRetry.__table__.delete().where(ConsumerRetry.event_id == d.event_id, ConsumerRetry.consumer == d.consumer))
+    # 清掉“已发布”标记，让发布器把事件重新发布一次：数据库模式下等于重新可消费；Kafka 模式下事件重新进 Topic，消费者会再收到。
+    # 其他消费者再收到同一事件时，由各自的收件箱挡住，不会重复处理。
+    db.execute(update(OutboxEvent).where(OutboxEvent.event_id == d.event_id).values(published_at=None, next_publish_at=None, publish_attempts=0))
     db.commit()
     return _dead_row(d)
 

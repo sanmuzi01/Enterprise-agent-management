@@ -36,6 +36,8 @@ os.environ.setdefault("CORS_ALLOW_ORIGINS", "http://testserver")
 _SUFFIX = f"{int(time.time()) % 100000}{uuid.uuid4().hex[:4]}"
 _created_user_ids: list[int] = []
 _created_issue_ids: list[int] = []
+_created_notification_ids: list[int] = []
+_created_event_ids: list[str] = []
 _issue_tracking_installed = False
 
 
@@ -55,26 +57,47 @@ def _track_issues() -> None:
     @event.listens_for(SystemIssue, "after_insert")
     def _remember(_mapper, _connection, target):  # noqa: ANN001
         _created_issue_ids.append(target.id)
+
+    # 问题登记会经事件触发“新问题”站内通知（发给真实的管理员账号）：测试制造的故障不能把通知留在管理员的收件箱里
+    from models.init_db import Notification, OutboxEvent
+
+    @event.listens_for(Notification, "after_insert")
+    def _remember_notification(_mapper, _connection, target):  # noqa: ANN001
+        _created_notification_ids.append(target.id)
+
+    @event.listens_for(OutboxEvent, "after_insert")
+    def _remember_event(_mapper, _connection, target):  # noqa: ANN001
+        _created_event_ids.append(target.event_id)
     _issue_tracking_installed = True
 
 
 def _purge_issues() -> None:
-    if not _created_issue_ids:
+    if not (_created_issue_ids or _created_notification_ids or _created_event_ids):
         return
     from sqlalchemy import text
     from models.init_db import SessionLocal
-    ids = ",".join(str(i) for i in set(_created_issue_ids))
     db = SessionLocal()
     try:
-        for table in ("issue_event", "issue_occurrence"):
-            db.execute(text(f"DELETE FROM {table} WHERE issue_id IN ({ids})"))
-        db.execute(text(f"DELETE FROM system_issue WHERE id IN ({ids})"))
+        if _created_issue_ids:
+            ids = ",".join(str(i) for i in set(_created_issue_ids))
+            for table in ("issue_event", "issue_occurrence"):
+                db.execute(text(f"DELETE FROM {table} WHERE issue_id IN ({ids})"))
+            db.execute(text(f"DELETE FROM system_issue WHERE id IN ({ids})"))
+        if _created_notification_ids:
+            db.execute(text(f"DELETE FROM notification WHERE id IN ({','.join(str(i) for i in set(_created_notification_ids))})"))
+        for chunk_start in range(0, len(_created_event_ids), 500):
+            marks = ",".join(f"'{e}'" for e in _created_event_ids[chunk_start:chunk_start + 500])      # event_id 是进程内生成的 uuid
+            for table in ("consumer_inbox", "consumer_retry", "dead_letter"):
+                db.execute(text(f"DELETE FROM {table} WHERE event_id IN ({marks})"))
+            db.execute(text(f"DELETE FROM outbox_event WHERE event_id IN ({marks})"))
         db.commit()
     except Exception:  # noqa: BLE001 —— 清理失败不能让测试失败
         db.rollback()
     finally:
         db.close()
         _created_issue_ids.clear()
+        _created_notification_ids.clear()
+        _created_event_ids.clear()
 
 
 def route_tests_available() -> tuple[bool, str]:
