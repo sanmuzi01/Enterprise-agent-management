@@ -232,14 +232,14 @@ def main() -> int:
         check(wait_for(lambda: any(l["kind"] == "start" and l["event_id"] == crashed for l in lines()), 30), "事件开始处理（处理函数卡在里面）")
         kill_worker(w1)
         check(inbox_count([crashed]) == 0, "进程被杀时事件还没有写入收件箱")
-        w2 = start_worker()
+        start_worker()
         check(wait_for(lambda: inbox_count([crashed]) == 1, 90), "重启后事件重新送达，租约到期后被处理完成")
         starts = sum(1 for l in lines() if l["kind"] == "start" and l["event_id"] == crashed)
         dones = sum(1 for l in lines() if l["kind"] == "done" and l["event_id"] == crashed)
         check(starts == 2 and dones == 1, f"处理函数被调用 {starts} 次（崩溃前 1 次 + 重启后 1 次），生效 {dones} 次")
 
         print("\n== 7. 多实例：两个消费者进程同一个组 ==")
-        w3 = start_worker()
+        start_worker()
         time.sleep(8)                                                  # 等再平衡
         many = emit(60, prefix="many", aggregates=12)
         check(wait_for(lambda: inbox_count(many) == 60, 90), "60 个事件全部处理完成")

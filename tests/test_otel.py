@@ -53,8 +53,8 @@ class OtelSpanTests(unittest.TestCase):
 
     def test_trace_id_matches_our_own(self):
         trace_id = "0123456789abcdef0123456789abcdef"
-        with otel.span("GET /x", kind="server", trace_id=trace_id) as outer:
-            with otel.span("child", kind="client") as inner:
+        with otel.span("GET /x", kind="server", trace_id=trace_id):
+            with otel.span("child", kind="client"):
                 pass
         spans = {s.name: s for s in self.exporter.get_finished_spans()}
         self.assertEqual(format(spans["GET /x"].context.trace_id, "032x"), trace_id)

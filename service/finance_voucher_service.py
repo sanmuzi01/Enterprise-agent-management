@@ -5,25 +5,18 @@
 - 可见范围是该财务部门所在企业的全部部门（scopeTeamIds），写进已签名的请求路径，Java 再按它限定一次；
 - 申请人不能确认自己报销单的凭证（制单与复核分离）在 Java 里强制，这里不重复。
 """
-import asyncio
-import uuid
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlencode
 
 from sqlalchemy import text
 
-from models.enterprise_dao import is_team_member_of_team_async
-from service import enterprise_access
-from service import enterprise_hub_client as hub
-from service.exceptions import AppError, Conflict, InvalidInput, NotFound, PermissionDenied, UpstreamError
 
 READ = ["finance.voucher.read"]
 WRITE = ["finance.voucher.read", "finance.voucher.write"]
 RISK_LABELS = {"NONE": "无风险", "INFO": "有提示", "WARN": "需核对", "BLOCK": "不能入账"}
 
 
-from service.hub_gateway import call_hub as _gateway_call, scoped_path as _scoped_path, translate_hub_error as _translate_hub_error  # noqa: E402
+from service.hub_gateway import call_hub as _gateway_call, scoped_path as _scoped_path  # noqa: E402
 
 
 async def staff_scope_async(db, user_id: int, team_id: int) -> List[int]:

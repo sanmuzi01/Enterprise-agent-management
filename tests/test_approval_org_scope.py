@@ -7,10 +7,9 @@ from tests import _route_client as rc  # 先导入：测试用的异步连接不
 
 from sqlalchemy import text
 
-from models.init_db import ApprovalRequest, KnowledgeSpace, SessionLocal
+from models.init_db import KnowledgeSpace, SessionLocal
 from tests._async_helpers import run_async
 from tests.test_enterprise_access import _add_org_member, _create_org
-from utils.timeutil import utcnow
 
 _AVAILABLE, _WHY = rc.route_tests_available()
 

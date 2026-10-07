@@ -67,7 +67,7 @@ def proposal_for(kind, source):
 
 
 def fake_model(*args, **kwargs):
-    system_prompt, source = args[3], args[5]
+    source = args[5]
     kind = next(k for k, s in SOURCES.items() if s == source)
     return json.dumps(proposal_for(kind, source), ensure_ascii=False), {"total_tokens": 321}
 

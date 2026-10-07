@@ -2,7 +2,7 @@
 导入/规则/日历/分析只有人事；员工看自己的；部门负责人看本部门；认定不能认定自己的——权限在 service/attendance_service.py 里计算。"""
 import json
 from datetime import date
-from typing import Dict, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 

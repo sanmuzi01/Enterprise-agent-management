@@ -13,7 +13,7 @@ import re
 import traceback
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from models.init_db import IssueEvent, IssueOccurrence, SessionLocal, SystemIssue

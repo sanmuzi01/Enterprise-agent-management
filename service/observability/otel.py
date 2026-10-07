@@ -85,7 +85,6 @@ def init(service_name: Optional[str] = None) -> bool:
     if not endpoint:
         return False
     try:
-        from opentelemetry import trace
         from opentelemetry.exporter.otlp.proto.grpc._log_exporter import OTLPLogExporter
         from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk._logs import LoggerProvider, LoggingHandler

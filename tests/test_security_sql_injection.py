@@ -6,7 +6,6 @@
    用真实用户（普通 + 管理员）、真实 MySQL 发请求；基线（正常字符串）不是 5xx 而载荷触发 5xx、响应里泄漏数据库报错、
    或者时间盲注让请求明显变慢，都算失败。
 """
-import json
 import pathlib
 import re
 import time

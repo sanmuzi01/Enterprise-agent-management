@@ -14,13 +14,11 @@
 import asyncio
 import email
 import html
-import io
 import os
 import re
 import tempfile
-import zipfile
 from email import policy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from service.data_egress_policy import is_model_allowed
 from service.exceptions import InvalidInput, PermissionDenied

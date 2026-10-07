@@ -72,7 +72,7 @@ def check_operations(db) -> List[Dict[str, Any]]:
 
 def check_roster(db, org_id: int) -> List[Dict[str, Any]]:
     """试点范围：企业里的成员、部门、模型连接、负责人、人事成员。"""
-    from models.init_db import (Agent, AttendanceCalendar, AttendanceImport, AttendanceRule, LLMConfig, OrganizationMember, Team, TeamMember)
+    from models.init_db import (Agent, AttendanceCalendar, AttendanceRule, LLMConfig, OrganizationMember, Team, TeamMember)
     items = []
     org = db.execute(text("SELECT name FROM organizations WHERE id=:o AND status='active'"), {"o": org_id}).first()
     if org is None:

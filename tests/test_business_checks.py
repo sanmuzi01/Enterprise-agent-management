@@ -2,7 +2,7 @@
 import unittest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from service import enterprise_hub_client as hub
 from service.workflows import REGISTRY

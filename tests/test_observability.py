@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from models.init_db import SessionLocal
 from service import enterprise_hub_client as hub
-from service.exceptions import AppError, Conflict, InvalidInput, NotFound, UpstreamError
+from service.exceptions import Conflict, InvalidInput, NotFound, UpstreamError
 from service.observability import context as ctx
 from service.observability import issues
 from service.observability.error_codes import CATALOG, should_report, spec_for

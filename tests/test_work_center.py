@@ -1,13 +1,12 @@
 """统一待办、站内通知、提醒规则引擎与五条提醒规则（Java 读取用替身，数据库为真实测试库）。"""
-import json
 import unittest
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, patch
 
-from sqlalchemy import select, text, update
+from sqlalchemy import text, update
 
-from models.init_db import Notification, ReminderRun, SessionLocal, WorkItem
+from models.init_db import ReminderRun, SessionLocal
 from service import notification_center, reminders, work_item_service
 from service.exceptions import NotFound
 from service.reminders import rules

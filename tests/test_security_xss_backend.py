@@ -1,9 +1,7 @@
 """XSS 专项（后端部分）：前端渲染的防线见 scripts/check_xss_browser.py；这里守住后端能被利用的几个点——
 响应头注入（导出文件名）、用户上传的 HTML / SVG 被当成页面渲染、任何接口把用户输入当 text/html 回显。"""
-import mimetypes
 import unittest
 import urllib.parse
-import uuid
 
 from tests import _route_client as rc  # 先导入：测试用的异步连接不复用（必须在导入 models 之前）
 

@@ -6,7 +6,6 @@
 有 error 时退出码为 1；warn 是提醒，不阻止开始。
 """
 import argparse
-import os
 import pathlib
 import sys
 

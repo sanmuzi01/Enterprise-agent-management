@@ -65,6 +65,9 @@ jobs:
 
       - name: Dependency vulnerability scan (pip-audit)
         # 只忽略"当前没有可升级版本"的漏洞（每条都写明原因，定期复查——上游出新版本就摘掉对应 --ignore-vuln）。
+        # CVE-2026-85394（python-jose 3.5.0，目前没有修复版本）：只有“拿公钥当 HMAC 密钥验证、且不限定算法”时才能伪造令牌；
+        # 本项目用 HS256 + 服务端私有密钥，并且 jwt.decode 显式写了 algorithms=[ALGORITHM]（service/auth.py），不满足利用条件。
+        # 上游发布修复版本后就摘掉这条 --ignore-vuln，并升级 requirements.txt。
         # 其余漏洞（有修复版本却没升级）会让这一步失败，阻断 PR：见 requirements.txt 和 docs/testing.md「依赖漏洞扫描」。
         run: |
           pip-audit -r requirements.txt \
@@ -73,7 +76,8 @@ jobs:
             --ignore-vuln PYSEC-2026-3814 \
             --ignore-vuln PYSEC-2026-3815 \
             --ignore-vuln PYSEC-2026-3813 \
-            --ignore-vuln PYSEC-2026-1325
+            --ignore-vuln PYSEC-2026-1325 \
+            --ignore-vuln CVE-2026-85394
 
       - name: Wait for MySQL
         run: |

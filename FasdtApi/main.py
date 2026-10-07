@@ -194,7 +194,6 @@ def _error_response(request: Request, *, http_status: int, code: str, detail: st
 async def _report_issue(request: Request, *, code: str, http_status: int, exc: BaseException, message: str) -> str | None:
     """5xx 与依赖故障进问题中心（同一种故障聚合成一条）；记录失败不影响响应。"""
     from starlette.concurrency import run_in_threadpool
-    from service.observability import context as trace_context
     from service.observability.issues import record_occurrence
     from service.observability import sentry_setup
     team = request.query_params.get("team_id")

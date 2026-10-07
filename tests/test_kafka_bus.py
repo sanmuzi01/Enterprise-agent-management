@@ -5,7 +5,6 @@ import json
 import unittest
 import uuid
 from datetime import timedelta
-from types import SimpleNamespace
 
 from tests import _route_client as rc  # 先导入：测试用的异步连接不复用（必须在导入 models 之前）
 
@@ -144,7 +143,7 @@ class ConsumeLoopTest(unittest.TestCase):
         kafka_bus.publish_dead("t", json.loads(envelope(1)), "x", 3, dlq=kafka_bus.Dlq(producer=FakeProducer(fail=True)))      # 只记日志
 
     def test_the_runner_publishes_exhausted_events_to_the_dlq_only_in_kafka_mode(self):
-        from unittest.mock import AsyncMock, patch
+        from unittest.mock import patch
         from service.events import runner
         c = Consumer(name="t", topics=["automation.job.v1"], handler=None, max_attempts=3)
         event = json.loads(envelope(1))
@@ -244,11 +243,11 @@ class RetrySweepTest(unittest.TestCase):
         return {e["event_id"] for e in outbox.fetch_deliverable("sweeper", ["automation.job.v1"], 100, retry_only) if e["event_id"] in self.ids}
 
     def test_database_mode_still_takes_every_unprocessed_event(self):
-        fresh, due, waiting = self.publish(), self.publish(attempts=1, in_seconds=-60), self.publish(attempts=1, in_seconds=600)
+        fresh, due, _waiting = self.publish(), self.publish(attempts=1, in_seconds=-60), self.publish(attempts=1, in_seconds=600)
         self.assertEqual(self.fetch(retry_only=False), {fresh, due})
 
     def test_kafka_mode_only_sweeps_due_retries_and_expired_leases(self):
-        fresh, due, waiting, lease_expired = self.publish(), self.publish(attempts=2, in_seconds=-60), self.publish(attempts=1, in_seconds=600), self.publish(attempts=0, in_seconds=-5)
+        _fresh, due, _waiting, lease_expired = self.publish(), self.publish(attempts=2, in_seconds=-60), self.publish(attempts=1, in_seconds=600), self.publish(attempts=0, in_seconds=-5)
         self.assertEqual(self.fetch(retry_only=True), {due, lease_expired})           # 没送到的 fresh 归 Kafka，退避中的 waiting 还没到时间
 
 

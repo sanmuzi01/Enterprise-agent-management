@@ -15,7 +15,7 @@ from typing import Any, Dict, List
 from sqlalchemy import case, func, select, update
 
 from models.init_db import AutomationWork
-from service.automation_work_service import authorize, encode, payload, process_work, recover_interrupted
+from service.automation_work_service import authorize, payload, process_work, recover_interrupted
 from service.data_egress_policy import is_model_allowed
 from service.exceptions import Conflict, InvalidInput, NotFound, PermissionDenied
 from service.llm.llm_config_service import async_get_api_config

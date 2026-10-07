@@ -10,7 +10,7 @@
 """
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from tests import _route_client as rc  # 先导入：测试用的异步连接不复用（必须在导入 models 之前）
 

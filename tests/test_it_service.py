@@ -170,7 +170,7 @@ class ItServiceAccessTest(unittest.TestCase):
         for patch_body in ({"category": "WHATEVER"}, {"priority": "SUPER"}, {"title": ""}, {"description": "短"}):
             response = self.post("/enterprise/it/tickets", {**base, **patch_body}, self.employee)
             self.assertEqual(response.status_code, 422, (patch_body, response.text))
-        self.assertEqual(self.post(f"/enterprise/it/tickets/5/reopen", {"reason": "x"}, self.employee).status_code, 422)
+        self.assertEqual(self.post("/enterprise/it/tickets/5/reopen", {"reason": "x"}, self.employee).status_code, 422)
         self.assertFalse(self.calls)
 
     def test_own_ticket_actions_use_write_scope_and_idempotency_key(self):

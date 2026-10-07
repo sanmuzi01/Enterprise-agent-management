@@ -266,8 +266,8 @@ def seed_responsibility(call, t, users):
         return {"title": title, "responsible_user_id": who, "reviewer_user_id": owner, "due_date": day(due), "deliverable": deliverable,
                 "acceptance_criteria": criteria, "priority": "NORMAL", "evidence": evidence, **extra}
 
-    review_text = (f"9月新品发布复盘会纪要：demo_emp负责整理发布复盘报告，下周前提交复盘报告，验收标准是包含数据与改进项。"
-                   f"demo_newbie负责汇总客户反馈，下周前提交反馈汇总表，验收标准是覆盖全部客户。demo_emp负责更新销售话术，下周前提交话术文档。")
+    review_text = ("9月新品发布复盘会纪要：demo_emp负责整理发布复盘报告，下周前提交复盘报告，验收标准是包含数据与改进项。"
+                   "demo_newbie负责汇总客户反馈，下周前提交反馈汇总表，验收标准是覆盖全部客户。demo_emp负责更新销售话术，下周前提交话术文档。")
     done_plan = call("post", "/enterprise/responsibility/plans", "demo_head", team_id=t["sales"], title="9月新品发布复盘会", source_type="MEETING",
                      source_text=review_text, summary="复盘新品发布，三项改进事项已分派", tasks=[
         task("整理发布复盘报告", emp, 5, "复盘报告", "包含数据与改进项", "demo_emp负责整理发布复盘报告，下周前提交复盘报告，验收标准是包含数据与改进项"),

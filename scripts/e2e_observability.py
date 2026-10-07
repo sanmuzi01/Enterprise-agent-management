@@ -211,7 +211,6 @@ def main() -> int:
         check.ok(response.status_code == 200, f"带 trace_id 的真实请求成功（{response.status_code}）")
         check.ok(response.headers.get("X-Trace-ID") == t1, "响应头 X-Trace-ID 就是我们传入的 trace_id")
         requests.get(f"{API}/health", timeout=5)
-        from models.init_db import OutboxEvent
         from service.events import outbox
         outbox.TOPICS.add("platform.issue.v1")
         event_ids.append(outbox.emit(db, topic="platform.issue.v1", event_type="issue.created", aggregate_type="e2e_observability", aggregate_id=SUFFIX,
@@ -302,7 +301,7 @@ def main() -> int:
         os.environ["SENTRY_DSN"] = "http://publickey@127.0.0.1:1/1"
         check.ok(sentry_setup.init() is True, "配置了不可达的 DSN：初始化成功（不会因为 Sentry 起不来）")
         began = time.perf_counter()
-        results = [sentry_setup.capture(RuntimeError(f"password=hunter2 {i}"), trace_id=t1, operation="e2e", error_code="E2E") for i in range(50)]
+        [sentry_setup.capture(RuntimeError(f"password=hunter2 {i}"), trace_id=t1, operation="e2e", error_code="E2E") for i in range(50)]
         check.ok(time.perf_counter() - began < 3, f"地址不可达时连续上报 50 次不卡业务（{time.perf_counter() - began:.2f}s，未抛异常）")
         import sentry_sdk
         flushed = time.perf_counter()

@@ -111,7 +111,6 @@ async def report(db, days: int = 30, team_id: Optional[int] = None) -> Dict[str,
     from service import automation_metrics
     from service.observability import agent_runs, issues
     from starlette.concurrency import run_in_threadpool
-    from models.init_db import SessionLocal
     if not 1 <= days <= 365:
         raise InvalidInput("统计天数应在 1 到 365 之间")
     if team_id is not None and (await db.execute(select(Team.id).where(Team.id == team_id))).scalar() is None:

@@ -1,6 +1,6 @@
 """统一待办：提醒规则、AI 工作成果后续事项、手工待办都落在 work_item 表里。"""
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, Optional
 
 from sqlalchemy import case, func, select, update
 from sqlalchemy.exc import IntegrityError

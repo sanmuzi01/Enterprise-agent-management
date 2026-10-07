@@ -196,7 +196,7 @@ def main():
         applied = post(f"/cases/{off['id']}/apply-effect", "admin", "sales")
         check.ok(applied.status_code == 200 and not applied.json()["effectPending"],
                  "企业管理员落实：停用员工账号" if applied.status_code == 200 else f"落实失败 {applied.status_code} {applied.text[:300]}")
-        check.status(client.get(f"/enterprise/it/tickets/mine", headers=h("emp")), 200, "（个人数据接口不依赖部门）")
+        check.status(client.get("/enterprise/it/tickets/mine", headers=h("emp")), 200, "（个人数据接口不依赖部门）")
         check.status(get("/cases", "emp", "sales", view="mine"), 403, "离职员工立即失去部门工作台权限")
 
         print("== 调岗：落实后部门归属改变 ==")

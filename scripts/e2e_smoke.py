@@ -251,6 +251,9 @@ def _run_flows(base_url: str, backend_url: str, args, normal_name: str, admin_na
             "system_prompt": "回答前先说“已收到需求”。", "tool_names": ["word_count"], "is_public": 1,
         })
         skill_id = skill["data"]["id"]
+        # 公开 Skill 要“已发布”才会出现在普通用户的列表里（draft 即使 is_public=1 也看不到），所以建完先发布
+        current = admin_api.get(f"/skill/{skill_id}")["data"]
+        admin_api.put(f"/skill/{skill_id}", json={"lifecycle_status": "published", "expected_row_version": current["row_version"]})
         report("准备知识库空间与公开 Skill", PASS, f"space_id={space_id}, skill_id={skill_id}")
     except Exception as e:  # noqa: BLE001
         report("准备知识库空间与公开 Skill", FAIL, str(e))

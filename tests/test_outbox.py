@@ -13,7 +13,7 @@ from sqlalchemy import text
 from models.init_db import SessionLocal
 from service.events import handlers as _handlers  # noqa: F401  —— 注册生产消费者
 from service.events import outbox, runner
-from service.events.runner import Consumer, TryAgain
+from service.events.runner import Consumer
 from service.exceptions import Conflict, InvalidInput, NotFound
 from service.observability import issues
 from tests._async_helpers import run_async

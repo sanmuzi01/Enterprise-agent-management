@@ -5,6 +5,7 @@ from models.agent_dao import get_agent_by_id, list_agents_by_user, create_agent,
 from models.user_dao import update_selected_agent
 from models.init_db import Agent
 from sqlalchemy.exc import SQLAlchemyError
+from service.prompt_guard import UNTRUSTED_RULE
 from utils.logger_handler import get_logger
 from fastapi import HTTPException, status
 logger = get_logger("agent_service")

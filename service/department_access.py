@@ -8,7 +8,7 @@
 """
 from typing import Dict, Optional, Set
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 
 from models.init_db import Team
 from service.exceptions import PermissionDenied
