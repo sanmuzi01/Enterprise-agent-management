@@ -65,7 +65,7 @@ class GLMClient(BaseLLM):
             logger.info(f"[GLM] 请求: model={self.model_name}, messages={len(messages)}条, temp={temperature}")
             response = request_with_retry(
                 service_name=f"llm:{self.model_name}",
-                sender=lambda timeout: requests.post(self.api_url, headers=headers, json=payload, timeout=timeout),
+                sender=lambda timeout: requests.post(self.api_url, headers=headers, json=payload, timeout=timeout, allow_redirects=False),
                 timeout_env="LLM_REQUEST_TIMEOUT_SECONDS",
                 default_timeout=60,
             )
@@ -103,7 +103,7 @@ class GLMClient(BaseLLM):
             logger.info(f"[GLM] 流式请求: model={self.model_name}")
             with stream_request_with_circuit(
                 service_name=f"llm_stream:{self.model_name}",
-                sender=lambda timeout: requests.post(self.api_url, headers=headers, json=payload, stream=True, timeout=timeout),
+                sender=lambda timeout: requests.post(self.api_url, headers=headers, json=payload, stream=True, timeout=timeout, allow_redirects=False),
                 timeout_env="LLM_STREAM_TIMEOUT_SECONDS",
                 default_timeout=60,
             ) as response:
