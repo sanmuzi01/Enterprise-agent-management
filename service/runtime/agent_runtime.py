@@ -138,11 +138,14 @@ def _reassemble_after_policy_filter(allowed_hits, mode: str):
     return _assemble_agent_context(allowed_hits)
 
 
+from service.prompt_guard import UNTRUSTED_RULE  # noqa: E402
+
+
 def _compose_kb_prompt(system_prompt: str, agent, rag: Dict[str, Any]) -> str:
     """把检索上下文 + 引用/拒答规则拼进 system prompt。"""
     context = rag.get("context") or ""
     if context:
-        rules = ["若参考资料不足以回答问题，请如实说明，不要编造。"]
+        rules = ["若参考资料不足以回答问题，请如实说明，不要编造。", UNTRUSTED_RULE]
         if getattr(agent, "kb_force_citation", 1):
             rules.append("引用规则：回答中每处引用了下面资料的内容，都要在句末用【来源N】标注（N 为资料编号）。")
         return (

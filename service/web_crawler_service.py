@@ -356,7 +356,9 @@ def _extract_jsonld_text(raw_text: str) -> str:
     )
     parts: List[str] = []
 
-    def collect(value):
+    def collect(value, depth=0):
+        if depth > 20:                                     # 正常的 JSON-LD 嵌套很浅；更深的当作恶意构造，直接忽略
+            return
         if isinstance(value, dict):
             for key in ("headline", "name", "description", "articleBody", "text"):
                 item = value.get(key)
@@ -365,16 +367,18 @@ def _extract_jsonld_text(raw_text: str) -> str:
             graph = value.get("@graph")
             if isinstance(graph, list):
                 for child in graph:
-                    collect(child)
+                    collect(child, depth + 1)
         elif isinstance(value, list):
             for child in value:
-                collect(child)
+                collect(child, depth + 1)
 
     for match in matches:
         payload = html.unescape(match).strip()
+        if len(payload) > 500_000:
+            continue
         try:
             collect(json.loads(payload))
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             continue
     return _normalize_text("\n\n".join(parts))
 

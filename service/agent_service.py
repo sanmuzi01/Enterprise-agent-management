@@ -512,7 +512,7 @@ def dry_run_agent(db, user, agent_id: int, user_message: str, conversation_id: i
                 full_prompt = (
                     f"{full_prompt}\n\n"
                     f"=== 知识库参考资料（按编号）===\n{rag_context}\n=== 参考资料结束 ===\n"
-                    f"若参考资料不足以回答，请如实说明，不要编造。"
+                    f"若参考资料不足以回答，请如实说明，不要编造。{UNTRUSTED_RULE}"
                 )
         except Exception as e:
             rag["ok"] = False

@@ -14,6 +14,9 @@ COMMON_RULES = (
 )
 
 
+MAX_ANSWER_CHARS = 400_000     # 模型输出的上限：正常的结构化结果远小于这个数
+
+
 def validate_proposal(kind, value, source, *, for_save=False):
     workflow = get_workflow(kind)
     try:
@@ -33,9 +36,11 @@ def parse_answer(kind, answer, source):
     raw = answer.strip()
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    if len(raw) > MAX_ANSWER_CHARS:
+        raise InvalidInput("模型返回的内容过长，已拒绝；请缩短材料后重新整理")
     try:
         value = json.loads(raw)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, RecursionError):      # 深度嵌套的 JSON 会让解析器 RecursionError，必须当成“结果不可用”而不是 500
         raise InvalidInput("模型未返回可用的结构化结果，请重新整理") from None
     return validate_proposal(kind, value, source)
 

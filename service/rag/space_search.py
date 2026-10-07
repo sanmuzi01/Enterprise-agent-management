@@ -457,6 +457,9 @@ def _maybe_rerank(query, merged, top_k, use_rerank, rag_service):
     return out or merged
 
 
+from service.prompt_guard import neutralize  # noqa: E402
+
+
 def _assemble(hits: List[Dict[str, Any]]):
     """按去重后的文档编号组装 context（【来源N】）+ citations。"""
     order: List[int] = []
@@ -470,10 +473,10 @@ def _assemble(hits: List[Dict[str, Any]]):
     for h in hits:
         idx = index_of[h["knowledge_id"]]
         src = h["source"]
-        head = f"【来源{idx}】{src['space_name']} / {src['file_name']}"
+        head = f"【来源{idx}】{neutralize(src['space_name'])} / {neutralize(src['file_name'])}"
         if src.get("version"):
-            head += f"（{src['version']}）"
-        blocks.append(f"{head}\n{h['content']}")
+            head += f"（{neutralize(src['version'])}）"
+        blocks.append(f"{head}\n{neutralize(h['content'])}")
         h["citation_index"] = idx
 
     citations = []

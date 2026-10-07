@@ -128,6 +128,9 @@ def _widget_shape(hits: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+from service.prompt_guard import neutralize  # noqa: E402
+
+
 def _assemble_agent_context(hits):
     """agent 私有库：按文档去重编号，产出 `【来源N】` context + citations（带 snippet）。
 
@@ -148,7 +151,7 @@ def _assemble_agent_context(hits):
             continue
         i = idx_of[kid]
         fn = h.get("file_name") or f"文档{kid}"
-        blocks.append(f"【来源{i}】{fn}\n{h.get('content', '')}")
+        blocks.append(f"【来源{i}】{neutralize(fn)}\n{neutralize(h.get('content', ''))}")
         h["citation_index"] = i
 
     citations = []
