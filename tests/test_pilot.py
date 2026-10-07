@@ -8,7 +8,7 @@ from tests import _route_client as rc  # 先导入：测试用的异步连接不
 
 from sqlalchemy import text
 
-from models.init_db import AutomationWork, SessionLocal
+from models.init_db import AttendanceAnomaly, AutomationWork, SessionLocal
 from service import pilot_service
 from tests.test_enterprise_access import _add_org_member, _add_team_member, _create_org, _create_team
 from utils.timeutil import utcnow
@@ -35,7 +35,7 @@ class PilotTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         rc.cleanup()
-        for table in ("pilot_time_sample", "work_feedback", "automation_work"):
+        for table in ("pilot_time_sample", "work_feedback", "automation_work", "attendance_anomaly"):
             cls.db.execute(text(f"DELETE FROM {table} WHERE team_id=:t"), {"t": cls.team})
         cls.db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": cls.team})
         cls.db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": cls.team})
@@ -46,7 +46,7 @@ class PilotTest(unittest.TestCase):
 
     def setUp(self):
         self.db.commit()
-        for table in ("pilot_time_sample", "work_feedback", "automation_work"):
+        for table in ("pilot_time_sample", "work_feedback", "automation_work", "attendance_anomaly"):
             self.db.execute(text(f"DELETE FROM {table} WHERE team_id=:t"), {"t": self.team})
         self.db.commit()
 
@@ -193,6 +193,43 @@ class PilotTest(unittest.TestCase):
         with rc.admin_env(self.admin["name"]):
             self.assertEqual(self.client.get("/admin/pilot-report?team_id=99999999", headers=self.admin["headers"]).status_code, 404)
             self.assertEqual(self.client.get("/admin/pilot-report?days=0", headers=self.admin["headers"]).status_code, 422)
+
+    # ---- 考勤异常处理流程 ----
+
+    def anomaly(self, kind, status, explained_after_h=None, decided_after_h=None, day=1):
+        created = utcnow() - timedelta(days=2)
+        row = AttendanceAnomaly(organization_id=self.org, team_id=self.team, user_id=self.users[0]["id"], work_date=created.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=day),
+                                type=kind, severity="medium", detail_json="{}", status=status, created_at=created)
+        if explained_after_h is not None:
+            row.explanation, row.explained_at = "堵车", created + timedelta(hours=explained_after_h)
+        if decided_after_h is not None:
+            row.decided_by, row.decision_note, row.decided_at = self.users[1]["id"], "核实", row.explained_at + timedelta(hours=decided_after_h)
+        self.db.add(row)
+        self.db.commit()
+
+    def test_report_summarises_the_attendance_process_without_names(self):
+        self.anomaly("late", "open", day=1)
+        self.anomaly("absent", "explained", explained_after_h=2, day=2)
+        self.anomaly("early_leave", "confirmed", explained_after_h=4, decided_after_h=6, day=3)
+        self.anomaly("missing_out", "cleared", day=4)
+        with rc.admin_env(self.admin["name"]):
+            data = self.client.get(f"/admin/pilot-report?days=7&team_id={self.team}", headers=self.admin["headers"]).json()
+        a = data["attendance"]
+        self.assertEqual((a["total"], a["cleared_by_system"], a["needs_handling"]), (4, 1, 3))
+        self.assertEqual((a["explained"], a["decided"], a["confirmed"], a["dismissed"]), (2, 1, 1, 0))
+        self.assertEqual((a["explained_rate"], a["decided_rate"]), (0.667, 0.333))
+        self.assertEqual((a["median_explain_hours"], a["median_decide_hours"]), (3.0, 6.0))
+        self.assertTrue(any("考勤异常只有 3 条" in c for c in data["caveats"]))
+        with rc.admin_env(self.admin["name"]):
+            md = self.client.get(f"/admin/pilot-report?days=7&team_id={self.team}&format=md", headers=self.admin["headers"]).text
+        self.assertIn("考勤异常处理流程", md)
+        for user in self.users:
+            self.assertNotIn(user["name"], md)
+
+    def test_report_without_attendance_data_has_no_attendance_section(self):
+        with rc.admin_env(self.admin["name"]):
+            md = self.client.get(f"/admin/pilot-report?days=7&team_id={self.team}&format=md", headers=self.admin["headers"]).text
+        self.assertNotIn("考勤异常处理流程", md)
 
 
 if __name__ == "__main__":

@@ -227,6 +227,9 @@ AUTOMATION_FILES = [
     "tests/test_client_errors.py",
     "migrations/versions/20261007_0006_attendance.py",
     "scripts/e2e_attendance.py",
+    "scripts/pilot_preflight.py",
+    "service/pilot_preflight.py",
+    "tests/test_pilot_preflight.py",
     "enterprise-business-hub/src/test/java/com/enterprisehub/oa/LeaveApprovedEndpointIntegrationTest.java",
     # 演示包装
     "scripts/demo.py",
