@@ -39,7 +39,7 @@ from FasdtApi.hr_cases import router as hr_cases_router
 from FasdtApi.orchestration import router as orchestration_router
 from FasdtApi.responsibility import router as responsibility_router
 from FasdtApi.attendance import router as attendance_router
-from FasdtApi.issues import admin_router as issues_admin_router, dept_router as issues_dept_router, events_router
+from FasdtApi.issues import admin_router as issues_admin_router, client_router as client_errors_router, dept_router as issues_dept_router, events_router
 from FasdtApi.automation_work import router as automation_work_router
 from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
@@ -138,6 +138,7 @@ app.include_router(responsibility_router)
 app.include_router(attendance_router)
 app.include_router(issues_admin_router)
 app.include_router(issues_dept_router)
+app.include_router(client_errors_router)
 app.include_router(events_router)
 app.include_router(automation_work_router)
 app.include_router(work_center_router)

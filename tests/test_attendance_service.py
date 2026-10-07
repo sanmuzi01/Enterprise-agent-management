@@ -129,6 +129,8 @@ class AttendanceServiceTest(unittest.TestCase):
         self.assertEqual(body["format"], "punch_rows")
         self.assertEqual(sorted(u["name"] for u in body["unmatched"]), ["小王", "陌生人"])
         self.assertEqual(body["matched_people"], 4)
+        self.assertEqual(body["no_records_total"], 2)                                 # other_head / other_emp 在这份文件里没有任何记录
+        self.assertEqual(sorted(body["no_records"]), sorted([self.other_head["name"], self.other_emp["name"]]))
         self.assertEqual(body["new_punches"], body["punches"])
 
     def test_alias_is_saved_and_reused_next_time(self):
@@ -187,6 +189,12 @@ class AttendanceServiceTest(unittest.TestCase):
         response = self.get(self.hr, "/anomalies", view="team")
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()
+
+    def test_people_without_any_punch_are_listed_not_judged_absent(self):
+        result = self.prepare()
+        self.assertEqual(sorted(result["uncovered"]), sorted([self.other_head["name"], self.other_emp["name"]]))
+        self.assertEqual(result["uncovered_total"], 2)
+        self.assertEqual([a for a in self.anomalies_all() if a["user_id"] in (self.other_head["id"], self.other_emp["id"])], [])
 
     def test_leave_is_requested_from_the_business_system_for_the_whole_company(self):
         self.prepare()

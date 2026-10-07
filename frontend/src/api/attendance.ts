@@ -34,6 +34,8 @@ export interface ImportResult {
   rows: number
   matched_people: number
   matched_rows: number
+  no_records: string[]
+  no_records_total: number
   punches: number
   new_punches: number
   duplicate_punches: number
@@ -45,7 +47,7 @@ export interface ImportResult {
 export interface ImportRecord { id: number; file_name: string; format: string; rows: number; punches: number; new_punches: number; unmatched: number; period: [string | null, string | null]; created_at: string }
 export interface RuleItem { team_id: number | null; work_start: string; work_end: string; grace_minutes: number }
 export interface Rules { default: RuleItem; teams: RuleItem[]; org_teams: { id: number; name: string }[] }
-export interface AnalyzeResult { from: string; to: string; people: number; days: number; created: number; updated: number; cleared: number; total_anomalies: number }
+export interface AnalyzeResult { from: string; to: string; people: number; days: number; created: number; updated: number; cleared: number; total_anomalies: number; uncovered: string[]; uncovered_total: number }
 export interface Summary { from: string; to: string; by_type: Record<string, number>; by_status: Record<string, number>; people_affected: number; unexplained_over_2_days: number; waiting_decision: number; narrative: string }
 
 const base = '/enterprise/attendance'

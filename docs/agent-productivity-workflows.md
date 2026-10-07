@@ -208,15 +208,16 @@
 - **统一错误结构**：`{detail, code, message, trace_id, retryable, retry_after?, suggestion, issue_no?}`（`detail` 保持兼容）。错误码目录在 `service/observability/error_codes.py`：预期的业务异常（校验、权限、不存在、冲突、限流）只提示用户，**不进问题中心也不进 Sentry**；依赖不可用、代码缺陷、任务最终失败才进。未处理的异常在中间件里就地转换，用户只看到 trace_id 和问题编号，没有堆栈和内部地址；同一次故障只打印一份堆栈。
 - **Java 业务服务不可用**：连接失败、超时、熔断、持续 5xx 统一成 `JAVA_SERVICE_UNAVAILABLE`（503，可重试，建议等待时间），一行说明，不带底层堆栈；重试用尽的 409/429 等保留真实状态码。熔断**只在状态变化时**产生事件：打开时登记一次依赖故障，恢复时在同一个问题上写“依赖恢复”，不会每个失败请求都告警。
 - **脱敏**（`service/observability/redact.py`）：日志、Sentry、问题中心落地前统一过滤——Authorization/Cookie/密码/令牌/手机号/身份证/文档正文/模型提示词等字段整个替换，字符串里的 Bearer、`sk-…`、JWT、手机号、`password=…` 被遮盖，异常堆栈里的消息同样处理。
-- **Sentry（可选）**：设置 `SENTRY_DSN` 才启用，未设置时是空操作。只上报该上报的故障，上报前去掉请求头/Cookie/请求体/用户信息，带 environment、release、service、trace_id、operation、error_code、department_id 标签；`sentry_event_id` 回写到问题上。Vue 与 Java 端的接入尚未做。
+- **Sentry（可选）**：设置 `SENTRY_DSN` 才启用，未设置时是空操作。只上报该上报的故障，上报前去掉请求头/Cookie/请求体/用户信息，带 environment、release、service、trace_id、operation、error_code、department_id 标签；`sentry_event_id` 回写到问题上。Vue 与 Java 端不再引入第三方 SDK，改为把页面错误直接报到问题中心（下一条）；Java 的故障本来就经 FastAPI 的依赖错误归类进入问题中心。
 - **问题中心**（管理后台“问题中心”，`/admin/issues`；部门负责人 `/enterprise/issues?team_id=` 只读本部门、不含安全类、不含技术细节）：同一种故障按 fingerprint（服务 + 错误码 + 异常类型 + 规范化的调用栈 + 操作 + 依赖；trace_id、用户、请求内容、行号不参与）只有一条，累计发生次数，只保留最近 50 次发生。状态 `OPEN → ACKNOWLEDGED → INVESTIGATING → MITIGATED → RESOLVED`，已解决的问题再次出现自动变 `REGRESSED` 并清除验收。**关闭有门槛**：必须有负责人、根因、处理说明、修复版本；验收必须是另一位管理员。每步写入处理记录（只增不改），可跳转到 Grafana 链路 / Sentry / 日志（配置 `GRAFANA_URL`、`SENTRY_ISSUE_URL`、`LOG_SEARCH_URL` 后出现）。指标：未关闭数、复发数、平均确认时间（MTTA）、平均恢复时间（MTTR）。
+- **页面错误上报**（`POST /client-errors`，`frontend/src/utils/errorReporter.ts` + `service/observability/client_errors.py`）：浏览器里的组件渲染错误、未捕获异常、未处理的 Promise 拒绝报到问题中心，错误码 `FRONTEND_ERROR`（服务 `web-frontend`），和后端故障一样按 fingerprint 聚合。同一处代码出错，换了打包哈希、行列号、页面上的数字（`/department/12`）都不会拆成新问题；不带用户身份和页面内容，消息与调用栈先脱敏；浏览器扩展注入的脚本、跨域 `Script error.`、`ResizeObserver loop`、动态模块加载失败这类噪声直接丢弃；请求失败（axios 错误）已由拦截器提示并由后端记录，不重复报；同一错误一次页面打开只报一次、最多 5 个；匿名可报（登录页出错也要看得到），按 IP（`CLIENT_ERROR_IP_LIMIT`，默认 30 次/分）和全局（600 次/分）限流，字段有长度上限。测试 `tests/test_client_errors.py`（11 项）。
 - **其他**：`scripts/demo.py` 的 `pid_alive` 改为按列精确比对 PID（原来 99 会被误判成 1999 存活）；日志输出被重定向到文件/管道时统一 UTF-8。
 
 故障演练：`scripts\drill_java_down.py`（前提 `scripts\demo.py start`）——停掉真实的 Java 进程，验证统一错误、只产生一个问题、熔断只告警一次、重启后恢复并写“依赖恢复”；已通过。
 
 测试：`tests/test_observability.py`（34 项：trace 传播、脱敏、日志、错误码目录、fingerprint 稳定性、100 次发生只一个问题、状态机门槛与验收分离、复发、统一错误契约、依赖归类、熔断只告警一次、管理员/部门负责人访问边界、Sentry 清洗）。
 
-**尚未做（后续阶段）**：Vue 与 Java 的 Sentry 接入和前端异常上报；OpenTelemetry SDK/Collector 与 Loki、Tempo、云日志的部署配置；真实 Kafka 联调；Agent 执行记录（AgentRun）纳入问题追踪；更多故障演练（停 Kafka、数据库死锁）。发件箱/收件箱/死信与批量任务的崩溃恢复已完成，见下一节。这些依赖 Docker 里的 Kafka / Loki / Tempo 等基础设施，需要先启动 Docker 才能真实验证。
+**尚未做（后续阶段）**：OpenTelemetry SDK/Collector 与 Loki、Tempo、云日志的部署配置；真实 Kafka 联调；Agent 执行记录（AgentRun）纳入问题追踪；更多故障演练（停 Kafka、数据库死锁）。发件箱/收件箱/死信与批量任务的崩溃恢复已完成，见下一节。这些依赖 Docker 里的 Kafka / Loki / Tempo 等基础设施，需要先启动 Docker 才能真实验证。
 
 ## 可靠事件（发件箱 / 收件箱 / 重试 / 死信）与批量整理的崩溃恢复
 
@@ -300,7 +301,7 @@
 - **汇总叙述只陈述事实**：多少条、哪几类、多少超过 2 天没说明、多少在等认定；不点名、不评价、不推测绩效。
 - **Agent 工具**（只读）：`get_my_attendance_anomalies`（员工查自己的）、`get_attendance_summary`（人事 / 负责人查数量汇总，不含人名）。**刻意没有**导入、分析、改规则、写说明、认定的工具——认定会影响员工，必须由人在工作台里完成。
 
-限制（有意不做）：存储在 Python 侧数据库（正式业务数据通常放 Java 业务系统，后续可迁）；整份文件里一条打卡都没有的员工不判旷工（可能是文件没导全，不是真没来）；不建模半天假、调休余额、排班轮班、外勤打卡地点；打卡时间按导出文件里的本地时间（北京时间）原样使用；上下班规则按部门而不是按人。
+限制（有意不做）：存储在 Python 侧数据库（正式业务数据通常放 Java 业务系统，后续可迁）；整份文件里一条打卡都没有的员工不判旷工（可能是文件没导全，不是真没来），导入结果和分析结果里会单独列出这些人让人事核对；不建模半天假（业务系统的请假单只有起止日期，按整天算）、调休余额、排班轮班、外勤打卡地点；打卡时间按导出文件里的本地时间（北京时间）原样使用；上下班规则按部门而不是按人。
 
 测试：`tests/test_attendance_parsing.py`（23 项：多种导出格式与规则）、`tests/test_attendance_service.py`（真实数据库与路由，业务系统请假为替身）、`tests/test_attendance_reminders.py`、`tests/test_attendance_tools.py`；Java `LeaveApprovedEndpointIntegrationTest`；`scripts/e2e_attendance.py`（真实 Java + MySQL，真实请假审批后再分析）。
 

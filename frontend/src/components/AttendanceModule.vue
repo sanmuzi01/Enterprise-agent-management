@@ -84,6 +84,8 @@
             </ul>
             <button class="mt-2 rounded border border-indigo-200 px-3 py-1 text-indigo-700 disabled:text-slate-300" :disabled="busy || !Object.values(mapping).some(Boolean)" @click="upload" data-testid="att-reupload">按所选对应重新导入</button>
           </div>
+          <details v-if="imported.no_records_total" class="mt-2" data-testid="att-no-records"><summary class="cursor-pointer text-slate-500">{{ imported.no_records_total }} 位企业成员在这份文件里没有任何记录（可能没导全，或本来就不打卡）</summary>
+            <p class="mt-1">{{ imported.no_records.join('、') }}<span v-if="imported.no_records_total > imported.no_records.length"> 等</span></p></details>
           <details v-if="imported.skipped_total" class="mt-2"><summary class="cursor-pointer text-amber-700">{{ imported.skipped_total }} 行没有导入</summary>
             <ul class="mt-1 list-disc pl-5"><li v-for="s in imported.skipped" :key="s.row">第 {{ s.row }} 行：{{ s.reason }}</li></ul></details>
         </div>
@@ -97,6 +99,7 @@
           <button class="rounded bg-indigo-600 px-3 py-1 text-white disabled:bg-slate-300" :disabled="busy" @click="runAnalyze" data-testid="att-analyze">开始分析</button>
         </div>
         <p v-if="analysis" class="mt-2 text-xs text-slate-700" data-testid="att-analysis-result">{{ analysis.from }} 至 {{ analysis.to }}：{{ analysis.people }} 人 {{ analysis.days }} 天，共 {{ analysis.total_anomalies }} 条异常（新增 {{ analysis.created }}，更新 {{ analysis.updated }}，消除 {{ analysis.cleared }}）。</p>
+        <p v-if="analysis?.uncovered_total" class="mt-1 text-xs text-amber-700" data-testid="att-uncovered">{{ analysis.uncovered_total }} 位成员在这个区间内一条打卡都没有，未做判断（可能是文件没导全）：{{ analysis.uncovered.join('、') }}<span v-if="analysis.uncovered_total > analysis.uncovered.length"> 等</span></p>
       </div>
       <div v-if="imports.length">
         <h3 class="mb-1 text-xs font-medium text-slate-500">导入记录</h3>

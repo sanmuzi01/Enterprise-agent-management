@@ -46,6 +46,8 @@ _SPECS = [
               issue=True, severity="high", category="task"),
     ErrorSpec("TASK_FAILED", "后台任务最终失败", "请在任务列表里查看原因并重试", 500, True, None,
               issue=True, severity="medium", category="task"),
+    ErrorSpec("FRONTEND_ERROR", "页面出现错误", "请刷新页面重试；如果持续出现，请把问题编号告诉管理员", 500, False, None,
+              issue=True, severity="medium", category="code"),
     ErrorSpec("SECURITY_ANOMALY", "检测到异常的访问行为", "如非本人操作请联系管理员", 403,
               issue=True, severity="high", category="security"),
     ErrorSpec("INTERNAL_ERROR", "系统出了点问题", "请稍后重试；如果持续出现，请把问题编号告诉管理员", 500, True, 10,

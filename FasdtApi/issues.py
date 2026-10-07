@@ -1,7 +1,7 @@
 """问题中心接口。管理员：全部问题的查看与处理；部门负责人：只读本部门的问题（安全类问题只给管理员）。"""
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
@@ -10,11 +10,37 @@ from models.enterprise_dao import is_team_admin_of_team_async
 from models.init_db import SessionLocal, User
 from service import audit_service
 from service.dependencies import get_current_admin_user_async, get_current_user_async
-from service.exceptions import NotFound, PermissionDenied
-from service.observability import issues as svc
+from service.exceptions import NotFound, PermissionDenied, RateLimited
+from service.observability import client_errors, issues as svc
+from service.observability.context import current_trace_id
+from utils.rate_limit import LimitExceeded, require_limit
 
 admin_router = APIRouter(prefix="/admin/issues", tags=["问题中心（管理员）"])
 dept_router = APIRouter(prefix="/enterprise/issues", tags=["问题中心（部门）"])
+client_router = APIRouter(prefix="/client-errors", tags=["前端错误上报"])
+
+
+class ClientErrorBody(BaseModel):
+    name: str = Field(default="Error", max_length=60)
+    message: str = Field(min_length=1, max_length=500)
+    stack: str = Field(default="", max_length=4000)
+    route: str = Field(default="", max_length=300)
+    source: str = Field(default="", max_length=60)
+
+
+@client_router.post("", status_code=202)
+async def report_client_error(body: ClientErrorBody, request: Request):
+    """前端把页面脚本错误报到问题中心（匿名可报，按 IP 和全局限流；不记录用户身份）。"""
+    ip = request.client.host if request.client else "unknown"
+    try:
+        require_limit(f"client_error:ip:{ip}", "CLIENT_ERROR_IP_LIMIT", 30, "CLIENT_ERROR_WINDOW_SECONDS", 60, "页面错误上报")
+        require_limit("client_error:all", "CLIENT_ERROR_GLOBAL_LIMIT", 600, "CLIENT_ERROR_WINDOW_SECONDS", 60, "页面错误上报")
+    except LimitExceeded:
+        raise RateLimited("页面错误上报过于频繁") from None
+    outcome = await run_in_threadpool(lambda: client_errors.report(
+        name=body.name, message=body.message, stack=body.stack, route=body.route, source=body.source,
+        user_agent=request.headers.get("user-agent", ""), trace_id=current_trace_id()))
+    return {"ok": True, "ignored": bool(outcome and outcome.get("ignored"))}
 
 
 class ActionBody(BaseModel):

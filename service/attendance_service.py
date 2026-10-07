@@ -136,7 +136,8 @@ async def import_file(db, user_id: int, team_id: int, file_name: str, content: b
                                      detail={"format": parsed["format"], "rows": parsed["row_count"], "new_punches": new_count})
     return {"import_id": record.id, "format": parsed["format"], "format_label": "逐条打卡" if parsed["format"] == "punch_rows" else "每日汇总",
             "period": [start.isoformat() if start else None, end.isoformat() if end else None], "rows": parsed["row_count"],
-            "matched_people": len(wanted), "matched_rows": matched_rows, "punches": total_punches, "new_punches": new_count,
+            "matched_people": len(wanted), "matched_rows": matched_rows,
+            "no_records": sorted(n for u, n in members.items() if u not in wanted)[:100], "no_records_total": sum(1 for u in members if u not in wanted), "punches": total_punches, "new_punches": new_count,
             "duplicate_punches": total_punches - new_count, "unmatched": [{"name": n, "rows": c} for n, c in sorted(unmatched.items(), key=lambda x: -x[1])],
             "skipped": parsed["skipped"][:50], "skipped_total": parsed["skipped_total"]}
 
@@ -321,7 +322,10 @@ async def analyze(db, user_id: int, team_id: int, start: date, end: date) -> Dic
     await db.commit()
     await audit_service.record_async(user_id, "attendance.analyze", resource_type="organization", resource_id=org,
                                      detail={"from": start.isoformat(), "to": end.isoformat(), "created": created, "cleared": cleared})
+    covered_set = set(covered)
+    uncovered = sorted(n for u, n in members.items() if u not in covered_set)      # 整个区间一条打卡都没有：可能是文件没导全，不判旷工，单独列出让人事核对
     return {"from": start.isoformat(), "to": end.isoformat(), "people": len(covered), "days": len(days), "created": created, "updated": updated,
+            "uncovered": uncovered[:100], "uncovered_total": len(uncovered),
             "cleared": cleared, "total_anomalies": len(produced)}
 
 
