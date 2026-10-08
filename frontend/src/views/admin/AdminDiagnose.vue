@@ -2,7 +2,7 @@
   <div class="p-6">
     <div class="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
       <div>
-        <p class="text-xs text-slate-500">系统诊断：数据库、Redis、缓存、限流、Worker、生产配置</p>
+        <p class="text-xs text-slate-500">数据库、Redis、缓存、限流、Worker 和生产配置的运行状态</p>
         <p class="mt-1 text-sm font-medium" :class="health?.ok ? 'text-emerald-700' : 'text-red-700'">
           {{ health ? (health.ok ? '当前核心检查正常' : '存在需要处理的配置或服务问题') : '正在读取系统状态' }}
         </p>

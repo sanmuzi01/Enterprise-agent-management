@@ -117,5 +117,34 @@ class TemplateLeakTests(unittest.TestCase):
         self.assertEqual(problems, [], "页面里写死的提示文字带着代码名：\n" + "\n".join(problems))
 
 
+class AdminPageTitleTests(unittest.TestCase):
+    """管理后台的页面名只在顶部栏显示一次（AdminLayout 的 currentTitle）；页面里不再自带 <h1>，
+    也不再用同名的小标题重复一遍（之前“企业知识库”在侧栏、顶部栏、页面里各出现一次）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        layout = (SRC / "views" / "admin" / "AdminLayout.vue").read_text(encoding="utf-8")
+        cls.labels = re.findall(r"\{ path: '/admin/[\w-]+', label: '([^']+)'", layout)
+        cls.pages = [p for p in sorted((SRC / "views" / "admin").glob("*.vue")) if p.name != "AdminLayout.vue"]
+
+    def test_labels_were_read(self):
+        self.assertGreaterEqual(len(self.labels), 10)
+
+    def test_admin_pages_do_not_declare_their_own_h1(self):
+        offenders = [p.name for p in self.pages if "<h1" in _template_of(p)]
+        self.assertEqual(offenders, [], f"这些管理页自带了 <h1>，会和顶部栏的页面名重复：{offenders}")
+
+    def test_admin_pages_do_not_repeat_the_page_name_as_a_heading(self):
+        problems = []
+        for page in self.pages:
+            head = "\n".join(_template_of(page).splitlines()[:14])
+            for node in re.findall(r">([^<>{}]{2,40})<", head):
+                text = node.strip()
+                for label in self.labels:
+                    if text.startswith(label) and len(text) <= len(label) + 4:
+                        problems.append(f"{page.name}：{text}")
+        self.assertEqual(problems, [], "页面开头又写了一遍顶部栏已经显示的页面名：\n" + "\n".join(problems))
+
+
 if __name__ == "__main__":
     unittest.main()

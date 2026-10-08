@@ -2,8 +2,7 @@
   <div class="p-6">
     <div class="mb-5 flex items-center justify-between">
       <div>
-        <p class="text-sm font-semibold text-slate-900">使用情况分析</p>
-        <p class="mt-1 text-xs text-slate-500">运行质量、调用趋势、模型消耗和活跃用户排行</p>
+        <p class="text-xs text-slate-500">运行质量、调用趋势、模型消耗和活跃用户排行</p>
       </div>
       <div class="flex items-center gap-2">
         <select v-model.number="days" class="h-8 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-500">

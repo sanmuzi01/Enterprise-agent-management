@@ -209,19 +209,39 @@ async def admin_export_logs(
     return csv_response(filename, content)
 
 
-@router.get("/knowledge-spaces", summary="企业知识库空间总览")
+@router.get("/knowledge-spaces", summary="企业知识库空间总览（可按部门筛选）")
 async def admin_knowledge_spaces(
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
+        scope: str | None = Query(default=None, description="all / personal / team:<部门编号>"),
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await admin_async_service.list_knowledge_spaces(async_db, limit=limit, offset=offset)
+    return await admin_async_service.list_knowledge_spaces(async_db, limit=limit, offset=offset, scope=scope)
+
+
+class AdminSpaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    purpose: str | None = Field(default=None, max_length=60)
+    team_id: int | None = Field(default=None, description="发布到哪个部门；不填 = 个人空间")
+    sensitivity: str | None = Field(default=None, max_length=20)
+
+
+@router.post("/knowledge-spaces", summary="管理员为部门新建知识库空间")
+async def admin_create_knowledge_space(
+        data: AdminSpaceCreate,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await admin_async_service.admin_create_space(async_db, current_user.id, data.model_dump())
 
 
 class AdminSpaceStatusUpdate(BaseModel):
     is_enabled: bool | None = None
     status: str | None = None
+    team_id: int | None = Field(default=None, description="调整所属部门；显式传 null = 收回成个人空间")
+    sensitivity: str | None = Field(default=None, max_length=20)
 
 
 @router.patch("/knowledge-spaces/{space_id}", summary="管理员直接改一个空间的启停/归档状态")

@@ -2,8 +2,7 @@
   <div class="p-6">
     <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
       <div>
-        <p class="text-sm font-semibold text-slate-900">AI 工作成果效果</p>
-        <p class="mt-1 text-xs text-slate-500">材料整理的通过率、修改比例、办结耗时、拦截与重复草稿、模型成本，以及相对手工办理的估算节省。</p>
+        <p class="text-xs text-slate-500">材料整理的通过率、修改比例、办结耗时、拦截与重复草稿、模型成本，以及相对手工办理的估算节省。</p>
       </div>
       <div class="flex items-center gap-2">
         <select v-model.number="days" aria-label="统计范围" class="h-8 rounded border border-slate-200 bg-white px-2 text-xs" @change="load">

@@ -183,18 +183,51 @@ export interface AdminKnowledgeSpace {
   updated_at: string | null
 }
 
+export interface AdminSpaceDepartment {
+  id: number
+  name: string
+  organization_id: number
+  organization_name: string
+  space_count: number
+}
+
 export interface AdminKnowledgeSpacePage {
   items: AdminKnowledgeSpace[]
   total: number
   limit: number
   offset: number
+  /** 所有启用中的部门（含还没有空间的），以及个人空间和全部的数量 */
+  departments: AdminSpaceDepartment[]
+  personal_count: number
+  all_count: number
 }
 
 export async function listAdminKnowledgeSpaces(params: {
   limit?: number
   offset?: number
+  /** all / personal / team:<部门编号> */
+  scope?: string
 } = {}): Promise<AdminKnowledgeSpacePage> {
   const { data } = await request.get('/admin/knowledge-spaces', { params })
+  return data
+}
+
+export async function createAdminSpace(payload: {
+  name: string
+  description?: string
+  team_id: number | null
+  sensitivity: string
+}): Promise<{ id: number; name: string; team_id: number | null; sensitivity: string }> {
+  const { data } = await request.post('/admin/knowledge-spaces', payload)
+  return data
+}
+
+/** 调整空间的所属部门（null = 收回成个人空间）和密级 */
+export async function updateAdminSpace(
+  spaceId: number,
+  patch: { team_id: number | null; sensitivity: string },
+): Promise<{ id: number; name: string }> {
+  const { data } = await request.patch(`/admin/knowledge-spaces/${spaceId}`, patch)
   return data
 }
 
