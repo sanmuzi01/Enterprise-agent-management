@@ -24,6 +24,9 @@ class EmbeddingFactory:
         return: BaseEmbedding 实例
                 """
         client_class = EmbeddingRegistry.get(model_name)
+        if client_class is None:
+            cls._load_builtin_clients()          # 客户端靠导入模块来注册：还没人导入过时（比如管理后台直接测试连接）先补上
+            client_class = EmbeddingRegistry.get(model_name)
 
         if client_class is None:
             # 没找到 → 报错
@@ -38,6 +41,15 @@ class EmbeddingFactory:
 
         logger.info(f"创建嵌入客户端: {model_name} (类: {client_class.__name__})")
         return client_class(api_key=api_key, api_url=api_url, model_name=model_name)
+
+    @classmethod
+    def _load_builtin_clients(cls) -> None:
+        import importlib
+        for module in ("zhipu_embedding", "openai_embedding", "bge_embedding"):
+            try:
+                importlib.import_module(f"service.rag.embedding.{module}")
+            except Exception as exc:  # noqa: BLE001 —— 比如本地模型缺依赖：不影响其他客户端
+                logger.debug(f"嵌入客户端 {module} 没有加载: {exc}")
 
     @classmethod
     def list_supported_models(cls):

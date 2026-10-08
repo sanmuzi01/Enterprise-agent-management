@@ -129,6 +129,21 @@ async def remove(db, operator_id: int, provider: str) -> Dict[str, Any]:
     return {"provider": provider, "removed": True}
 
 
+def friendly_error(raw: str) -> str:
+    """把服务商返回的技术性报错翻成管理员看得懂的话（不带地址、不带代码路径）。"""
+    text = raw or ""
+    lowered = text.lower()
+    if "401" in text or "403" in text or "unauthorized" in lowered or "invalid api key" in lowered or "incorrect api key" in lowered:
+        return "服务商拒绝了这个密钥：请检查密钥是否填对、是否已过期或欠费"
+    if "429" in text or "rate limit" in lowered or "quota" in lowered:
+        return "服务商提示请求太频繁或额度已用完，请稍后再试或检查账户额度"
+    if "timeout" in lowered or "timed out" in lowered or "connect" in lowered or "name or service" in lowered or "resolve" in lowered:
+        return "连不上服务商：网络不通或响应超时，请检查服务器能不能访问外网"
+    if "不支持的嵌入模型" in text:
+        return "平台还没有接入这个资料读取模型的客户端，请联系维护平台的工程师"
+    return "连接失败：" + text.replace("\n", " ")[:80]
+
+
 async def test_connection(db, provider: str) -> Dict[str, Any]:
     """用企业统一的密钥真的调一次：聊天模型一次；服务商有资料读取模型的话再测一次。"""
     provider = _require_provider(provider)
@@ -143,5 +158,8 @@ async def test_connection(db, provider: str) -> Dict[str, Any]:
         if not model_name:
             continue
         config = {"model_name": model_name, "api_key": key, "api_url": default_api_url(model_name)}
-        results[kind] = await llm_config_service.probe_model(model_name, config)
+        probe = await llm_config_service.probe_model(model_name, config)
+        if not probe.get("ok"):
+            probe = {**probe, "error": friendly_error(str(probe.get("error") or probe.get("message") or ""))}
+        results[kind] = probe
     return {"provider": provider, "ok": all(r.get("ok") for r in results.values()), "results": results}

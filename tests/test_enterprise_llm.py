@@ -242,5 +242,45 @@ class EnterpriseLlmTest(unittest.TestCase):
             self.assertEqual(level, expected, model)
 
 
+class FriendlyErrorTests(unittest.TestCase):
+    """测试连接失败时，管理员看到的是人话：不带服务商地址、不带代码路径。"""
+
+    def test_known_failures_are_translated(self):
+        from service.llm.enterprise_llm_service import friendly_error
+        cases = {
+            "大模型请求失败: Client error '401 Unauthorized' for url 'https://open.bigmodel.cn/api/paas/v4/chat/completions'": "拒绝了这个密钥",
+            "Error code: 429 - rate limit reached": "额度",
+            "httpx.ConnectTimeout: timed out": "连不上服务商",
+            "不支持的嵌入模型: embedding-3\n当前已注册: []\n新增模型：在 service/rag/embedding/ 下新建 xxx_embedding.py": "联系维护平台的工程师",
+        }
+        for raw, expected in cases.items():
+            message = friendly_error(raw)
+            self.assertIn(expected, message, raw)
+            self.assertNotIn("http", message)
+            self.assertNotIn("service/", message)
+
+    def test_unknown_failures_are_short(self):
+        from service.llm.enterprise_llm_service import friendly_error
+        message = friendly_error("x" * 500)
+        self.assertLessEqual(len(message), 90)
+
+
+class EmbeddingFactoryLoadsClientsOnDemandTests(unittest.TestCase):
+    def test_a_fresh_process_can_create_an_embedding_client_without_importing_anything_else(self):
+        """管理后台的“测试连接”是第一个用到它的地方：注册表还是空的也要能创建（曾经报“当前已注册: []”）。"""
+        import subprocess
+        import sys
+        from pathlib import Path
+        root = Path(__file__).resolve().parent.parent
+        code = ("from service.rag.embedding.factory import EmbeddingFactory;"
+                "c = EmbeddingFactory.create('embedding-3', api_key='k'); print(type(c).__name__)")
+        import os
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", CONSOLE_LOG_LEVEL="CRITICAL")
+        result = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=60, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr[-500:])
+        self.assertIn("Embedding", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

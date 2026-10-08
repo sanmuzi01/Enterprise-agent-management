@@ -237,14 +237,20 @@
     <!-- ============ Agent 管理 ============ -->
     <div v-else class="rounded-lg border border-slate-200 bg-white">
       <div class="flex items-center justify-between border-b border-slate-200 px-4 py-3">
-        <h2 class="text-sm font-semibold text-slate-900">中央 / 部门 Agent</h2>
-        <button
-          @click="openCreateAgent"
-          class="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700"
-        >
-          <Plus :size="13" />
-          新建 Agent
-        </button>
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">企业智能体</h2>
+          <p class="mt-0.5 text-xs text-slate-500">智能体由工程师开发好再接进来；也可以启用平台内置的业务智能体。创建后在列表里划分给部门或全企业，检查通过再发布。</p>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <button @click="openIntegrate" data-testid="agent-integrate"
+            class="inline-flex items-center gap-1 rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700">
+            <Plus :size="13" />接入智能体服务
+          </button>
+          <button @click="openCreateAgent" data-testid="agent-enable-builtin"
+            class="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-700 hover:bg-slate-50">
+            启用内置智能体
+          </button>
+        </div>
       </div>
       <table class="w-full text-left text-sm">
         <thead class="border-b border-slate-100 bg-slate-50 text-xs text-slate-500">
@@ -258,9 +264,12 @@
         </thead>
         <tbody>
           <tr v-for="a in managedAgents" :key="a.id" class="border-b border-slate-100">
-            <td class="px-4 py-2.5 text-slate-900">
-              {{ a.name }}
+            <td class="max-w-xs px-4 py-2.5 text-slate-900">
+              <span class="font-medium">{{ a.name }}</span>
               <span v-if="a.runtime_type === 'external'" class="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">外部服务</span>
+              <span v-else class="ml-1.5 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">内置</span>
+              <p v-if="a.description" class="mt-0.5 truncate text-xs text-slate-500" :title="a.description">{{ a.description }}</p>
+              <p v-if="a.maintainer" class="truncate text-[11px] text-slate-400">维护：{{ a.maintainer }}</p>
             </td>
             <td class="px-4 py-2.5">
               <span class="rounded px-2 py-0.5 text-xs" :class="a.agent_type === 'central' ? 'bg-purple-50 text-purple-700' : 'bg-sky-50 text-sky-700'">
@@ -314,13 +323,13 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央 / 部门智能体</td></tr>
+          <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有企业智能体：点右上角“接入智能体服务”，或启用一个内置智能体</td></tr>
         </tbody>
       </table>
     </div>
 
     <!-- ============ 智能体编辑器：新建 / 编辑（设定、模型、知识库、技能、发布前检查、试运行） ============ -->
-    <ManagedAgentEditor v-if="editor.visible" :key="editor.agentId ?? 'new'" :agent-id="editor.agentId"
+    <ManagedAgentEditor v-if="editor.visible" :key="`${editor.agentId ?? 'new'}-${editor.mode}`" :agent-id="editor.agentId" :mode="editor.mode"
       @close="closeEditor" @saved="loadManagedAgents" />
 
     <!-- ============ 弹窗：划分智能体 ============ -->
@@ -479,7 +488,7 @@ import { getErrorMessage } from '../../utils/request'
 const tabs: { value: 'teams' | 'members' | 'agents'; label: string }[] = [
   { value: 'teams', label: '部门管理' },
   { value: 'members', label: '企业成员' },
-  { value: 'agents', label: 'Agent 管理' },
+  { value: 'agents', label: '企业智能体' },
 ]
 const activeTab = ref<'teams' | 'members' | 'agents'>('teams')
 
@@ -749,9 +758,10 @@ const lifecycleBadgeClass = (status: LifecycleStatus) => ({
 }[status])
 
 // ---- 智能体编辑器（设定、模型、知识库、技能、发布与试运行都在编辑器组件里）----
-const editor = ref<{ visible: boolean; agentId: number | null }>({ visible: false, agentId: null })
-const openCreateAgent = () => { editor.value = { visible: true, agentId: null } }
-const openEditAgent = (a: ManagedAgent) => { editor.value = { visible: true, agentId: a.id } }
+const editor = ref<{ visible: boolean; agentId: number | null; mode: 'template' | 'external' }>({ visible: false, agentId: null, mode: 'template' })
+const openCreateAgent = () => { editor.value = { visible: true, agentId: null, mode: 'template' } }      // 启用内置智能体
+const openIntegrate = () => { editor.value = { visible: true, agentId: null, mode: 'external' } }          // 接入外部智能体服务
+const openEditAgent = (a: ManagedAgent) => { editor.value = { visible: true, agentId: a.id, mode: 'template' } }
 const closeEditor = () => { editor.value.visible = false; void loadManagedAgents() }
 
 // 划分用的可选项（本企业的部门）

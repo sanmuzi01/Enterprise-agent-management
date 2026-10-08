@@ -62,6 +62,11 @@ def clean_config(config: Optional[Dict[str, Any]]) -> Dict[str, int]:
     return cleaned
 
 
+def _clean_text(value: Optional[str], limit: int) -> Optional[str]:
+    text = (value or "").strip()
+    return text[:limit] or None
+
+
 def check_model(model_name: Optional[str]) -> None:
     """平台自带运行方式用的模型必须是目录里的聊天模型（外部服务自己决定模型，不受此限）。"""
     from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
@@ -126,6 +131,8 @@ def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, A
         "team_id": agent.team_id,
         "team_name": team_name,
         "assignment": assignment_of(agent),
+        "description": agent.description or "",
+        "maintainer": agent.maintainer or "",
         "model_name": agent.model_name,
         "runtime_type": agent.runtime_type or "builtin",
         "lifecycle_status": agent.lifecycle_status,
@@ -264,6 +271,7 @@ async def create_managed_agent(
         template_id: Optional[str] = None, organization_id: Optional[int] = None,
         config: Optional[Dict[str, Any]] = None, space_ids: Optional[List[int]] = None,
         skill_ids: Optional[List[int]] = None,
+        description: Optional[str] = None, maintainer: Optional[str] = None,
 ) -> Dict[str, Any]:
     template = None
     if template_id:
@@ -309,7 +317,8 @@ async def create_managed_agent(
         user_id=creator_user_id, name=name, model_name=model_name,
         organization_id=org_id, team_id=team_id, scope_type=scope_type,
         agent_type=agent_type, department_code=department_code,
-        lifecycle_status="draft", **cleaned_config,
+        lifecycle_status="draft", description=_clean_text(description, 500), maintainer=_clean_text(maintainer, 100),
+        **cleaned_config,
     )
     db.add(agent)
     await db.flush()
@@ -343,6 +352,7 @@ async def update_managed_agent(
         constraints: Optional[str] = None, output: Optional[str] = None,
         config: Optional[Dict[str, Any]] = None, space_ids: Optional[List[int]] = None,
         skill_ids: Optional[List[int]] = None,
+        description: Optional[str] = None, maintainer: Optional[str] = None,
 ) -> Dict[str, Any]:
     agent = (await db.execute(
         select(Agent).where(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
@@ -351,6 +361,10 @@ async def update_managed_agent(
         raise NotFound("Agent 不存在")
 
     values: Dict[str, Any] = {}
+    if description is not None:
+        values["description"] = _clean_text(description, 500)
+    if maintainer is not None:
+        values["maintainer"] = _clean_text(maintainer, 100)
     # 绑定先校验（只读），通过了再写，避免写了一半才发现某个技能不存在
     bound_spaces = await validated_space_ids(db, space_ids) if space_ids is not None else None
     bound_skills = await validated_skill_ids(db, skill_ids, operator_id) if skill_ids is not None else None
@@ -667,3 +681,46 @@ async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) ->
                     "doc_count": s.doc_count, "departments": departments.get(s.id, [])} for s in spaces],
         "teams": [{"id": t[0], "name": t[1], "department_code": t[2]} for t in teams],
     }
+
+
+async def register_external_agent(
+        db, operator_id: int, name: str, agent_type: str, url: str, *, description: Optional[str] = None,
+        maintainer: Optional[str] = None, department_code: Optional[str] = None, timeout_seconds: Optional[int] = None,
+        send_knowledge: Optional[bool] = None, headers: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """接入工程师已经开发好的智能体服务：登记档案 + 配好服务地址 + 生成签名密钥，一步完成。
+
+    企业智能体不是在页面里填几段提示词就“造”出来的——它是工程师开发、测试好的服务，这里只是把它接进平台。
+    任何一步失败都不留半成品：先校验地址，建好之后配置失败会把刚建的记录删掉。"""
+    from prompt.prompt_manager import delete_prompt_file
+    from service import external_agent_admin_service as external
+    from service.runtime import external_agent
+
+    try:
+        external_agent.validate_endpoint_url(url)
+    except external_agent.ExternalAgentError as exc:
+        raise InvalidInput(str(exc)) from exc
+    created = await create_managed_agent(
+        db, operator_id, name, agent_type, department_code=department_code,
+        description=description, maintainer=maintainer,
+    )
+    try:
+        info = await external.configure_runtime(
+            db, created["id"], operator_id, "external", url=url, timeout_seconds=timeout_seconds,
+            send_knowledge=send_knowledge, headers=headers,
+        )
+    except Exception:
+        await db.rollback()
+        from sqlalchemy import delete as sa_delete
+
+        from models.init_db import AgentExternalEndpoint
+        await db.execute(sa_delete(AgentExternalEndpoint).where(AgentExternalEndpoint.agent_id == created["id"]))
+        await db.execute(sa_delete(Agent).where(Agent.id == created["id"]))
+        await db.commit()
+        try:
+            delete_prompt_file(created["id"])
+        except Exception:  # noqa: BLE001 —— 清理失败不盖掉原始错误
+            logger.warning(f"接入失败后清理提示词文件失败: agent_id={created['id']}", exc_info=True)
+        raise
+    detail = await get_managed_agent_detail(db, created["id"])
+    return {**detail, "secret": info.get("secret")}

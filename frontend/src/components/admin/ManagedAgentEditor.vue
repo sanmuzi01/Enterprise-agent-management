@@ -3,10 +3,8 @@
     <div class="flex max-h-full w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-xl">
       <header class="flex items-start justify-between gap-3 border-b border-slate-200 px-5 py-3">
         <div class="min-w-0">
-          <h3 class="truncate text-base font-semibold text-slate-900">{{ currentId ? `编辑智能体：${form.name || ''}` : '新建智能体' }}</h3>
-          <p class="mt-0.5 text-xs text-slate-500">
-            {{ currentId ? '修改后点保存生效；发布前请看「发布与试运行」里的检查。' : '先把它的设定、模型、知识和技能配好；创建后再在列表里「划分」给部门或全企业。' }}
-          </p>
+          <h3 class="truncate text-base font-semibold text-slate-900">{{ title }}</h3>
+          <p class="mt-0.5 text-xs text-slate-500">{{ subtitle }}</p>
         </div>
         <button @click="requestClose" class="shrink-0 rounded p-1.5 text-slate-500 hover:bg-slate-100" aria-label="关闭"><X :size="18" /></button>
       </header>
@@ -45,11 +43,36 @@
           <section v-show="section === 'basic'" class="space-y-4">
             <div>
               <label for="agent-name" class="mb-1 block text-xs text-slate-500">名称</label>
-              <input id="agent-name" v-model="form.name" maxlength="255" placeholder="例如：销售部报价助手"
+              <input id="agent-name" v-model="form.name" maxlength="255" placeholder="例如：销售订单查询助手"
+                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+            </div>
+            <div>
+              <label for="agent-description" class="mb-1 block text-xs text-slate-500">它能做什么</label>
+              <textarea id="agent-description" v-model="form.description" rows="2" maxlength="500" placeholder="一两句话说明用途，管理员和使用者都能看到。"
+                class="w-full resize-none rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
+            </div>
+            <div>
+              <label for="agent-maintainer" class="mb-1 block text-xs text-slate-500">维护人 / 维护团队</label>
+              <input id="agent-maintainer" v-model="form.maintainer" maxlength="100" placeholder="出了问题找谁，例如：销售系统组 · 张工"
                 class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
             </div>
 
-            <div v-if="!currentId" class="grid gap-4 sm:grid-cols-2">
+            <!-- 启用内置智能体：必须选一个内置模板 -->
+            <div v-if="!currentId && creationMode === 'template'">
+              <label for="agent-template" class="mb-1 block text-xs text-slate-500">内置模板</label>
+              <select id="agent-template" :value="form.template_id" @change="applyTemplate(($event.target as HTMLSelectElement).value)" data-testid="agent-template"
+                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                <option v-for="tpl in templates" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
+              </select>
+              <p v-if="chosenTemplate" class="mt-1 text-xs text-slate-500">
+                {{ chosenTemplate.description }}
+                {{ chosenTemplate.agent_type === 'central' ? '这是中央智能体，全企业可用。' : '这是业务智能体，创建后再划分给部门。' }}
+                会自动填好角色和任务，并配一个专属的专业技能（{{ chosenTemplate.tools.length }} 个业务工具）。
+              </p>
+            </div>
+
+            <!-- 接入外部智能体：类型与业务方向 -->
+            <div v-else-if="!currentId" class="grid gap-4 sm:grid-cols-2">
               <div>
                 <label for="agent-type" class="mb-1 block text-xs text-slate-500">类型</label>
                 <select id="agent-type" v-model="form.agent_type" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
@@ -70,70 +93,53 @@
               调整划分请回到列表点「划分」。
             </p>
 
-            <div v-if="!currentId && templatesForType.length">
-              <label for="agent-template" class="mb-1 block text-xs text-slate-500">使用预置模板（可选）</label>
-              <select id="agent-template" :value="form.template_id" @change="applyTemplate(($event.target as HTMLSelectElement).value)"
-                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option value="">不使用模板，自己填写</option>
-                <option v-for="tpl in templatesForType" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
-              </select>
-              <p v-if="chosenTemplate" class="mt-1 text-xs text-slate-500">
-                {{ chosenTemplate.description }} 会自动填好角色和任务，并配一个专属的专业技能（{{ chosenTemplate.tools.length }} 个业务工具）。
+            <!-- 外部智能体：服务地址与签名 -->
+            <div v-if="isExternal" class="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3" data-testid="runtime-external-fields">
+              <p class="text-xs text-slate-600">
+                这是工程师开发好的智能体服务：平台把提问者的身份和对话转发给它，由它决定怎么思考、调用什么工具、使用什么模型；
+                平台继续负责权限、限流、审计和密级。请求带签名，协议见 docs/external-agent-protocol.md。
               </p>
-            </div>
-
-            <!-- 运行方式 -->
-            <div class="rounded-lg border border-slate-200 p-3">
-              <label for="agent-runtime" class="mb-1 block text-xs text-slate-500">运行方式</label>
-              <select id="agent-runtime" v-model="runtime.type" data-testid="runtime-type-select"
-                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option value="builtin">平台自带（设定 + 模型 + 知识库 + 技能，在本页配置）</option>
-                <option value="external">接入我们自己部署的智能体服务</option>
-              </select>
-              <div v-if="runtime.type === 'external'" class="mt-3 space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3" data-testid="runtime-external-fields">
-                <p class="text-xs text-slate-600">
-                  平台会把提问者的身份和对话转发到你的服务，由你的服务决定怎么思考、调用什么工具、使用什么模型；
-                  平台继续负责权限、限流、审计和密级。请求带签名，协议见 docs/external-agent-protocol.md。
-                </p>
+              <div>
+                <label for="runtime-url" class="mb-1 block text-xs text-slate-500">服务地址</label>
+                <input id="runtime-url" v-model="runtime.url" type="text" placeholder="https://agent.example.com/chat" data-testid="runtime-url"
+                  class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+                <p class="mt-1 text-[11px] text-slate-400">企业内网里的服务需要先让运维把它的主机加入平台的允许名单。</p>
+              </div>
+              <div class="grid grid-cols-2 gap-3">
                 <div>
-                  <label for="runtime-url" class="mb-1 block text-xs text-slate-500">服务地址</label>
-                  <input id="runtime-url" v-model="runtime.url" type="text" placeholder="https://agent.example.com/chat" data-testid="runtime-url"
+                  <label for="runtime-timeout" class="mb-1 block text-xs text-slate-500">超时（秒）</label>
+                  <input id="runtime-timeout" v-model.number="runtime.timeout" type="number" min="1" max="300"
                     class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-                  <p class="mt-1 text-[11px] text-slate-400">企业内网里的服务需要先让运维把它的主机加入平台的允许名单。</p>
                 </div>
-                <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label for="runtime-timeout" class="mb-1 block text-xs text-slate-500">超时（秒）</label>
-                    <input id="runtime-timeout" v-model.number="runtime.timeout" type="number" min="1" max="300"
-                      class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-                  </div>
-                  <label class="flex items-end gap-2 pb-2 text-xs text-slate-600">
-                    <input v-model="runtime.sendKnowledge" type="checkbox" class="h-4 w-4" />
-                    同时发送检索到的资料片段
-                  </label>
-                </div>
-                <div>
-                  <label for="runtime-headers" class="mb-1 block text-xs text-slate-500">附加请求头（每行一个，格式：名称: 值；留空表示不修改）</label>
-                  <textarea id="runtime-headers" v-model="runtime.headersText" rows="2" placeholder="Authorization: Bearer xxxx"
-                    class="w-full rounded border border-slate-300 px-3 py-1.5 font-mono text-xs outline-none focus:border-indigo-500"></textarea>
-                  <p v-if="runtime.info?.endpoint?.header_names?.length" class="mt-1 text-[11px] text-slate-400">
-                    已保存的请求头：{{ runtime.info.endpoint.header_names.join('、') }}（出于安全不显示内容）
-                  </p>
-                </div>
-                <div v-if="currentId && runtime.info?.endpoint" class="flex flex-wrap items-center gap-2 text-xs">
-                  <button @click="runConnectionTest" :disabled="runtime.testing" data-testid="runtime-test"
-                    class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                    {{ runtime.testing ? '测试中…' : '测试连接' }}
-                  </button>
-                  <button @click="rotateSecret" :disabled="runtime.testing"
-                    class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">重新生成签名密钥</button>
-                  <span v-if="runtime.info.endpoint.last_test_at" :class="runtime.info.endpoint.last_test_ok ? 'text-emerald-700' : 'text-red-600'">
-                    {{ runtime.info.endpoint.last_test_ok ? '上次测试通过' : '上次测试失败' }}：{{ runtime.info.endpoint.last_test_message }}
-                  </span>
-                  <span v-else class="text-slate-400">还没有测试过连接</span>
-                </div>
+                <label class="flex items-end gap-2 pb-2 text-xs text-slate-600">
+                  <input v-model="runtime.sendKnowledge" type="checkbox" class="h-4 w-4" />
+                  同时发送检索到的资料片段
+                </label>
+              </div>
+              <div>
+                <label for="runtime-headers" class="mb-1 block text-xs text-slate-500">附加请求头（每行一个，格式：名称: 值；留空表示不修改）</label>
+                <textarea id="runtime-headers" v-model="runtime.headersText" rows="2" placeholder="Authorization: Bearer xxxx"
+                  class="w-full rounded border border-slate-300 px-3 py-1.5 font-mono text-xs outline-none focus:border-indigo-500"></textarea>
+                <p v-if="runtime.info?.endpoint?.header_names?.length" class="mt-1 text-[11px] text-slate-400">
+                  已保存的请求头：{{ runtime.info.endpoint.header_names.join('、') }}（出于安全不显示内容）
+                </p>
+              </div>
+              <div v-if="currentId && runtime.info?.endpoint" class="flex flex-wrap items-center gap-2 text-xs">
+                <button @click="runConnectionTest" :disabled="runtime.testing" data-testid="runtime-test"
+                  class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                  {{ runtime.testing ? '测试中…' : '测试连接' }}
+                </button>
+                <button @click="rotateSecret" :disabled="runtime.testing"
+                  class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">重新生成签名密钥</button>
+                <span v-if="runtime.info.endpoint.last_test_at" :class="runtime.info.endpoint.last_test_ok ? 'text-emerald-700' : 'text-red-600'">
+                  {{ runtime.info.endpoint.last_test_ok ? '上次测试通过' : '上次测试失败' }}：{{ runtime.info.endpoint.last_test_message }}
+                </span>
+                <span v-else class="text-slate-400">还没有测试过连接</span>
               </div>
             </div>
+            <p v-else-if="currentId" class="rounded bg-slate-50 px-3 py-2 text-xs text-slate-500">
+              这是平台内置的智能体：助手设定、模型、知识库和技能在左侧各分区配置。
+            </p>
           </section>
 
           <!-- ========== 助手设定 ========== -->
@@ -320,7 +326,7 @@ import { modelDisplayName } from '../../utils/displayNames'
 import { getErrorMessage } from '../../utils/request'
 import { toastSuccess } from '../../utils/toast'
 
-const props = defineProps<{ agentId: number | null }>()
+const props = defineProps<{ agentId: number | null; mode?: 'template' | 'external' }>()
 const emit = defineEmits<{ (e: 'close'): void; (e: 'saved'): void }>()
 
 const DIRECTIONS: Record<string, string> = { hr: '人事', procurement: '采购', sales: '销售', finance: '财务', it: 'IT' }
@@ -345,6 +351,8 @@ const templates = ref<AgentTemplate[]>([])
 
 const form = reactive({
   name: '',
+  description: '',
+  maintainer: '',
   agent_type: 'department' as ManagedAgentType,
   department_code: '',
   template_id: '',
@@ -371,7 +379,15 @@ const runtime = reactive({
 
 const isExternal = computed(() => runtime.type === 'external')
 
-const templatesForType = computed(() => templates.value.filter((t) => t.agent_type === form.agent_type))
+// 新建时的两种方式：启用内置智能体（选模板）/ 接入工程师开发好的服务。编辑时按它本来的运行方式。
+const creationMode = computed(() => props.mode || 'template')
+const title = computed(() => (currentId.value ? `编辑智能体：${form.name || ''}`
+  : creationMode.value === 'external' ? '接入智能体服务' : '启用内置智能体'))
+const subtitle = computed(() => (currentId.value
+  ? '修改后点保存生效；发布前请看「发布与试运行」里的检查。'
+  : creationMode.value === 'external'
+    ? '把工程师开发好的智能体服务接进来：登记它的用途和维护人，填服务地址，保存后会生成一次性的签名密钥。'
+    : '选一个内置的企业智能体模板启用，它自带业务工具；创建后再调整设定、绑定知识库，并划分给部门。'))
 const chosenTemplate = computed(() => templates.value.find((t) => t.id === form.template_id) || null)
 
 const temperatureLabel = computed(() => (form.temperature <= 30 ? '严谨' : form.temperature >= 70 ? '灵活' : '均衡'))
@@ -401,12 +417,16 @@ const unreadable = (space: AgentOptions['spaces'][number]) => {
 }
 
 const applyTemplate = (id: string) => {
+  const previous = templates.value.find((t) => t.id === form.template_id)
   form.template_id = id
   const tpl = templates.value.find((t) => t.id === id)
   if (!tpl) return
-  if (tpl.department_code !== undefined && tpl.department_code !== null) form.department_code = tpl.department_code
+  if (!form.name.trim() || form.name === previous?.name) form.name = tpl.name      // 名字没改过就跟着模板走
+  form.agent_type = tpl.agent_type
+  form.department_code = tpl.department_code || ''
   form.role = tpl.role
   form.task = tpl.task
+  if (!form.description.trim() || form.description === previous?.description) form.description = tpl.description
 }
 
 const parseHeaders = (text: string): Record<string, string> | undefined => {
@@ -434,6 +454,8 @@ const configPayload = (): AgentConfig => ({
 const fillFrom = (d: ManagedAgentDetail) => {
   detail.value = d
   form.name = d.name
+  form.description = d.description || ''
+  form.maintainer = d.maintainer || ''
   form.agent_type = d.agent_type
   form.department_code = d.department_code || ''
   form.model_name = d.model_name
@@ -475,7 +497,11 @@ onMounted(async () => {
     options.value = opts
     templates.value = tpls
     if (props.agentId) await reload(props.agentId)
-    else if (opts.models.length && !opts.models.includes(form.model_name)) form.model_name = opts.models[0]
+    else {
+      if (opts.models.length && !opts.models.includes(form.model_name)) form.model_name = opts.models[0]
+      if (creationMode.value === 'external') runtime.type = 'external'
+      else if (tpls.length) applyTemplate(tpls[0].id)
+    }
   } catch (e: any) {
     error.value = getErrorMessage(e, '加载失败')
   } finally {
@@ -504,12 +530,19 @@ const save = async () => {
       error.value = '请填写外部服务地址'
       return
     }
+    if (!currentId.value && creationMode.value === 'template' && !form.template_id) {
+      section.value = 'basic'
+      error.value = '请选择一个内置模板'
+      return
+    }
     let secret: string | null = null
     const builtin = !isExternal.value
     const persona = { role: form.role, task: form.task, constraints: form.constraints, output: form.output }
     if (currentId.value) {
       await orgApi.updateManagedAgent(currentId.value, {
         name: form.name.trim(),
+        description: form.description,
+        maintainer: form.maintainer,
         ...(builtin ? {
           model_name: form.model_name, ...persona, config: configPayload(),
           space_ids: form.space_ids, skill_ids: form.skill_ids,
@@ -517,12 +550,30 @@ const save = async () => {
         expected_row_version: detail.value?.row_version,
       })
       if (isExternal.value || detail.value?.runtime_type === 'external') secret = await saveRuntime(currentId.value)
+    } else if (creationMode.value === 'external') {
+      // 登记档案 + 配好地址 + 生成签名密钥，一步完成；任何一步失败都不留半成品
+      const registered = await orgApi.registerExternalAgent({
+        name: form.name.trim(),
+        description: form.description.trim() || undefined,
+        maintainer: form.maintainer.trim() || undefined,
+        agent_type: form.agent_type,
+        department_code: form.agent_type === 'department' && form.department_code ? form.department_code : undefined,
+        url: runtime.url.trim(),
+        timeout_seconds: runtime.timeout,
+        send_knowledge: runtime.sendKnowledge,
+        headers: parseHeaders(runtime.headersText),
+      })
+      currentId.value = registered.id
+      secret = registered.secret || null
+      emit('saved')
     } else {
       const created = await orgApi.createManagedAgent({
         name: form.name.trim(),
         agent_type: form.agent_type,
         department_code: form.agent_type === 'department' && form.department_code ? form.department_code : undefined,
-        template_id: form.template_id || undefined,
+        template_id: form.template_id,
+        description: form.description.trim() || undefined,
+        maintainer: form.maintainer.trim() || undefined,
         model_name: form.model_name,
         ...persona,
         config: configPayload(),
@@ -531,7 +582,6 @@ const save = async () => {
       })
       currentId.value = created.id          // 已经建好：之后的保存都是编辑，不会重复创建
       emit('saved')
-      if (isExternal.value) secret = await saveRuntime(created.id)
     }
     await reload(currentId.value!)
     emit('saved')

@@ -48,8 +48,12 @@ class AgentRoutesTest(unittest.TestCase):
         cls.enterprise.stop()
         cls.env.stop()
         db = cls.db
-        db.execute(text("DELETE FROM agent_knowledge_space WHERE agent_id IN (SELECT id FROM agent WHERE name LIKE 'arr-%')"))
+        mine = "SELECT id FROM agent WHERE name LIKE 'arr-%'"
+        db.execute(text(f"DELETE FROM agent_knowledge_space WHERE agent_id IN ({mine})"))
+        db.execute(text(f"DELETE FROM agent_skill WHERE agent_id IN ({mine})"))
+        db.execute(text(f"DELETE FROM agent_external_endpoint WHERE agent_id IN ({mine})"))
         db.execute(text("DELETE FROM agent WHERE name LIKE 'arr-%'"))
+        db.execute(text("DELETE FROM skill WHERE name LIKE 'arr-%'"))
         db.execute(text("DELETE FROM knowledge_spaces WHERE name LIKE 'arr-%'"))
         db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": cls.team_id})
         db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org_id})
@@ -63,7 +67,7 @@ class AgentRoutesTest(unittest.TestCase):
 
     def test_the_whole_lifecycle_over_http(self):
         created = self.api("post", "/agents", json={
-            "name": "arr-agent", "agent_type": "department", "model_name": "glm-4-plus",
+            "name": "arr-agent", "agent_type": "department", "department_code": "hr", "template_id": "oa", "model_name": "glm-4-plus",
             "role": "你是助手", "task": "回答问题", "constraints": "不编造", "output": "先结论",
             "config": {"temperature": 25, "rag_enabled": 1, "kb_top_k": 6},
             "space_ids": [self.space_id],
@@ -100,6 +104,47 @@ class AgentRoutesTest(unittest.TestCase):
         blocked = self.api("put", f"/agents/{agent_id}/assignment", json={"target": "enterprise"})
         self.assertEqual(blocked.status_code, 400, "已发布的要先停用才能调整划分")
 
+    def test_blank_agents_cannot_be_created_only_templates_or_integrations(self):
+        """企业智能体不是在页面里填几段提示词就造出来的：必须选内置模板，或者接入工程师开发好的服务。"""
+        response = self.api("post", "/agents", json={"name": "arr-blank", "agent_type": "central", "role": "你是助手", "task": "回答问题"})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertIn("模板", response.json()["message"])
+        self.assertFalse(self._exists("arr-blank"))
+
+    def _exists(self, name):
+        with SessionLocal() as db:
+            return db.execute(text("SELECT COUNT(*) FROM agent WHERE name=:n"), {"n": name}).scalar() > 0
+
+    def test_integrating_an_external_agent_in_one_step(self):
+        response = self.api("post", "/agents/external", json={
+            "name": "arr-external", "description": "查询客户订单和物流", "maintainer": "销售系统组 · 张工",
+            "agent_type": "department", "url": "https://93.184.216.34/chat", "timeout_seconds": 20,
+            "headers": {"Authorization": "Bearer abc"},
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual((body["runtime_type"], body["lifecycle_status"], body["assignment"]), ("external", "draft", "unassigned"))
+        self.assertEqual((body["description"], body["maintainer"]), ("查询客户订单和物流", "销售系统组 · 张工"))
+        self.assertGreater(len(body["secret"]), 30, "签名密钥只在这一次返回")
+        again = self.api("get", f"/agents/{body['id']}").json()
+        self.assertNotIn("secret", again)
+        runtime = self.api("get", f"/agents/{body['id']}/runtime").json()
+        self.assertEqual((runtime["endpoint"]["url"], runtime["endpoint"]["timeout_seconds"], runtime["endpoint"]["header_names"]),
+                         ("https://93.184.216.34/chat", 20, ["Authorization"]))
+        # 档案可以继续改
+        patched = self.api("patch", f"/agents/{body['id']}", json={"expected_row_version": again["row_version"], "description": "新的说明", "maintainer": "李工"})
+        self.assertEqual((patched.json()["description"], patched.json()["maintainer"]), ("新的说明", "李工"))
+
+    def test_a_failed_integration_leaves_no_half_finished_agent_behind(self):
+        for url in ("http://127.0.0.1:9100/chat", "ftp://example.com/x", "https://user:pw@93.184.216.34/x"):
+            response = self.api("post", "/agents/external", json={"name": "arr-external-bad", "agent_type": "central", "url": url})
+            self.assertEqual(response.status_code, 400, (url, response.text))
+            self.assertFalse(self._exists("arr-external-bad"), url)
+        response = self.api("post", "/agents/external", json={"name": "arr-external-bad", "agent_type": "central",
+                                                              "url": "https://93.184.216.34/chat", "headers": {"Bad Header": "x"}})
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertFalse(self._exists("arr-external-bad"), "地址通过了但请求头不合法：刚建的智能体要被撤回")
+
     def test_options_endpoint(self):
         options = self.api("get", "/agent-options")
         self.assertEqual(options.status_code, 200, options.text)
@@ -109,14 +154,15 @@ class AgentRoutesTest(unittest.TestCase):
         self.assertIn("arr-team", {t["name"] for t in body["teams"]})
 
     def test_invalid_input_returns_client_errors_not_500(self):
-        for payload in ({"name": "arr-bad", "agent_type": "central", "config": {"temperature": 500}},
-                        {"name": "arr-bad", "agent_type": "central", "model_name": "not-a-model"},
-                        {"name": "arr-bad", "agent_type": "central", "space_ids": [987654321]}):
+        for payload in ({"name": "arr-bad", "agent_type": "central", "template_id": "central", "config": {"temperature": 500}},
+                        {"name": "arr-bad", "agent_type": "central", "template_id": "central", "model_name": "not-a-model"},
+                        {"name": "arr-bad", "agent_type": "central", "template_id": "central", "space_ids": [987654321]}):
             response = self.api("post", "/agents", json=payload)
             self.assertIn(response.status_code, (400, 422), (payload, response.text))
 
     def test_only_admins_can_use_these_endpoints(self):
-        for method, path in (("get", "/agent-options"), ("get", "/agents/1"), ("post", "/agents"), ("put", "/agents/1/assignment")):
+        for method, path in (("get", "/agent-options"), ("get", "/agents/1"), ("post", "/agents"), ("post", "/agents/external"),
+                             ("put", "/agents/1/assignment")):
             response = self.api(method, path, user=self.member, **({"json": {"name": "x", "agent_type": "central", "target": "enterprise"}} if method in ("post", "put") else {}))
             self.assertEqual(response.status_code, 403, (method, path, response.text))
 

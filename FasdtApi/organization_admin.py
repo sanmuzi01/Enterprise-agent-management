@@ -15,6 +15,7 @@ from models.init_db import User
 from service import agent_admin_service, department_agent_service
 from service import organization_admin_service as svc
 from service.dependencies import get_current_admin_user_async
+from service.exceptions import InvalidInput
 
 router = APIRouter(prefix="/admin/org", tags=["企业组织管理"])
 
@@ -74,6 +75,21 @@ class ManagedAgentCreate(BaseModel):
     config: Optional[AgentConfig] = None
     space_ids: Optional[list[int]] = Field(default=None, description="绑定的知识库空间；不填 = 不绑定")
     skill_ids: Optional[list[int]] = Field(default=None, description="添加的技能；不填 = 不添加")
+    description: Optional[str] = Field(default=None, max_length=500)
+    maintainer: Optional[str] = Field(default=None, max_length=100)
+
+
+class ExternalAgentRegister(BaseModel):
+    """接入工程师已经开发好的智能体服务。"""
+    name: str = Field(min_length=1, max_length=255)
+    description: Optional[str] = Field(default=None, max_length=500, description="它能做什么")
+    maintainer: Optional[str] = Field(default=None, max_length=100, description="谁维护它（出了问题找谁）")
+    agent_type: str = Field(default="department", description="central 全企业可用 / department 业务智能体（之后再划分部门）")
+    department_code: Optional[str] = None
+    url: str = Field(min_length=1, max_length=1000)
+    timeout_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+    send_knowledge: Optional[bool] = None
+    headers: Optional[dict] = None
 
 
 class AgentAssignment(BaseModel):
@@ -109,6 +125,8 @@ class ManagedAgentUpdate(BaseModel):
     config: Optional[AgentConfig] = None
     space_ids: Optional[list[int]] = Field(default=None, description="绑定的知识库空间（整体替换）；不填 = 不修改")
     skill_ids: Optional[list[int]] = Field(default=None, description="添加的技能（整体替换）；不填 = 不修改")
+    description: Optional[str] = Field(default=None, max_length=500)
+    maintainer: Optional[str] = Field(default=None, max_length=100)
 
 
 @router.get("/roles", summary="企业角色目录（组织/部门两个 scope，供角色选择器用）")
@@ -310,12 +328,27 @@ async def get_managed_agent_templates(current_user: User = Depends(get_current_a
     return list_templates()
 
 
-@router.post("/agents", summary="创建中央/部门 Agent（默认 draft，需要单独发布才会被路由使用）")
+@router.post("/agents/external", summary="接入已开发好的智能体服务（登记档案 + 配好地址 + 生成签名密钥，草稿）")
+async def register_external_agent(
+        data: ExternalAgentRegister,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.register_external_agent(
+        async_db, current_user.id, data.name, data.agent_type, data.url, description=data.description,
+        maintainer=data.maintainer, department_code=data.department_code, timeout_seconds=data.timeout_seconds,
+        send_knowledge=data.send_knowledge, headers=data.headers,
+    )
+
+
+@router.post("/agents", summary="启用内置智能体（必须选一个内置模板；自己开发的智能体请走“接入”）")
 async def create_managed_agent(
         data: ManagedAgentCreate,
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
+    if not data.template_id:
+        raise InvalidInput("企业智能体不能凭空填几段提示词创建：请选一个内置模板启用，或者把工程师开发好的智能体服务接入进来")
     return await agent_admin_service.create_managed_agent(
         async_db, current_user.id, data.name, data.agent_type,
         department_code=data.department_code, team_id=data.team_id, model_name=data.model_name,
@@ -323,6 +356,7 @@ async def create_managed_agent(
         template_id=data.template_id,
         config=data.config.model_dump(exclude_none=True) if data.config else None,
         space_ids=data.space_ids, skill_ids=data.skill_ids,
+        description=data.description, maintainer=data.maintainer,
     )
 
 
@@ -405,4 +439,5 @@ async def update_managed_agent(
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
         config=data.config.model_dump(exclude_none=True) if data.config else None,
         space_ids=data.space_ids, skill_ids=data.skill_ids,
+        description=data.description, maintainer=data.maintainer,
     )

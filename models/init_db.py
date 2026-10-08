@@ -191,6 +191,9 @@ class Agent(Base):
     # 运行方式：builtin = 平台自带的运行循环（提示词 + 工具 + 知识库）；
     # external = 把对话转发给企业自己部署的 Agent 服务（地址等配置在 agent_external_endpoint）。
     runtime_type = Column(String(20), nullable=False, default="builtin", server_default="builtin")
+    # 企业智能体的“档案”：它能做什么（给管理员和使用者看）、由谁维护（出了问题找谁）。
+    description = Column(String(500), nullable=True)
+    maintainer = Column(String(100), nullable=True)
     skills: Mapped[List["Skill"]] = relationship(
         secondary="agent_skill", lazy=False, back_populates="agents"
     )

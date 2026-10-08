@@ -192,6 +192,9 @@ export interface ManagedAgent {
   runtime_type: 'builtin' | 'external'
   /** 划分状态：全企业 / 某个部门 / 还没划分 */
   assignment: 'enterprise' | 'department' | 'unassigned'
+  /** 档案：它能做什么 / 谁维护它 */
+  description?: string
+  maintainer?: string
   /** 绑定的知识库里，这个智能体的使用者读不到的那些（没划分给对应部门） */
   knowledge_gaps?: { id: number; name: string; reason: string }[]
   lifecycle_status: LifecycleStatus
@@ -334,9 +337,27 @@ export async function createManagedAgent(payload: {
   config?: AgentConfig
   space_ids?: number[]
   skill_ids?: number[]
+  description?: string
+  maintainer?: string
 }): Promise<ManagedAgent> {
   const { data } = await request.post('/admin/org/agents', payload)
   return data as ManagedAgent
+}
+
+/** 接入工程师已经开发好的智能体服务：登记档案 + 配好地址 + 生成签名密钥，一步完成。secret 只在这一次返回。 */
+export async function registerExternalAgent(payload: {
+  name: string
+  description?: string
+  maintainer?: string
+  agent_type: ManagedAgentType
+  department_code?: string
+  url: string
+  timeout_seconds?: number
+  send_knowledge?: boolean
+  headers?: Record<string, string>
+}): Promise<ManagedAgentDetail & { secret?: string | null }> {
+  const { data } = await request.post('/admin/org/agents/external', payload)
+  return data
 }
 
 export async function updateManagedAgent(agentId: number, patch: {
@@ -353,6 +374,8 @@ export async function updateManagedAgent(agentId: number, patch: {
   config?: AgentConfig
   space_ids?: number[]
   skill_ids?: number[]
+  description?: string
+  maintainer?: string
 }): Promise<ManagedAgent> {
   const { data } = await request.patch(`/admin/org/agents/${agentId}`, patch)
   return data as ManagedAgent
