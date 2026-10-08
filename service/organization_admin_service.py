@@ -341,22 +341,32 @@ async def _ensure_org_member(db, user_id: int) -> None:
 
 # ---------------- 企业成员/企业角色 ----------------
 
-async def list_org_members(db) -> List[Dict]:
-    org = await _get_default_organization(db)
-    department_rows = await db.execute(
+async def _department_map(db, organization_id: int, user_ids: Optional[List[int]] = None) -> Dict[int, List[Dict]]:
+    """用户在本企业各部门里的身份，按用户分组。传 user_ids 时只查这些人。"""
+    stmt = (
         select(TeamMember.user_id, Team.id, Team.name, Team.status,
                EnterpriseRole.code, EnterpriseRole.name, TeamMember.status)
         .join(Team, Team.id == TeamMember.team_id)
         .join(EnterpriseRole, EnterpriseRole.id == TeamMember.role_id)
-        .where(Team.organization_id == org.id)
+        .where(Team.organization_id == organization_id)
         .order_by(Team.id)
     )
-    departments = {}
-    for uid, tid, name, status, code, role_name, membership_status in department_rows.all():
+    if user_ids is not None:
+        if not user_ids:
+            return {}
+        stmt = stmt.where(TeamMember.user_id.in_(user_ids))
+    departments: Dict[int, List[Dict]] = {}
+    for uid, tid, name, status, code, role_name, membership_status in (await db.execute(stmt)).all():
         departments.setdefault(uid, []).append({
             "id": tid, "name": name, "status": status, "role_code": code,
             "role_name": role_name, "membership_status": membership_status,
         })
+    return departments
+
+
+async def list_org_members(db) -> List[Dict]:
+    org = await _get_default_organization(db)
+    departments = await _department_map(db, org.id)
     result = await db.execute(
         select(OrganizationMember, User.name, EnterpriseRole.code, EnterpriseRole.name)
         .join(User, User.id == OrganizationMember.user_id)
@@ -375,6 +385,26 @@ async def list_org_members(db) -> List[Dict]:
         }
         for om, uname, role_code, role_name in result.all()
     ]
+
+
+async def member_overview(db, user_ids: List[int]) -> Dict[int, Dict]:
+    """给「用户管理」列表用：这批用户在企业里的角色 / 状态和所属部门（用户管理与组织架构共用同一份数据）。"""
+    if not user_ids:
+        return {}
+    org = await _get_default_organization(db)
+    departments = await _department_map(db, org.id, user_ids)
+    rows = await db.execute(
+        select(OrganizationMember.user_id, OrganizationMember.status, EnterpriseRole.code, EnterpriseRole.name)
+        .join(EnterpriseRole, EnterpriseRole.id == OrganizationMember.role_id)
+        .where(OrganizationMember.organization_id == org.id, OrganizationMember.user_id.in_(user_ids))
+    )
+    overview = {
+        uid: {"org_role_code": code, "org_role_name": name, "org_status": status, "departments": []}
+        for uid, status, code, name in rows.all()
+    }
+    for uid, items in departments.items():
+        overview.setdefault(uid, {"org_role_code": None, "org_role_name": None, "org_status": None})["departments"] = items
+    return overview
 
 
 async def _count_active_owners(db, organization_id: int, exclude_user_id: Optional[int] = None) -> int:

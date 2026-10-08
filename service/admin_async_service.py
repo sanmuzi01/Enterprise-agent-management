@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
+from service import organization_admin_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 
 from models.init_db import (
@@ -121,6 +122,7 @@ async def list_users(db, limit: int = 50, offset: int = 0, search: str = None) -
     knowledge_counts = await _count_by_user(db, Knowledge, user_ids)
     task_counts = await _count_by_user(db, BackgroundTask, user_ids)
     plan_names = await _plan_names_by_user(db, user_ids)
+    memberships = await organization_admin_service.member_overview(db, user_ids)
     items = []
     for user in users:
         item = _user_admin_payload(
@@ -131,6 +133,11 @@ async def list_users(db, limit: int = 50, offset: int = 0, search: str = None) -
             task_count=task_counts.get(user.id, 0),
         )
         item["plan_name"] = plan_names.get(user.id)
+        member = memberships.get(user.id) or {}
+        item["org_role_code"] = member.get("org_role_code")
+        item["org_role_name"] = member.get("org_role_name")
+        item["org_status"] = member.get("org_status")
+        item["departments"] = member.get("departments", [])
         items.append(item)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 

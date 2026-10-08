@@ -45,6 +45,8 @@ class EnterpriseTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.enterprise.stop()
         cls.env.stop()
+        cls.db.execute(text("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE organization_id=:o)"), {"o": cls.org_id})
+        cls.db.execute(text("DELETE FROM teams WHERE organization_id=:o"), {"o": cls.org_id})
         cls.db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org_id})
         cls.db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": cls.org_id})
         cls.db.commit()
@@ -85,6 +87,41 @@ class EnterpriseTest(unittest.TestCase):
             with SessionLocal() as db:
                 joined = db.execute(text("SELECT organization_id FROM organization_members WHERE user_id=:u"), {"u": self.newcomer["id"]}).scalar()
         self.assertEqual(joined, self.org_id)
+
+    def test_user_list_shows_departments_and_enterprise_role(self):
+        """用户管理的列表直接带出所属部门（含负责人身份）和企业角色，不用再去组织架构里另外对照。"""
+        from models.async_db import AsyncSessionLocal
+        from service import organization_admin_service as org_svc
+        from service.admin_async_service import list_users
+        from tests._async_helpers import run_async
+
+        async def _do():
+            async with AsyncSessionLocal() as db:
+                team = await org_svc.create_team(db, "ent-dept-list", self.admin["id"])
+                await org_svc.add_org_member(db, self.admin["id"], self.member["id"], "auditor")
+                await org_svc.add_team_member(db, team["id"], self.admin["id"], self.member["id"], "admin")
+            async with AsyncSessionLocal() as db:
+                return await list_users(db, limit=50, offset=0, search="ent-member"), team["id"]
+
+        page, team_id = run_async(_do())
+        mine = next(u for u in page["items"] if u["id"] == self.member["id"])
+        self.assertEqual(mine["org_role_code"], "auditor")
+        self.assertEqual(mine["org_status"], "active")
+        self.assertEqual([(d["id"], d["role_code"]) for d in mine["departments"]], [(team_id, "admin")])
+
+        # 还不是企业成员、也没有部门的人：字段齐全但为空，页面据此显示「未加入企业 / 未分配部门」
+        loner = rc.create_user("ent-loner")
+        page = run_async(_list_for("ent-loner"))
+        other = next(u for u in page["items"] if u["id"] == loner["id"])
+        self.assertIsNone(other["org_role_code"])
+        self.assertEqual(other["departments"], [])
+
+
+async def _list_for(search):
+    from models.async_db import AsyncSessionLocal
+    from service.admin_async_service import list_users
+    async with AsyncSessionLocal() as db:
+        return await list_users(db, limit=50, offset=0, search=search)
 
 
 if __name__ == "__main__":

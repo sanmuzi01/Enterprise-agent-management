@@ -45,6 +45,7 @@ const router = createRouter({
         { path: 'logs', name: 'AdminLogs', component: () => import('../views/admin/AdminLogs.vue') },
         { path: 'knowledge-spaces', name: 'AdminKnowledgeSpaces', component: () => import('../views/admin/AdminKnowledgeSpaces.vue') },
         { path: 'llm', name: 'AdminLlm', component: () => import('../views/admin/AdminLlm.vue') },
+        { path: 'agents', name: 'AdminAgents', component: () => import('../views/admin/AdminAgents.vue') },
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },

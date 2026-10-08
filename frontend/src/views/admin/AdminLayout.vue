@@ -20,16 +20,19 @@
           </div>
         </div>
 
-        <nav class="flex-1 space-y-0.5 overflow-y-auto">
-          <RouterLink
-            v-for="item in navItems"
-            :key="item.path"
-            :to="item.path"
-            :class="navClass(isActive(item.path))"
-          >
-            <component :is="item.icon" :size="18" :stroke-width="1.7" :class="isActive(item.path) ? 'text-[var(--accent)]' : 'text-slate-500'" />
-            <span>{{ item.label }}</span>
-          </RouterLink>
+        <nav class="flex-1 space-y-3 overflow-y-auto">
+          <div v-for="group in navGroups" :key="group.label" class="space-y-0.5">
+            <p v-if="group.label" class="px-2.5 pb-0.5 pt-1 text-[11px] font-medium tracking-wide text-slate-400">{{ group.label }}</p>
+            <RouterLink
+              v-for="item in group.items"
+              :key="item.path"
+              :to="item.path"
+              :class="navClass(isActive(item.path))"
+            >
+              <component :is="item.icon" :size="18" :stroke-width="1.7" :class="isActive(item.path) ? 'text-[var(--accent)]' : 'text-slate-500'" />
+              <span>{{ item.label }}</span>
+            </RouterLink>
+          </div>
         </nav>
 
         <div class="border-t border-black/[.08] pt-2">
@@ -84,7 +87,7 @@ import { useRoute, RouterLink, RouterView } from 'vue-router'
 import {
   LayoutDashboard, Users, ListChecks, BarChart3, ScrollText,
   Stethoscope, ShieldCheck, LogOut, Library, Wallet, Menu, Zap, Building2, KeyRound,
-  Bug,
+  Bug, Bot,
 } from 'lucide-vue-next'
 import { useUserStore } from '../../stores/user'
 import ThemeToggle from '../../components/ThemeToggle.vue'
@@ -101,20 +104,32 @@ onBeforeUnmount(() => workCenter.stopPolling())
 const navOpen = ref(false)
 watch(() => route.fullPath, () => { navOpen.value = false })
 
-const navItems = [
-  { path: '/admin/overview', label: '系统概览', icon: LayoutDashboard },
-  { path: '/admin/users', label: '用户管理', icon: Users },
-  { path: '/admin/tasks', label: '后台任务', icon: ListChecks },
-  { path: '/admin/usage', label: '使用情况', icon: BarChart3 },
-  { path: '/admin/logs', label: '操作日志', icon: ScrollText },
-  { path: '/admin/knowledge-spaces', label: '企业知识库', icon: Library },
-  { path: '/admin/llm', label: '模型连接', icon: KeyRound },
-  { path: '/admin/organization', label: '组织架构', icon: Building2 },
-  { path: '/admin/skills', label: '技能管理', icon: Zap },
-  { path: '/admin/plans', label: '套餐配额', icon: Wallet },
-  { path: '/admin/issues', label: '问题中心', icon: Bug },
-  { path: '/admin/diagnose', label: '系统诊断', icon: Stethoscope },
+const navGroups = [
+  { label: '', items: [
+    { path: '/admin/overview', label: '系统概览', icon: LayoutDashboard },
+  ] },
+  { label: '人员与组织', items: [
+    { path: '/admin/users', label: '用户管理', icon: Users },
+    { path: '/admin/organization', label: '组织架构', icon: Building2 },
+  ] },
+  { label: 'AI 能力', items: [
+    { path: '/admin/agents', label: '企业智能体', icon: Bot },
+    { path: '/admin/knowledge-spaces', label: '企业知识库', icon: Library },
+    { path: '/admin/llm', label: '模型连接', icon: KeyRound },
+    { path: '/admin/skills', label: '技能管理', icon: Zap },
+  ] },
+  { label: '运营', items: [
+    { path: '/admin/usage', label: '使用情况', icon: BarChart3 },
+    { path: '/admin/plans', label: '套餐配额', icon: Wallet },
+    { path: '/admin/tasks', label: '后台任务', icon: ListChecks },
+  ] },
+  { label: '运维', items: [
+    { path: '/admin/logs', label: '操作日志', icon: ScrollText },
+    { path: '/admin/issues', label: '问题中心', icon: Bug },
+    { path: '/admin/diagnose', label: '系统诊断', icon: Stethoscope },
+  ] },
 ]
+const navItems = navGroups.flatMap(g => g.items)
 
 const currentTitle = computed(() => {
   const item = navItems.find(i => route.path === i.path)

@@ -24,6 +24,10 @@ export interface AdminUser {
   task_count: number
   counts?: Record<string, number>
   plan_name?: string | null
+  org_role_code?: string | null
+  org_role_name?: string | null
+  org_status?: string | null
+  departments?: { id: number; name: string; status: string; role_code: string; role_name: string }[]
 }
 
 export interface AdminTask {
