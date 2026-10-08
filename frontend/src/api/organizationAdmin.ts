@@ -226,6 +226,8 @@ export interface ManagedAgentDetail extends ManagedAgent {
 
 export interface AgentOptions {
   models: string[]
+  /** 管理员在「模型连接」里统一连接了 API Key 的聊天模型 */
+  connected_models: string[]
   skills: { id: number; name: string; description: string; lifecycle_status: string }[]
   spaces: {
     id: number

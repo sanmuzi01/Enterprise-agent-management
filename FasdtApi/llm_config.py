@@ -22,6 +22,16 @@ class QuickConnect(BaseModel):
     api_key: str = Field(min_length=1, max_length=500)
     capabilities: Optional[list[str]] = Field(default=None)  # ["chat","embedding"]，缺省=全部
 
+@router.get("/enterprise_connections", summary="管理员已为全公司统一连接的模型服务商（不含密钥）")
+async def enterprise_connections(
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_user_async)
+):
+    from service.llm import enterprise_llm_service
+    items = await enterprise_llm_service.list_connections(async_db)
+    return [{"provider": i["provider"], "label": i["label"]} for i in items if i["connected"] and i["is_active"]]
+
+
 @router.get("/list",summary="获取用户的模型配置列表")
 async def list_configs(
         async_db=Depends(get_async_db),

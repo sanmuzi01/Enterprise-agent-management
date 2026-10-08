@@ -511,6 +511,19 @@ class OrchestrationStep(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class EnterpriseLlmConnection(Base):
+    """企业统一的模型连接：管理员按模型服务商（智谱 / OpenAI / DeepSeek …）配置一次 API Key，全公司共用。
+
+    用户自己在“连接 AI 服务”里填的个人密钥优先；没有个人密钥时才用这里的。密钥加密保存，只写不读。"""
+    __tablename__ = "enterprise_llm_connection"
+    provider = Column(String(30), primary_key=True)
+    api_key = Column(Text, nullable=False)              # Fernet 密文
+    is_active = Column(Integer, nullable=False, default=1)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class LLMConfig(Base):
     __tablename__ = "llm_config"
     __table_args__ = (

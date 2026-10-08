@@ -83,7 +83,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, RouterLink, RouterView } from 'vue-router'
 import {
   LayoutDashboard, Users, ListChecks, BarChart3, ScrollText,
-  Stethoscope, ShieldCheck, LogOut, Library, Wallet, Menu, Zap, Building2,
+  Stethoscope, ShieldCheck, LogOut, Library, Wallet, Menu, Zap, Building2, KeyRound,
   Bug,
 } from 'lucide-vue-next'
 import { useUserStore } from '../../stores/user'
@@ -108,6 +108,7 @@ const navItems = [
   { path: '/admin/usage', label: '使用情况', icon: BarChart3 },
   { path: '/admin/logs', label: '操作日志', icon: ScrollText },
   { path: '/admin/knowledge-spaces', label: '企业知识库', icon: Library },
+  { path: '/admin/llm', label: '模型连接', icon: KeyRound },
   { path: '/admin/organization', label: '组织架构', icon: Building2 },
   { path: '/admin/skills', label: '技能管理', icon: Zap },
   { path: '/admin/plans', label: '套餐配额', icon: Wallet },

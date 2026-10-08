@@ -1,10 +1,15 @@
 from typing import Dict,Any,List,Optional
-from models.llm_config_dao import get_config_by_user_and_model, list_configs_by_user, create_config, update_config, delete_config
+from models.llm_config_dao import (
+    create_config, delete_config, get_config_by_user_and_model, get_own_config_by_user_and_model,
+    list_configs_by_user, list_own_configs_by_user, update_config,
+)
 from models.llm_config_async_dao import (
     create_config_async,
     delete_config_async,
     get_config_by_user_and_model_async,
+    get_own_config_by_user_and_model_async,
     list_configs_by_user_async,
+    list_own_configs_by_user_async,
     update_config_async,
 )
 from utils.crypto import encrypt, decrypt
@@ -35,7 +40,7 @@ def _reveal(payload):
 def list_configs(db,user)->list:
     """获取用户的模型配置列表（api_key 脱敏显示）"""
     def load():
-        configs = list_configs_by_user(db, user.id)
+        configs = list_own_configs_by_user(db, user.id)
         return [
             {
                 "id": c.id,
@@ -57,7 +62,7 @@ async def async_list_configs(db, user) -> list:
     cached = config_cache.get(("llm_config_list", user.id))
     if cached is not None:
         return cached
-    configs = await list_configs_by_user_async(db, user.id)
+    configs = await list_own_configs_by_user_async(db, user.id)
     rows = [
         {
             "id": c.id,
@@ -78,7 +83,7 @@ def save_config(db, user, model_name: str, api_key: str, api_url: str = None) ->
     model_name = normalize_model_name(model_name)
     api_url = default_api_url(model_name)
     encrypted_key = encrypt(api_key)
-    existing = get_config_by_user_and_model(db, user.id, model_name)
+    existing = get_own_config_by_user_and_model(db, user.id, model_name)
     if existing:
         update_config(
             db,existing,api_key = encrypted_key,api_url=api_url,
@@ -98,7 +103,7 @@ async def async_save_config(db, user, model_name: str, api_key: str, api_url: st
     model_name = normalize_model_name(model_name)
     api_url = default_api_url(model_name)
     encrypted_key = encrypt(api_key)
-    existing = await get_config_by_user_and_model_async(db, user.id, model_name)
+    existing = await get_own_config_by_user_and_model_async(db, user.id, model_name)
     if existing:
         await update_config_async(db, existing, api_key=encrypted_key, api_url=api_url)
         await db.commit()
@@ -139,7 +144,7 @@ async def async_quick_connect(
     encrypted_key = encrypt(api_key)
     for model_name in targets:
         api_url = default_api_url(model_name)
-        existing = await get_config_by_user_and_model_async(db, user.id, model_name)
+        existing = await get_own_config_by_user_and_model_async(db, user.id, model_name)
         if existing:
             await update_config_async(db, existing, api_key=encrypted_key, api_url=api_url)
         else:
@@ -160,7 +165,7 @@ async def async_quick_connect(
 
 def delete_config_by_model(db,user,model_name:str)->Dict[str, Any]:
     """删除模型配置"""
-    config = get_config_by_user_and_model(db, user.id, model_name)
+    config = get_own_config_by_user_and_model(db, user.id, model_name)
     if not config:
         return {"message": "配置不存在"}
     delete_config(db, config)
@@ -173,7 +178,7 @@ async def async_delete_config_by_model(db, user, model_name: str) -> Dict[str, A
     """异步删除模型配置。"""
 
     model_name = normalize_model_name(model_name)
-    config = await get_config_by_user_and_model_async(db, user.id, model_name)
+    config = await get_own_config_by_user_and_model_async(db, user.id, model_name)
     if not config:
         return {"message": "配置不存在"}
     await delete_config_async(db, config)
@@ -374,9 +379,6 @@ def test_config(db, user, model_name: str) -> Dict[str, Any]:
 
 async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
     """异步测试当前用户已保存的模型配置是否可用。"""
-
-    import time
-
     model_name = normalize_model_name(model_name)
     api_config = await async_get_api_config(db, user.id, model_name)
     if not api_config:
@@ -386,6 +388,14 @@ async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
             "message": "配置不存在或已停用",
         }
 
+    return await probe_model(model_name, api_config)
+
+
+async def probe_model(model_name: str, api_config: Dict[str, Any]) -> Dict[str, Any]:
+    """用给定的调用配置真的调一次模型，返回连通性测试结果（个人配置和企业统一连接共用）。"""
+    import time
+
+    model_name = normalize_model_name(model_name)
     started = time.time()
     kind = model_type(model_name)
     try:
@@ -438,3 +448,5 @@ async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
             "elapsed_ms": elapsed_ms,
             "error": str(e)[:500],
         }
+
+

@@ -156,9 +156,13 @@
               <label for="agent-model" class="mb-1 block text-xs text-slate-500">模型</label>
               <select id="agent-model" v-model="form.model_name" data-testid="agent-model"
                 class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option v-for="m in options?.models || []" :key="m" :value="m">{{ modelDisplayName(m) }}</option>
+                <option v-for="m in options?.models || []" :key="m" :value="m">
+                  {{ modelDisplayName(m) }}{{ (options?.connected_models || []).includes(m) ? '' : '（还没连接 API Key）' }}
+                </option>
               </select>
-              <p class="mt-1 text-[11px] text-slate-400">使用者需要先在「连接 AI 服务」里配置好这个模型的密钥，助手才能正常回答。</p>
+              <p class="mt-1 text-[11px] text-slate-400">
+                模型的 API Key 由管理员在左侧「模型连接」里统一配置一次，全公司共用；没连接的模型，使用者要自己填密钥才能用。
+              </p>
             </div>
             <div>
               <label for="agent-temperature" class="mb-1 flex items-baseline justify-between text-xs text-slate-500">

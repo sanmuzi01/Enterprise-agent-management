@@ -608,7 +608,12 @@ async def readiness_of(db, agent: Agent, detail: Dict[str, Any]) -> Dict[str, An
         else:
             add("prompt", "ok", "助手设定", "已填写")
         if normalize_model_name(agent.model_name or "") in CHAT_MODELS:
-            add("model", "ok", "模型", "可用")
+            from service.llm.enterprise_llm_service import connected_providers
+            from service.llm.model_catalog import provider as provider_of
+            if provider_of(normalize_model_name(agent.model_name)) in await connected_providers(db):
+                add("model", "ok", "模型", "已连接 API Key")
+            else:
+                add("model", "warn", "模型", "这个模型的服务商还没有在「模型连接」里连接 API Key，使用者需要自己配置才能用")
         else:
             add("model", "error", "模型", f"「{agent.model_name}」不是可用的聊天模型")
         if agent.rag_enabled and not detail["space_ids"]:
@@ -650,8 +655,13 @@ async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) ->
     teams = (await db.execute(
         select(Team.id, Team.name, Team.department_code)
         .where(Team.status == "active", Team.organization_id == enterprise_id).order_by(Team.id))).all()
+    from service.llm.enterprise_llm_service import connected_providers
+    from service.llm.model_catalog import provider as provider_of
+    connected = await connected_providers(db)
     return {
         "models": sorted(CHAT_MODELS.keys()),
+        # 管理员在「模型连接」里统一连接了 API Key 的聊天模型（没连接的在下拉里标注，用户仍可用自己的密钥）
+        "connected_models": sorted(name for name in CHAT_MODELS if provider_of(name) in connected),
         "skills": skill_items,
         "spaces": [{"id": s.id, "name": s.name, "scope_type": s.scope_type, "sensitivity": s.sensitivity,
                     "doc_count": s.doc_count, "departments": departments.get(s.id, [])} for s in spaces],

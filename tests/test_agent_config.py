@@ -216,12 +216,14 @@ class AgentConfigTest(unittest.TestCase):
         agent = self.create("acf-ready-fresh")
         readiness = self.detail(agent["id"])["readiness"]
         levels = {i["key"]: i["level"] for i in readiness["items"]}
-        self.assertEqual((readiness["ready"], levels["assignment"], levels["prompt"], levels["model"]), (False, "error", "warn", "ok"))
+        self.assertEqual((readiness["ready"], levels["assignment"], levels["prompt"], levels["model"]), (False, "error", "warn", "warn"),
+                         "模型的服务商还没有在「模型连接」里连接 API Key，所以模型一项是提醒")
 
     def test_readiness_turns_ready_after_assigning_and_writing_the_prompt(self):
         agent = self.create("acf-ready-ok", role="你是助手", task="回答问题")
         self.assign(agent["id"], "department", team_id=self.a, department_code="hr")
-        readiness = self.detail(agent["id"])["readiness"]
+        with mock.patch("service.llm.enterprise_llm_service.connected_providers", mock.AsyncMock(return_value={"zhipu"})):
+            readiness = self.detail(agent["id"])["readiness"]
         self.assertTrue(readiness["ready"])
         self.assertEqual({i["level"] for i in readiness["items"]}, {"ok"})
 

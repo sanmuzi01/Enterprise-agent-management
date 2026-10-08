@@ -220,6 +220,48 @@ async def admin_knowledge_spaces(
     return await admin_async_service.list_knowledge_spaces(async_db, limit=limit, offset=offset, scope=scope)
 
 
+class LlmConnectionKey(BaseModel):
+    api_key: str = Field(min_length=1, max_length=500)
+
+
+class LlmConnectionToggle(BaseModel):
+    is_active: bool
+
+
+@router.get("/llm-connections", summary="企业统一的模型连接（按服务商）")
+async def admin_list_llm_connections(async_db=Depends(get_async_db), current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.list_connections(async_db)
+
+
+@router.put("/llm-connections/{provider}", summary="连接 / 更换某个服务商的 API Key（全公司共用，只写不读）")
+async def admin_connect_llm(provider: str, data: LlmConnectionKey, async_db=Depends(get_async_db),
+                            current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.connect(async_db, current_user.id, provider, data.api_key)
+
+
+@router.patch("/llm-connections/{provider}", summary="启用 / 停用某个服务商的统一连接")
+async def admin_toggle_llm(provider: str, data: LlmConnectionToggle, async_db=Depends(get_async_db),
+                           current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.set_active(async_db, current_user.id, provider, data.is_active)
+
+
+@router.delete("/llm-connections/{provider}", summary="删除某个服务商的统一连接")
+async def admin_remove_llm(provider: str, async_db=Depends(get_async_db),
+                           current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.remove(async_db, current_user.id, provider)
+
+
+@router.post("/llm-connections/{provider}/test", summary="用统一的密钥真的调一次模型，测试连通性")
+async def admin_test_llm(provider: str, async_db=Depends(get_async_db),
+                         current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.test_connection(async_db, provider)
+
+
 class AdminSpaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=500)
