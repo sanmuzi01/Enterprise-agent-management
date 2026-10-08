@@ -18,7 +18,8 @@ _MANAGE_MEMBERS = {"owner", "admin"}
 
 
 def resolve_role(
-    user_id: int, space, member_role: str | None = None, *, is_team_admin: bool = False
+    user_id: int, space, member_role: str | None = None, *, is_team_admin: bool = False,
+    is_team_member: bool = False,
 ) -> str | None:
     """当前用户对该空间的角色；无权返回 None。
 
@@ -31,7 +32,10 @@ def resolve_role(
         return "owner"
     if member_role in ROLES:
         return member_role
-    return "admin" if is_team_admin else None
+    if is_team_admin:
+        return "admin"
+    # 部门空间：本部门成员自动拥有只读权限（restricted 密级由调用方在 is_team_member 里排除）
+    return "viewer" if is_team_member else None
 
 
 def at_least(role: str | None, minimum: str) -> bool:

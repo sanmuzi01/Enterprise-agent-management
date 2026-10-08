@@ -340,6 +340,9 @@ async def run_with_history_async(
     agent = await get_usable_agent_async(db, user_id, agent_id)
     if not agent:
         raise ValueError("智能体不存在或无权使用")
+    if getattr(agent, "runtime_type", "builtin") == "external":
+        from service.runtime.external_runtime import run_external_async
+        return await run_external_async(db, agent, user_id, user_message, history, conversation_id)
 
     run = await create_run_async(
         db=db, user_id=user_id, agent_id=agent_id,
@@ -479,6 +482,12 @@ async def run_stream_with_history_async(
             return
     except Exception as e:  # noqa: BLE001
         yield make_error(f"查询智能体失败: {e}")
+        return
+
+    if getattr(agent, "runtime_type", "builtin") == "external":
+        from service.runtime.external_runtime import stream_external_async
+        async for chunk in stream_external_async(db, agent, user_id, user_message, history, conversation_id):
+            yield chunk
         return
 
     # 2. 建 AgentRun 并立即 commit

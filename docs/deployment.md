@@ -213,6 +213,16 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
 - **脚本 / 集成的令牌**：浏览器登录（`POST /user/login`）响应体里没有 JWT。需要 Bearer 令牌的脚本走 `POST /auth/token`（单独限流 + 审计 `auth.token_issued`），
   **生产默认关闭**（`AUTH_TOKEN_ENDPOINT_ENABLED=1` 才开，开了启动校验会提醒）。压测脚本 `scripts/load_test.py` 和 `scripts/drill_*.py` 用的就是它。
 
+## 2.4 外部智能体与部门知识库
+
+- **接入企业自己部署的智能体服务**（协议见 [external-agent-protocol.md](external-agent-protocol.md)）：管理员在“组织管理 → 智能体管理”里把智能体的运行方式设为外部服务。
+  服务地址默认只允许公网地址；**服务在企业内网时，必须由运维把它的主机写进 `EXTERNAL_AGENT_ALLOWED_HOSTS`**（逗号分隔，可写 `host` 或 `host:port`）。
+  云厂商元数据地址任何情况下都不放行；生产环境要求 `https`（内网白名单主机可以用 `http`）。
+  可选限制：`EXTERNAL_AGENT_MAX_TIMEOUT_SECONDS`（默认 300）、`EXTERNAL_AGENT_MAX_RESPONSE_BYTES`（默认 1MB）、`EXTERNAL_AGENT_MAX_ANSWER_CHARS`（默认 50000）。
+  平台与外部服务之间用每个智能体独立的签名密钥做 HMAC 签名，密钥只在生成时显示一次；机密、绝密空间里的资料不会发给外部服务。
+- **知识库按部门划分**：部门管理员可以把知识库空间“发布到部门”，该部门所有在职成员自动只读；成员本人要写、要管理仍需被加入空间或是部门管理员。
+  “绝密”密级不继承部门成员资格。升级时需要执行 `alembic upgrade head`（新增 `agent.runtime_type` 和 `agent_external_endpoint`）。
+
 ## 3. 健康检查
 
 三个公开的、不需要登录的探针，只回布尔值，给 Docker healthcheck、负载均衡这类不带登录态的场景用：

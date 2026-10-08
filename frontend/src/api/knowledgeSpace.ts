@@ -16,7 +16,11 @@ export interface KnowledgeSpace {
   last_indexed_at: string | null
   created_at: string | null
   updated_at: string | null
-  scope: string
+  scope: 'personal' | 'shared' | 'department' | string
+  team_id: number | null
+  team_name: string | null
+  sensitivity: 'public' | 'internal' | 'confidential' | 'restricted' | string
+  sensitivity_label: string
   my_role: 'owner' | 'admin' | 'editor' | 'viewer' | string
   can_write_doc?: boolean
   can_manage?: boolean
@@ -51,6 +55,9 @@ export interface SpaceAuditEntry {
 export interface SpaceListResponse {
   items: KnowledgeSpace[]
   purposes: { key: string; label: string }[]
+  /** 本人担任部门管理员的部门：只有这些部门可以发布知识库空间 */
+  publishable_departments: { id: number; name: string }[]
+  sensitivities: { key: string; label: string }[]
 }
 
 export interface SpaceCreatePayload {
@@ -58,6 +65,9 @@ export interface SpaceCreatePayload {
   description?: string
   purpose?: string | null
   tags?: string[]
+  /** 发布到哪个部门；不填或 null = 个人空间 */
+  team_id?: number | null
+  sensitivity?: string
 }
 
 export type SpaceUpdatePayload = Partial<SpaceCreatePayload> & {

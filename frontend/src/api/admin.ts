@@ -167,6 +167,10 @@ export interface AdminKnowledgeSpace {
   owner_name: string
   organization_id: number | null
   team_id: number | null
+  team_name: string | null
+  scope_type: string
+  sensitivity: string
+  sensitivity_label: string
   status: string
   is_enabled: boolean
   purpose: string | null

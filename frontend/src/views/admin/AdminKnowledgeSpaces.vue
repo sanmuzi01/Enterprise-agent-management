@@ -24,6 +24,8 @@
         <thead class="bg-slate-50 text-xs text-slate-500">
           <tr>
             <th class="px-3 py-2 text-left">空间</th>
+            <th class="px-3 py-2 text-left">所属部门</th>
+            <th class="px-3 py-2 text-left">密级</th>
             <th class="px-3 py-2 text-left">所有者</th>
             <th class="px-3 py-2 text-right">文档</th>
             <th class="px-3 py-2 text-right">片段</th>
@@ -38,9 +40,16 @@
           <tr v-for="s in items" :key="s.id" class="hover:bg-slate-50">
             <td class="px-3 py-2">
               <div class="font-medium text-slate-800">{{ s.name }}</div>
-              <div class="text-xs text-slate-400">#{{ s.id }}<span v-if="s.organization_id"> · org {{ s.organization_id }}</span></div>
+              <div class="text-xs text-slate-400">编号 {{ s.id }}</div>
             </td>
-            <td class="px-3 py-2 text-slate-600">{{ s.owner_name || ('#' + s.owner_user_id) }}</td>
+            <td class="px-3 py-2 text-slate-600">
+              <span v-if="s.scope_type === 'department' && s.team_name" class="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{{ s.team_name }}</span>
+              <span v-else class="text-xs text-slate-400">个人空间</span>
+            </td>
+            <td class="px-3 py-2">
+              <span class="rounded px-2 py-0.5 text-xs" :class="sensitivityClass(s.sensitivity)">{{ s.sensitivity_label }}</span>
+            </td>
+            <td class="px-3 py-2 text-slate-600">{{ s.owner_name || ('用户 ' + s.owner_user_id) }}</td>
             <td class="px-3 py-2 text-right">{{ s.doc_count }}</td>
             <td class="px-3 py-2 text-right">{{ s.chunk_count }}</td>
             <td class="px-3 py-2 text-right">{{ s.member_count }}</td>
@@ -75,7 +84,7 @@
               </div>
             </td>
           </tr>
-          <tr v-if="items.length === 0"><td colspan="9" class="px-3 py-8 text-center text-slate-400">暂无知识库空间</td></tr>
+          <tr v-if="items.length === 0"><td colspan="11" class="px-3 py-8 text-center text-slate-400">暂无知识库空间</td></tr>
         </tbody>
       </table>
       <AdminPagination :total="total" :limit="limit" :offset="offset" @update:offset="onPageChange" />
@@ -98,6 +107,11 @@ const items = ref<AdminKnowledgeSpace[]>([])
 const total = ref(0)
 const limit = ref(50)
 const offset = ref(0)
+
+const sensitivityClass = (level: string) =>
+  level === 'restricted' ? 'bg-red-50 text-red-700'
+    : level === 'confidential' ? 'bg-amber-50 text-amber-700'
+    : level === 'public' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
 
 const healthColor = (n: number | null) =>
   n == null ? 'text-slate-300'

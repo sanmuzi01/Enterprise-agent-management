@@ -47,6 +47,7 @@ def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, A
         "team_id": agent.team_id,
         "team_name": team_name,
         "model_name": agent.model_name,
+        "runtime_type": agent.runtime_type or "builtin",
         "lifecycle_status": agent.lifecycle_status,
         "row_version": agent.row_version,
         "prompt": read_prompt_file(agent.id) or {},
@@ -69,11 +70,13 @@ async def _get_active_team_or_404(db, team_id: int, organization_id: int) -> Tea
     return team
 
 
-async def _check_publishable(db, team_id: Optional[int], department_code: Optional[str], model_name: str) -> None:
+async def _check_publishable(db, team_id: Optional[int], department_code: Optional[str], model_name: str,
+                             runtime_type: str = "builtin") -> None:
     """发布前的配置检查：模型必须是可用的聊天模型；部门必须启用；部门配置了业务类型时，
     Agent 的业务方向必须与之一致（不能给销售部发布一个采购 Agent）。"""
     from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
-    if normalize_model_name(model_name or "") not in CHAT_MODELS:
+    # 外部 Agent 自己决定用什么模型，平台的模型清单对它不适用
+    if runtime_type != "external" and normalize_model_name(model_name or "") not in CHAT_MODELS:
         raise InvalidInput(f"模型「{model_name}」不是可用的聊天模型，请先修改模型再发布")
     team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
     if team is None or team.status != "active":
@@ -236,8 +239,13 @@ async def update_managed_agent(
         final_code = values.get("department_code", agent.department_code)
         final_team_id = values.get("team_id", agent.team_id)
         if final_status == "published":
-            await _check_publishable(db, final_team_id, final_code, values.get("model_name", agent.model_name))
+            await _check_publishable(db, final_team_id, final_code, values.get("model_name", agent.model_name),
+                                     agent.runtime_type or "builtin")
         values["department_publish_key"] = publish_key_for_team(final_team_id) if final_status == "published" else None
+
+    if values.get("lifecycle_status") == "published":
+        from service.external_agent_admin_service import require_ready_to_publish
+        await require_ready_to_publish(db, agent)
 
     touching_prompt = any(v is not None for v in (role, task, constraints, output))
     if values or touching_prompt:

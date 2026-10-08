@@ -40,6 +40,8 @@ class SpaceCreate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
     purpose: Optional[str] = Field(default=None, max_length=60)
     tags: List[str] = Field(default_factory=list)
+    team_id: Optional[int] = Field(default=None, description="发布到哪个部门（需是该部门的部门管理员）；不填 = 个人空间")
+    sensitivity: Optional[str] = Field(default=None, max_length=20, description="public / internal / confidential / restricted")
 
 
 class SpaceUpdate(BaseModel):
@@ -49,6 +51,8 @@ class SpaceUpdate(BaseModel):
     tags: Optional[List[str]] = None
     is_enabled: Optional[bool] = None
     status: Optional[str] = Field(default=None, max_length=20)
+    team_id: Optional[int] = Field(default=None, description="改发布部门；显式传 null = 收回成个人空间")
+    sensitivity: Optional[str] = Field(default=None, max_length=20)
 
 
 @router.get("", summary="我的知识库空间列表 + 用途目录")

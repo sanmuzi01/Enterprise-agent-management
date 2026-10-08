@@ -7,6 +7,9 @@
       <div class="min-w-0">
         <p class="truncate text-sm font-semibold text-slate-900">{{ space.name }}</p>
         <p class="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-400">
+          <span v-if="space.scope === 'department' && space.team_name" class="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-600">{{ space.team_name }}</span>
+          <span v-else-if="space.scope === 'shared'" class="rounded bg-violet-50 px-1.5 py-0.5 text-violet-600">别人分享给我</span>
+          <span v-if="space.sensitivity && space.sensitivity !== 'internal'" class="rounded px-1.5 py-0.5" :class="sensitivityClass">{{ space.sensitivity_label }}</span>
           <span v-if="space.purpose_label" class="rounded bg-sky-50 px-1.5 py-0.5 text-sky-600">{{ space.purpose_label }}</span>
           <span v-for="t in space.tags" :key="t" class="rounded bg-slate-100 px-1.5 py-0.5">{{ t }}</span>
         </p>
@@ -34,8 +37,8 @@
       <button class="flex-1 rounded border border-sky-200 px-2 py-1 text-xs text-slate-600 hover:bg-sky-50" @click="emit('open')">
         打开
       </button>
-      <button class="rounded border border-sky-200 px-2 py-1 text-xs text-slate-600 hover:bg-sky-50" @click="emit('edit')">编辑</button>
-      <button class="rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50" @click="emit('delete')">删除</button>
+      <button v-if="space.can_manage !== false" class="rounded border border-sky-200 px-2 py-1 text-xs text-slate-600 hover:bg-sky-50" @click="emit('edit')">编辑</button>
+      <button v-if="space.can_delete !== false" class="rounded border border-red-200 px-2 py-1 text-xs text-red-500 hover:bg-red-50" @click="emit('delete')">删除</button>
     </div>
   </article>
 </template>
@@ -46,6 +49,13 @@ import type { KnowledgeSpace } from '../../api/knowledgeSpace'
 
 const props = defineProps<{ space: KnowledgeSpace }>()
 const emit = defineEmits<{ (e: 'open' | 'edit' | 'delete'): void }>()
+
+const sensitivityClass = computed(() => {
+  const level = props.space.sensitivity
+  if (level === 'restricted') return 'bg-red-50 text-red-600'
+  if (level === 'confidential') return 'bg-amber-50 text-amber-600'
+  return 'bg-emerald-50 text-emerald-600'
+})
 
 const healthClass = computed(() => {
   const s = props.space.health_score

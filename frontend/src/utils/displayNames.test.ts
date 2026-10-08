@@ -27,6 +27,8 @@ describe('displayNames：界面上不露出代码里的名字', () => {
   it('内置工具显示中文名', () => {
     expect(toolDisplayName('create_leave_draft')).toBe('创建请假草稿')
     expect(toolDisplayName('word_count')).toBe('字数统计')
+    expect(toolDisplayName('external_agent')).toBe('外部智能体服务')
+    expect(toolDisplayName('rag_search')).toBe('检索资料')
   })
 
   it('不认识的工具（用户自己配的企业接口、新增未登记的）显示“自定义工具”，绝不显示原名', () => {

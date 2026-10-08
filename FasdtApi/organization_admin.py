@@ -62,6 +62,15 @@ class ManagedAgentCreate(BaseModel):
     output: Optional[str] = None
 
 
+class AgentRuntimeUpdate(BaseModel):
+    runtime_type: str = Field(description="builtin = 平台自带运行方式；external = 转发给企业自己的 Agent 服务")
+    url: Optional[str] = Field(default=None, max_length=1000, description="外部 Agent 服务地址")
+    timeout_seconds: Optional[int] = Field(default=None, ge=1, le=300)
+    send_knowledge: Optional[bool] = Field(default=None, description="是否把检索到的资料片段一并发给对方（受密级策略约束）")
+    headers: Optional[dict] = Field(default=None, description="附加请求头（加密保存，只写不读）；传 {} 清空")
+    rotate_secret: bool = Field(default=False, description="重新生成签名密钥（旧密钥立即失效）")
+
+
 class ManagedAgentUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=255)
     department_code: Optional[str] = None
@@ -274,6 +283,40 @@ async def create_managed_agent(
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
         template_id=data.template_id,
     )
+
+
+@router.get("/agents/{agent_id}/runtime", summary="智能体的运行方式与外部服务接入配置")
+async def get_agent_runtime(
+        agent_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    from service import external_agent_admin_service
+    return await external_agent_admin_service.get_runtime(async_db, agent_id)
+
+
+@router.put("/agents/{agent_id}/runtime", summary="设置运行方式：平台自带 / 接入企业自己的 Agent 服务")
+async def set_agent_runtime(
+        agent_id: int,
+        data: AgentRuntimeUpdate,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    from service import external_agent_admin_service
+    return await external_agent_admin_service.configure_runtime(
+        async_db, agent_id, current_user.id, data.runtime_type, url=data.url, timeout_seconds=data.timeout_seconds,
+        send_knowledge=data.send_knowledge, headers=data.headers, rotate_secret=data.rotate_secret,
+    )
+
+
+@router.post("/agents/{agent_id}/runtime/test", summary="测试外部 Agent 服务连接（只发 ping，不带对话内容）")
+async def test_agent_runtime(
+        agent_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    from service import external_agent_admin_service
+    return await external_agent_admin_service.test_runtime(async_db, agent_id, current_user.id)
 
 
 @router.patch("/agents/{agent_id}", summary="更新中央/部门 Agent（含改绑部门、发布/退役）")

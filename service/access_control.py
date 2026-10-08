@@ -239,17 +239,31 @@ def get_owned_space(db, user_id: int, space_id: int):
         return space
     if get_role(db, space_id, user_id) is not None:
         return space
-    return space if is_team_admin_of_team(db, user_id, space.team_id) else None
+    if is_team_admin_of_team(db, user_id, space.team_id):
+        return space
+    return space if _is_department_reader(db, user_id, space) else None
+
+
+def _is_department_reader(db, user_id: int, space) -> bool:
+    """部门空间对本部门成员自动可读（restricted 密级除外）。"""
+    from models.enterprise_dao import department_space_inherits_membership, is_team_member_of_team
+    return department_space_inherits_membership(space) and is_team_member_of_team(db, user_id, space.team_id)
+
+
+async def _is_department_reader_async(db, user_id: int, space) -> bool:
+    from models.enterprise_dao import department_space_inherits_membership, is_team_member_of_team_async
+    return department_space_inherits_membership(space) and await is_team_member_of_team_async(db, user_id, space.team_id)
 
 
 def user_space_ids(db, user_id: int) -> set:
     from models.knowledge_space_dao import list_spaces_by_user
     from models.space_member_dao import list_space_ids_for_member
-    from models.enterprise_dao import list_space_ids_where_team_admin
+    from models.enterprise_dao import list_space_ids_where_team_admin, list_space_ids_where_team_member
 
     ids = {s.id for s in list_spaces_by_user(db, user_id)}
     ids.update(list_space_ids_for_member(db, user_id))
     ids.update(list_space_ids_where_team_admin(db, user_id))
+    ids.update(list_space_ids_where_team_member(db, user_id))
     return ids
 
 
@@ -265,7 +279,8 @@ def get_space_role(db, user_id: int, space_id: int):
         return None
     member_role = get_role(db, space_id, user_id)
     is_team_admin = is_team_admin_of_team(db, user_id, space.team_id)
-    return resolve_role(user_id, space, member_role, is_team_admin=is_team_admin)
+    return resolve_role(user_id, space, member_role, is_team_admin=is_team_admin,
+                        is_team_member=_is_department_reader(db, user_id, space))
 
 
 async def get_owned_space_async(db, user_id: int, space_id: int):
@@ -282,17 +297,20 @@ async def get_owned_space_async(db, user_id: int, space_id: int):
     space = await get_space_by_id_async(db, space_id)
     if space is not None and await is_team_admin_of_team_async(db, user_id, space.team_id):
         return space
+    if space is not None and await _is_department_reader_async(db, user_id, space):
+        return space
     return None
 
 
 async def user_space_ids_async(db, user_id: int) -> set:
     from models.knowledge_space_async_dao import user_space_ids_async as _dao
     from models.space_member_dao import list_space_ids_for_member_async
-    from models.enterprise_dao import list_space_ids_where_team_admin_async
+    from models.enterprise_dao import list_space_ids_where_team_admin_async, list_space_ids_where_team_member_async
 
     ids = set(await _dao(db, user_id))
     ids.update(await list_space_ids_for_member_async(db, user_id))
     ids.update(await list_space_ids_where_team_admin_async(db, user_id))
+    ids.update(await list_space_ids_where_team_member_async(db, user_id))
     return ids
 
 
@@ -307,4 +325,5 @@ async def get_space_role_async(db, user_id: int, space_id: int):
         return None
     member_role = await get_role_async(db, space_id, user_id)
     is_team_admin = await is_team_admin_of_team_async(db, user_id, space.team_id)
-    return resolve_role(user_id, space, member_role, is_team_admin=is_team_admin)
+    return resolve_role(user_id, space, member_role, is_team_admin=is_team_admin,
+                        is_team_member=await _is_department_reader_async(db, user_id, space))

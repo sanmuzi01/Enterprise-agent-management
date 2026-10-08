@@ -125,10 +125,16 @@ export const TOOL_NAMES: Record<string, string> = {
   word_count: '字数统计',
 }
 
+// 运行轨迹里平台自己写入的步骤名（不是可注册的工具）
+const STEP_NAMES: Record<string, string> = {
+  rag_search: '检索资料',
+  external_agent: '外部智能体服务',
+}
+
 /** 工具的显示名。用户自己配置的企业接口工具、以后新增还没来得及加中文名的工具，统一显示成“自定义工具”，不露出代码里的名字。 */
 export function toolDisplayName(name?: string | null): string {
   if (!name) return '工具'
-  return TOOL_NAMES[name] || '自定义工具'
+  return TOOL_NAMES[name] || STEP_NAMES[name] || '自定义工具'
 }
 
 const TASK_TYPES: Record<string, string> = {

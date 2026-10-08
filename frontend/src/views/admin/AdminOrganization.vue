@@ -258,7 +258,10 @@
         </thead>
         <tbody>
           <tr v-for="a in managedAgents" :key="a.id" class="border-b border-slate-100">
-            <td class="px-4 py-2.5 text-slate-900">{{ a.name }}<span class="ml-1 text-xs text-slate-400">#{{ a.id }}</span></td>
+            <td class="px-4 py-2.5 text-slate-900">
+              {{ a.name }}
+              <span v-if="a.runtime_type === 'external'" class="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">外部服务</span>
+            </td>
             <td class="px-4 py-2.5">
               <span class="rounded px-2 py-0.5 text-xs" :class="a.agent_type === 'central' ? 'bg-purple-50 text-purple-700' : 'bg-sky-50 text-sky-700'">
                 {{ a.agent_type === 'central' ? '中央' : '部门' }}
@@ -295,16 +298,32 @@
               </div>
             </td>
           </tr>
-          <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央/部门 Agent</td></tr>
+          <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央 / 部门智能体</td></tr>
         </tbody>
       </table>
     </div>
 
     <!-- ============ 弹窗：新建/编辑 Agent ============ -->
     <div v-if="agentDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="agentDialog.visible = false">
-      <div class="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ agentDialog.editing ? '编辑 Agent' : '新建 Agent' }}</h3>
-        <div class="space-y-3">
+      <div class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl">
+        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ agentDialog.editing ? '编辑智能体' : '新建智能体' }}</h3>
+
+        <!-- 签名密钥只显示这一次 -->
+        <div v-if="runtimeForm.secret" class="space-y-3" data-testid="runtime-secret-panel">
+          <p class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            签名密钥只显示这一次，关闭后无法再查看，只能重新生成。请现在复制，配置到你的智能体服务里。
+          </p>
+          <div class="flex items-center gap-2">
+            <code class="min-w-0 flex-1 break-all rounded bg-slate-100 px-3 py-2 text-xs text-slate-800">{{ runtimeForm.secret }}</code>
+            <button @click="copySecret" class="shrink-0 rounded border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">{{ runtimeForm.copied ? '已复制' : '复制' }}</button>
+          </div>
+          <p class="text-xs text-slate-500">你的服务用它校验平台请求的签名，写法见项目文档 docs/external-agent-protocol.md。</p>
+          <div class="flex justify-end">
+            <button @click="closeSecretPanel" class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700">我已保存密钥</button>
+          </div>
+        </div>
+
+        <div v-else class="space-y-3">
           <div>
             <label class="mb-1 block text-xs text-slate-500">名称</label>
             <input v-model="agentDialog.form.name" type="text"
@@ -317,6 +336,58 @@
               <option value="department">部门 Agent</option>
             </select>
           </div>
+          <div>
+            <label class="mb-1 block text-xs text-slate-500">运行方式</label>
+            <select v-model="runtimeForm.type" data-testid="runtime-type-select"
+              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+              <option value="builtin">平台自带（提示词 + 工具 + 知识库）</option>
+              <option value="external">接入我们自己部署的智能体服务</option>
+            </select>
+          </div>
+          <div v-if="runtimeForm.type === 'external'" class="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3" data-testid="runtime-external-fields">
+            <p class="text-xs text-slate-600">
+              平台会把提问者的身份和对话转发到你的服务，由你的服务决定怎么思考、调用什么工具、使用什么模型；
+              平台继续负责权限、限流、审计和密级。请求带签名，协议见 docs/external-agent-protocol.md。
+            </p>
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">服务地址</label>
+              <input v-model="runtimeForm.url" type="text" placeholder="https://agent.example.com/chat" data-testid="runtime-url"
+                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+              <p class="mt-1 text-[11px] text-slate-400">企业内网里的服务需要先让运维把它的主机加入平台的允许名单。</p>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="mb-1 block text-xs text-slate-500">超时（秒）</label>
+                <input v-model.number="runtimeForm.timeout" type="number" min="1" max="300"
+                  class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+              </div>
+              <label class="flex items-end gap-2 pb-2 text-xs text-slate-600">
+                <input v-model="runtimeForm.sendKnowledge" type="checkbox" class="h-4 w-4" />
+                同时发送检索到的资料片段
+              </label>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">附加请求头（每行一个，格式：名称: 值；留空表示不修改）</label>
+              <textarea v-model="runtimeForm.headersText" rows="2" placeholder="Authorization: Bearer xxxx"
+                class="w-full rounded border border-slate-300 px-3 py-1.5 font-mono text-xs outline-none focus:border-indigo-500"></textarea>
+              <p v-if="runtimeForm.info?.endpoint?.header_names?.length" class="mt-1 text-[11px] text-slate-400">
+                已保存的请求头：{{ runtimeForm.info.endpoint.header_names.join('、') }}（出于安全不显示内容）
+              </p>
+            </div>
+            <div v-if="agentDialog.editing && runtimeForm.info?.endpoint" class="flex flex-wrap items-center gap-2 text-xs">
+              <button @click="runConnectionTest" :disabled="runtimeForm.testing" data-testid="runtime-test"
+                class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">
+                {{ runtimeForm.testing ? '测试中…' : '测试连接' }}
+              </button>
+              <button @click="rotateSecret" :disabled="runtimeForm.testing"
+                class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">重新生成签名密钥</button>
+              <span v-if="runtimeForm.info.endpoint.last_test_at" :class="runtimeForm.info.endpoint.last_test_ok ? 'text-emerald-700' : 'text-red-600'">
+                {{ runtimeForm.info.endpoint.last_test_ok ? '上次测试通过' : '上次测试失败' }}：{{ runtimeForm.info.endpoint.last_test_message }}
+              </span>
+              <span v-else class="text-slate-400">还没有测试过连接</span>
+            </div>
+            <p v-if="runtimeForm.error" class="text-xs text-red-600">{{ runtimeForm.error }}</p>
+          </div>
           <template v-if="agentDialog.form.agent_type === 'department'">
             <div v-if="!agentDialog.editing && templatesForType('department').length">
               <label class="mb-1 block text-xs text-slate-500">使用预置模板（可选）</label>
@@ -327,13 +398,13 @@
               </select>
             </div>
             <div>
-              <label class="mb-1 block text-xs text-slate-500">部门代码</label>
+              <label class="mb-1 block text-xs text-slate-500">业务方向</label>
               <select v-model="agentDialog.form.department_code" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option value="hr">hr（人事）</option>
-                <option value="procurement">procurement（采购）</option>
-                <option value="sales">sales（销售）</option>
-                <option value="finance">finance（财务）</option>
-                <option value="it">it（IT）</option>
+                <option value="hr">人事</option>
+                <option value="procurement">采购</option>
+                <option value="sales">销售</option>
+                <option value="finance">财务</option>
+                <option value="it">IT</option>
               </select>
             </div>
             <div>
@@ -344,23 +415,25 @@
               </select>
             </div>
           </template>
-          <div>
-            <label class="mb-1 block text-xs text-slate-500">模型</label>
-            <input v-model="agentDialog.form.model_name" type="text"
-              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-slate-500">角色设定（role）</label>
-            <textarea v-model="agentDialog.form.role" rows="2"
-              class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-slate-500">任务说明（task）</label>
-            <textarea v-model="agentDialog.form.task" rows="2"
-              class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
-          </div>
+          <template v-if="runtimeForm.type === 'builtin'">
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">模型</label>
+              <input v-model="agentDialog.form.model_name" type="text"
+                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">角色设定</label>
+              <textarea v-model="agentDialog.form.role" rows="2"
+                class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-slate-500">任务说明</label>
+              <textarea v-model="agentDialog.form.task" rows="2"
+                class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
+            </div>
+          </template>
         </div>
-        <div class="mt-5 flex justify-end gap-2">
+        <div v-if="!runtimeForm.secret" class="mt-5 flex justify-end gap-2">
           <button @click="agentDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
           <button
             @click="submitAgentDialog"
@@ -767,12 +840,122 @@ const agentDialog = ref<{
   form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
 })
 
+// 运行方式：平台自带 / 接入外部智能体服务。外部服务的配置单独保存（有自己的接口），
+// 签名密钥只在生成那一刻返回一次，所以保存后要先让管理员复制，再关闭弹窗。
+const emptyRuntimeForm = () => ({
+  type: 'builtin' as 'builtin' | 'external',
+  url: '',
+  timeout: 60,
+  sendKnowledge: false,
+  headersText: '',
+  info: null as orgApi.AgentRuntimeInfo | null,
+  secret: null as string | null,
+  copied: false,
+  testing: false,
+  error: '',
+})
+const runtimeForm = ref(emptyRuntimeForm())
+
+const parseHeaders = (text: string): Record<string, string> | undefined => {
+  const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
+  if (!lines.length) return undefined
+  const headers: Record<string, string> = {}
+  for (const line of lines) {
+    const index = line.indexOf(':')
+    if (index <= 0) throw new Error(`请求头格式不对：${line.slice(0, 30)}（应为 名称: 值）`)
+    headers[line.slice(0, index).trim()] = line.slice(index + 1).trim()
+  }
+  return headers
+}
+
 const openCreateAgent = () => {
+  runtimeForm.value = emptyRuntimeForm()
   agentDialog.value = {
     visible: true,
     editing: null,
     form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
   }
+}
+
+const loadRuntimeInto = async (a: ManagedAgent) => {
+  try {
+    const info = await orgApi.getAgentRuntime(a.id)
+    runtimeForm.value.info = info
+    runtimeForm.value.type = info.runtime_type
+    if (info.endpoint) {
+      runtimeForm.value.url = info.endpoint.url
+      runtimeForm.value.timeout = info.endpoint.timeout_seconds
+      runtimeForm.value.sendKnowledge = info.endpoint.send_knowledge
+    }
+  } catch (e: any) {
+    runtimeForm.value.error = getErrorMessage(e, '读取运行方式失败')
+  }
+}
+
+const syncEditingVersion = async () => {
+  const editing = agentDialog.value.editing
+  if (!editing) return
+  await loadManagedAgents()
+  const fresh = managedAgents.value.find(x => x.id === editing.id)
+  if (fresh) agentDialog.value.editing = fresh
+}
+
+const saveRuntime = async (agentId: number, rotate = false): Promise<string | null> => {
+  const form = runtimeForm.value
+  const info = await orgApi.setAgentRuntime(agentId, form.type === 'external'
+    ? {
+      runtime_type: 'external', url: form.url.trim(), timeout_seconds: form.timeout,
+      send_knowledge: form.sendKnowledge, headers: parseHeaders(form.headersText), rotate_secret: rotate,
+    }
+    : { runtime_type: 'builtin' })
+  form.info = info
+  form.headersText = ''
+  await syncEditingVersion()
+  return info.secret || null
+}
+
+const runConnectionTest = async () => {
+  const editing = agentDialog.value.editing
+  if (!editing) return
+  runtimeForm.value.testing = true
+  runtimeForm.value.error = ''
+  try {
+    await saveRuntime(editing.id)            // 先保存当前填写的地址，再测
+    const result = await orgApi.testAgentRuntime(editing.id)
+    runtimeForm.value.info = result
+    await syncEditingVersion()
+  } catch (e: any) {
+    runtimeForm.value.error = e?.message && !e?.response ? e.message : getErrorMessage(e, '测试失败')
+  } finally {
+    runtimeForm.value.testing = false
+  }
+}
+
+const rotateSecret = async () => {
+  const editing = agentDialog.value.editing
+  if (!editing || !confirm('重新生成后，旧密钥立即失效，你的服务需要换成新密钥。继续吗？')) return
+  runtimeForm.value.error = ''
+  try {
+    runtimeForm.value.secret = await saveRuntime(editing.id, true)
+  } catch (e: any) {
+    runtimeForm.value.error = e?.message && !e?.response ? e.message : getErrorMessage(e, '重新生成失败')
+  }
+}
+
+const copySecret = async () => {
+  try {
+    await navigator.clipboard.writeText(runtimeForm.value.secret || '')
+    runtimeForm.value.copied = true
+  } catch {
+    runtimeForm.value.copied = false
+  }
+}
+
+const closeSecretPanel = async () => {
+  runtimeForm.value.secret = null
+  runtimeForm.value.copied = false
+  agentDialog.value.visible = false
+  await loadManagedAgents()
 }
 
 // 选模板只负责"帮用户填一遍初始值"，不是锁定不让改——选完之后 role/task/
@@ -790,6 +973,8 @@ const onApplyTemplate = (templateId: string) => {
 }
 
 const openEditAgent = (a: ManagedAgent) => {
+  runtimeForm.value = emptyRuntimeForm()
+  void loadRuntimeInto(a)
   agentDialog.value = {
     visible: true,
     editing: a,
@@ -802,9 +987,15 @@ const openEditAgent = (a: ManagedAgent) => {
 
 const submitAgentDialog = async () => {
   acting.value = true
+  runtimeForm.value.error = ''
   try {
+    if (runtimeForm.value.type === 'external' && !runtimeForm.value.url.trim()) {
+      runtimeForm.value.error = '请填写外部服务地址'
+      return
+    }
+    let newSecret: string | null = null
     if (agentDialog.value.editing) {
-      await orgApi.updateManagedAgent(agentDialog.value.editing.id, {
+      const updated = await orgApi.updateManagedAgent(agentDialog.value.editing.id, {
         name: agentDialog.value.form.name.trim(),
         model_name: agentDialog.value.form.model_name || undefined,
         department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
@@ -813,8 +1004,14 @@ const submitAgentDialog = async () => {
         task: agentDialog.value.form.task || undefined,
         expected_row_version: agentDialog.value.editing.row_version,
       })
+      const editingId = agentDialog.value.editing.id
+      const wasExternal = agentDialog.value.editing.runtime_type === 'external'
+      agentDialog.value.editing = updated          // 版本号已经 +1，后面重试保存要用新的
+      if (runtimeForm.value.type === 'external' || wasExternal) {
+        newSecret = await saveRuntime(editingId)
+      }
     } else {
-      await orgApi.createManagedAgent({
+      const created = await orgApi.createManagedAgent({
         name: agentDialog.value.form.name.trim(),
         agent_type: agentDialog.value.form.agent_type,
         department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
@@ -824,11 +1021,27 @@ const submitAgentDialog = async () => {
         task: agentDialog.value.form.task || undefined,
         template_id: agentDialog.value.form.template_id || undefined,
       })
+      if (runtimeForm.value.type === 'external') {
+        try {
+          newSecret = await saveRuntime(created.id)
+        } catch (e) {
+          // 智能体已经建好，只是外部服务没配成功：把弹窗切到“编辑”，避免再点保存时重复创建
+          agentDialog.value.editing = created
+          await loadManagedAgents()
+          throw e
+        }
+      }
+    }
+    if (newSecret) {
+      runtimeForm.value.secret = newSecret       // 保持弹窗打开，先让管理员复制密钥
+      await loadManagedAgents()
+      return
     }
     agentDialog.value.visible = false
     await loadManagedAgents()
   } catch (e: any) {
-    alert(getErrorMessage(e, '保存失败'))
+    if (e?.message && !e?.response) runtimeForm.value.error = e.message
+    else alert(getErrorMessage(e, '保存失败'))
   } finally {
     acting.value = false
   }

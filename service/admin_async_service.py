@@ -381,6 +381,10 @@ async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
     )
     bind_counts = {row[0]: int(row[1]) for row in bind_res.all()}
 
+    from models.enterprise_dao import get_team_names_async
+    team_names = await get_team_names_async(db, [s.team_id for s in spaces])
+    sensitivity_labels = {"public": "公开", "internal": "内部", "confidential": "机密", "restricted": "绝密"}
+
     items = [
         {
             "id": s.id,
@@ -389,6 +393,10 @@ async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
             "owner_name": owner_names.get(s.user_id, ""),
             "organization_id": s.organization_id,
             "team_id": s.team_id,
+            "team_name": team_names.get(s.team_id),
+            "scope_type": s.scope_type,
+            "sensitivity": s.sensitivity,
+            "sensitivity_label": sensitivity_labels.get(s.sensitivity, "内部"),
             "status": s.status,
             "is_enabled": bool(s.is_enabled),
             "purpose": s.purpose,

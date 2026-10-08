@@ -172,8 +172,47 @@ export interface ManagedAgent {
   team_id: number | null
   team_name: string | null
   model_name: string
+  runtime_type: 'builtin' | 'external'
   lifecycle_status: LifecycleStatus
   row_version: number
+}
+
+export interface AgentRuntimeInfo {
+  agent_id: number
+  runtime_type: 'builtin' | 'external'
+  endpoint: {
+    url: string
+    timeout_seconds: number
+    send_knowledge: boolean
+    header_names: string[]
+    last_test_at: string | null
+    last_test_ok: boolean | null
+    last_test_message: string | null
+  } | null
+  /** 签名密钥，仅在刚生成或重新生成时返回这一次 */
+  secret?: string
+}
+
+export async function getAgentRuntime(agentId: number): Promise<AgentRuntimeInfo> {
+  const { data } = await request.get(`/admin/org/agents/${agentId}/runtime`)
+  return data as AgentRuntimeInfo
+}
+
+export async function setAgentRuntime(agentId: number, payload: {
+  runtime_type: 'builtin' | 'external'
+  url?: string
+  timeout_seconds?: number
+  send_knowledge?: boolean
+  headers?: Record<string, string>
+  rotate_secret?: boolean
+}): Promise<AgentRuntimeInfo> {
+  const { data } = await request.put(`/admin/org/agents/${agentId}/runtime`, payload)
+  return data as AgentRuntimeInfo
+}
+
+export async function testAgentRuntime(agentId: number): Promise<AgentRuntimeInfo & { ok: boolean; message: string }> {
+  const { data } = await request.post(`/admin/org/agents/${agentId}/runtime/test`)
+  return data
 }
 
 export async function listManagedAgents(): Promise<ManagedAgent[]> {

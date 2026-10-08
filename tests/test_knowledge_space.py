@@ -50,6 +50,7 @@ class ToDictTest(unittest.TestCase):
             id=3, name="制度库", description="", purpose="policy", tags_json='["制度"]',
             is_enabled=1, status="active", doc_count=5, chunk_count=42, health_score=None,
             last_indexed_at=None, created_at=None, updated_at=None,
+            scope_type="personal", team_id=None, sensitivity="internal",
         )
         d = space_async_service._to_dict(space, {"bound_agent_count": 2})
         self.assertEqual(d["id"], 3)
@@ -58,6 +59,7 @@ class ToDictTest(unittest.TestCase):
         self.assertEqual(d["bound_agent_count"], 2)
         self.assertEqual(d["scope"], "personal")
         self.assertEqual(d["my_role"], "owner")
+        self.assertEqual((d["team_id"], d["sensitivity"], d["sensitivity_label"]), (None, "internal", "内部"))
 
 
 class CollectionKeyTest(unittest.TestCase):

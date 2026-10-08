@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，1839 条（2026-10-08 更新）；前端 Vitest 41 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1898 条（2026-10-08 更新）；前端 Vitest 41 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -151,6 +151,12 @@ npm run test:coverage
 - **Vitest 串行跑**（`fileParallelism: false`、`pool: 'forks'`）：几个 worker 同时写临时 / 缓存文件，在 Windows 和一些沙箱里会出现临时文件 ENOENT。CI 里还有一个 `frontend-windows` 任务在 Windows 上跑前端单测。
 - **CI 里 Linux 才出现的问题**：OTel SDK 在 Linux 上给批处理器注册了 fork 回调，批处理器被回收后，之后任何一次 fork 都会报 `'NoneType' object is not callable`
   （`otel.shutdown()` 现在会保留已关闭的 provider）；新增的文件被 `.gitignore` 的 `.env.*` 静默排除（本地测试通过、CI 里找不到）。Windows 本地全绿不代表 Linux CI 全绿，两边都要看。
+
+## 本机跑全量测试前：先停掉 Worker
+
+需要数据库的测试和本机开发共用同一个库。本机的后台 Worker 在跑时，会抢走测试里刚写入的事件和批量任务（`test_outbox`、`test_automation_batch`），
+开发库里手工设置过的试点基线也会让 `test_pilot` 的“默认基线”断言不成立——这 7 条在没有任何改动的基础提交上也会失败。
+CI 用全新数据库，不受影响；本机想看到全绿，先停掉 `npm run backend:worker`，并用测试专用库（`deploy/test-services/docker-compose.yml`）。
 
 ## 前端单元测试（Vitest）
 

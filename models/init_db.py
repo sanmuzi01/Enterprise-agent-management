@@ -188,6 +188,9 @@ class Agent(Base):
     # MySQL 唯一索引允许多个 NULL，只对已发布的那一个做唯一约束。不同部门可以各自发布
     # 同一业务方向的 Agent（销售一部、二部各有 CRM Agent），见迁移 20261002_0001。
     department_publish_key = Column(String(20), nullable=True)
+    # 运行方式：builtin = 平台自带的运行循环（提示词 + 工具 + 知识库）；
+    # external = 把对话转发给企业自己部署的 Agent 服务（地址等配置在 agent_external_endpoint）。
+    runtime_type = Column(String(20), nullable=False, default="builtin", server_default="builtin")
     skills: Mapped[List["Skill"]] = relationship(
         secondary="agent_skill", lazy=False, back_populates="agents"
     )
@@ -963,6 +966,30 @@ class AgentApiConnector(Base):
     static_query_json = Column(Text, nullable=True)      # 固定附加的查询参数/请求体字段（不暴露给 LLM）
     is_enabled = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class AgentExternalEndpoint(Base):
+    """外部 Agent 服务的接入配置（Agent.runtime_type = external 时使用）。
+
+    平台把对话按固定协议（docs/external-agent-protocol.md）转发到 url；每次请求都用
+    secret_encrypted 里的密钥做 HMAC 签名，对方据此确认请求确实来自平台。
+    地址、密钥、附加请求头都由管理员预先配置，模型和用户输入无法改变它们。"""
+    __tablename__ = "agent_external_endpoint"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_agent_external_endpoint_agent"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(Integer, ForeignKey("agent.id", name="fk_agent_external_endpoint_agent"), nullable=False)
+    url = Column(String(1000), nullable=False)
+    secret_encrypted = Column(Text, nullable=False)       # Fernet 加密的签名密钥
+    headers_encrypted = Column(Text, nullable=True)       # Fernet 加密的附加请求头（可能含 Authorization）
+    timeout_seconds = Column(Integer, nullable=False, default=60)
+    send_knowledge = Column(Integer, nullable=False, default=0)   # 1 = 把检索到的资料片段一并发给对方（受密级策略约束）
+    last_test_at = Column(DateTime, nullable=True)
+    last_test_ok = Column(Integer, nullable=True)
+    last_test_message = Column(String(300), nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class EvalSet(Base):

@@ -39,9 +39,20 @@
         还没有知识库空间。点右上角「新建空间」，把一类企业资料归到一起。
       </div>
 
+      <template v-else>
+        <div class="mb-4 flex flex-wrap items-center gap-2 text-xs" data-testid="space-scope-filter">
+          <button v-for="option in scopeOptions" :key="option.key" @click="scopeFilter = option.key"
+            class="rounded-full border px-3 py-1 transition-colors"
+            :class="scopeFilter === option.key ? 'border-sky-400 bg-sky-50 text-sky-700' : 'border-sky-200 bg-white text-slate-600 hover:bg-sky-50'">
+            {{ option.label }}<span class="ml-1 text-slate-400">{{ option.count }}</span>
+          </button>
+        </div>
+        <div v-if="!visibleSpaces.length" class="rounded-lg border border-dashed border-sky-200 bg-white/60 p-10 text-center text-sm text-slate-500">
+          这个分类下还没有知识库空间。
+        </div>
       <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <SpaceCard
-          v-for="s in spaces"
+          v-for="s in visibleSpaces"
           :key="s.id"
           :space="s"
           @open="router.push(`/knowledge-spaces/${s.id}`)"
@@ -49,6 +60,7 @@
           @delete="onDelete(s)"
         />
       </div>
+      </template>
     </main>
 
     <!-- 新建 / 编辑弹窗 -->
@@ -66,6 +78,23 @@
           <option :value="null">不指定</option>
           <option v-for="p in purposes" :key="p.key" :value="p.key">{{ p.label }}</option>
         </select>
+
+        <label class="mt-3 block text-xs text-slate-500">归属</label>
+        <select v-model="form.team_id" :disabled="!canChangeScope" data-testid="space-scope-select"
+          class="mt-1 w-full rounded border border-sky-200 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:bg-slate-50 disabled:text-slate-400">
+          <option :value="null">个人空间（只有我和被我加入的人能看到）</option>
+          <option v-for="d in publishableDepartments" :key="d.id" :value="d.id">发布到「{{ d.name }}」（部门成员自动可读）</option>
+          <option v-if="lockedDepartment" :value="lockedDepartment.id" disabled>已发布在「{{ lockedDepartment.name }}」</option>
+        </select>
+        <p v-if="!canChangeScope" class="mt-1 text-[11px] text-slate-400">这个空间已经发布在部门里，只有该部门的部门管理员可以调整归属和密级。</p>
+        <p v-else-if="!publishableDepartments.length" class="mt-1 text-[11px] text-slate-400">只有部门管理员可以把知识库发布到部门。</p>
+
+        <label class="mt-3 block text-xs text-slate-500">密级</label>
+        <select v-model="form.sensitivity" :disabled="!canChangeScope" data-testid="space-sensitivity-select"
+          class="mt-1 w-full rounded border border-sky-200 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:bg-slate-50 disabled:text-slate-400">
+          <option v-for="s in sensitivities" :key="s.key" :value="s.key">{{ s.label }}</option>
+        </select>
+        <p class="mt-1 text-[11px] text-slate-400">{{ sensitivityHint }}</p>
 
         <label class="mt-3 block text-xs text-slate-500">描述（可选）</label>
         <textarea v-model="form.description" rows="2" maxlength="500"
@@ -90,7 +119,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Plus } from 'lucide-vue-next'
 import {
@@ -105,12 +134,15 @@ const router = useRouter()
 
 const spaces = ref<KnowledgeSpace[]>([])
 const purposes = ref<{ key: string; label: string }[]>([])
+const publishableDepartments = ref<{ id: number; name: string }[]>([])
+const sensitivities = ref<{ key: string; label: string }[]>([])
+const scopeFilter = ref<string>('all')
 const loading = ref(true)
 const loadError = ref('')
 
 const formOpen = ref(false)
 const editing = ref<KnowledgeSpace | null>(null)
-const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [] })
+const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [], team_id: null, sensitivity: 'internal' })
 const tagsText = ref('')
 const formError = ref('')
 const saving = ref(false)
@@ -122,6 +154,8 @@ async function reload() {
     const res = await listSpaces()
     spaces.value = res.items
     purposes.value = res.purposes
+    publishableDepartments.value = res.publishable_departments || []
+    sensitivities.value = res.sensitivities || []
   } catch (e: any) {
     loadError.value = getErrorMessage(e, '加载知识库空间失败')
   } finally {
@@ -129,10 +163,55 @@ async function reload() {
   }
 }
 
+// 筛选：全部 / 个人 / 各部门
+const scopeOptions = computed(() => {
+  const departments = new Map<number, { name: string; count: number }>()
+  let personal = 0
+  for (const s of spaces.value) {
+    if (s.scope === 'department' && s.team_id != null) {
+      const entry = departments.get(s.team_id) || { name: s.team_name || '部门', count: 0 }
+      entry.count += 1
+      departments.set(s.team_id, entry)
+    } else {
+      personal += 1
+    }
+  }
+  const options = [{ key: 'all', label: '全部', count: spaces.value.length }]
+  if (personal) options.push({ key: 'personal', label: '个人与分享', count: personal })
+  for (const [id, entry] of departments) options.push({ key: `team:${id}`, label: entry.name, count: entry.count })
+  return options
+})
+
+const visibleSpaces = computed(() => {
+  if (scopeFilter.value === 'all') return spaces.value
+  if (scopeFilter.value === 'personal') return spaces.value.filter((s) => s.scope !== 'department')
+  const teamId = Number(scopeFilter.value.replace('team:', ''))
+  return spaces.value.filter((s) => s.scope === 'department' && s.team_id === teamId)
+})
+
+// 已经发布在部门里的空间，只有该部门的部门管理员能改归属和密级
+const lockedDepartment = computed(() => {
+  const s = editing.value
+  if (!s || s.scope !== 'department' || s.team_id == null) return null
+  return publishableDepartments.value.some((d) => d.id === s.team_id) ? null : { id: s.team_id, name: s.team_name || '部门' }
+})
+const canChangeScope = computed(() => !lockedDepartment.value)
+
+const sensitivityHint = computed(() => {
+  switch (form.sensitivity) {
+    case 'public': return '公开：可以发给任何模型。'
+    case 'confidential': return '机密：只会发给企业批准的模型，不会发给外部云模型和外部智能体服务。'
+    case 'restricted': return '绝密：不会发给任何模型；发布在部门里时，部门成员也不会自动获得访问权限。'
+    default: return '内部：默认级别，可以发给已配置的模型。'
+  }
+})
+
 function openCreate() {
   editing.value = null
   form.name = ''
   form.description = ''
+  form.team_id = null
+  form.sensitivity = 'internal'
   form.purpose = null
   tagsText.value = ''
   formError.value = ''
@@ -143,6 +222,8 @@ function openEdit(s: KnowledgeSpace) {
   editing.value = s
   form.name = s.name
   form.description = s.description
+  form.team_id = s.scope === 'department' ? s.team_id : null
+  form.sensitivity = s.sensitivity || 'internal'
   form.purpose = s.purpose
   tagsText.value = s.tags.join(', ')
   formError.value = ''
@@ -157,6 +238,16 @@ async function submit() {
     description: form.description?.trim() || '',
     purpose: form.purpose,
     tags: tagsText.value.split(',').map((t) => t.trim()).filter(Boolean),
+  }
+  // 创建时只在选了部门时才带上；编辑时只有可以调整归属的人才带（否则后端会拒绝）
+  if (editing.value) {
+    if (canChangeScope.value) {
+      payload.team_id = form.team_id ?? null
+      payload.sensitivity = form.sensitivity
+    }
+  } else {
+    if (form.team_id != null) payload.team_id = form.team_id
+    payload.sensitivity = form.sensitivity
   }
   try {
     if (editing.value) await updateSpace(editing.value.id, payload)

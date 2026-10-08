@@ -35,6 +35,8 @@
 | **Redis 降级策略** | `tests/test_redis_degradation.py`；真实 Redis 中途停掉再启动的实测 | Redis 不可用时限流悄悄退回各进程自己的内存，多个 Worker 时攻击者的额度乘以进程数。现在：登录 / 短信 / 注册 / 找回密码按 `RATE_LIMIT_CRITICAL_FALLBACK`（`strict` 生产默认：额度按进程数均分，合计不超过原额度；`open`；`closed`）；重任务并发名额 `CONCURRENCY_REDIS_DOWN=closed`（生产默认，停止接收新任务）；每次降级计入 `agent_limiter_redis_degraded_total`，`AgentRedisDown` / `AgentLimiterDegraded` 告警 |
 | **令牌接口分离** | `tests/test_auth_token_endpoint.py`、`tests/test_session_cookie.py` | 浏览器登录响应体里还带着 JWT，登录时运行的页面脚本能读到。现在 `/user/login` 只下发 HttpOnly Cookie；脚本 / 集成走 `POST /auth/token`（单独限流、审计 `auth.token_issued`、可关闭，生产默认关闭） |
 | **上传内存模型** | `tests/test_upload_limits.py`（含 4 个并发 50MB 上传的内存峰值测试） | 上一版分块放进列表再 `b"".join()`，批量上限 200MB，并发上传时单个 Worker 仍可能占几百 MB。现在每个分块直接写临时文件、入库时直接 rename 到最终位置（跨磁盘退回流式拷贝），累计上限默认 50MB 与 Nginx 对齐，同一用户同时上传有并发上限；没有写权限或文件类型不对的请求在收文件之前就被拒绝 |
+| **外部智能体接入** | `tests/test_external_agent.py`（假的外部服务 + 示例服务，31 条以上） | 新功能的安全边界在上线前就用测试固定：① 地址：只允许 http/https、不能带用户名密码、内网和本机默认拒绝（内网服务必须进 `EXTERNAL_AGENT_ALLOWED_HOSTS`）、云元数据地址即使进了白名单也拒绝、每次调用前重新校验；② 请求带 HMAC 签名并带时间戳（防篡改、防重放），附加请求头不能覆盖签名头；③ 不跟随重定向（302 到元数据地址被拒）；④ 超时、响应体大小、答案长度都有上限；⑤ 对方的报错细节不会透给用户；⑥ 密钥与请求头在库里是密文，查询接口只返回名字，密钥只在生成时返回一次；⑦ 个人智能体不能接外部服务；⑧ 无权使用智能体的人永远不会触达外部服务；⑨ 机密、绝密资料按外部模型处理，不会发出去 |
+| **部门知识库** | `tests/test_knowledge_departments.py`（同步与异步两条访问路径各验证一遍） | 部门成员自动只读但不能写；绝密不继承部门成员资格；`scope_type` 不是部门的旧数据不因为有 `team_id` 就被开放；只有部门管理员能发布到部门、调整归属和密级；收回或升为绝密后成员立即失去访问 |
 | **上传大小** | `tests/test_upload_limits.py`（假文件数读了多少字节 + 真实路由） | 知识库上传 `await file.read()` 没有上限，批量上传还不限个数——现在分块读取、超过单文件 / 一次请求累计 / 文件个数上限立即 413（不先读完再判断）；批量上传里“不支持的文件类型”（用户输入错误）会被兜底变成 500 并在问题中心记一条假故障——已修 |
 
 ## 修复之后的不变式（e2e 里逐条断言）

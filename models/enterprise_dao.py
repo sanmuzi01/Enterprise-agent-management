@@ -7,7 +7,7 @@
 """
 from typing import List, Optional
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 # 跟 scripts/backfill_default_organization.py 用的是同一个名字——那个脚本从这里导入，
@@ -166,3 +166,63 @@ async def enroll_in_default_organization_async(db: AsyncSession, user_id: int) -
         await db.commit()
     except Exception:  # noqa: BLE001 —— 补全失败不影响注册主流程
         await db.rollback()
+
+
+# ---------------- 知识库按部门划分 ----------------
+# 部门空间（scope_type='department'）对本部门在职成员自动可读（viewer）；
+# 但 restricted（绝密）密级不继承部门成员资格，只能由所有者 / 部门管理员 / 被明确加入的成员访问。
+# 编辑、管理仍然需要空间角色或部门管理员身份，成员资格本身只给“读”。
+_SPACE_IDS_WHERE_TEAM_MEMBER_SQL = (
+    "SELECT ks.id FROM knowledge_spaces ks "
+    "JOIN team_members tm ON tm.team_id = ks.team_id "
+    "JOIN teams t ON tm.team_id = t.id AND t.status = 'active' "
+    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = t.organization_id "
+    "AND om.user_id = tm.user_id AND om.status = 'active' "
+    "WHERE tm.user_id = :uid AND tm.status = 'active' "
+    "AND ks.scope_type = 'department' AND ks.sensitivity <> 'restricted'"
+)
+
+_ADMIN_TEAMS_SQL = (
+    "SELECT t.id, t.name, t.organization_id FROM team_members tm "
+    "JOIN teams t ON tm.team_id = t.id AND t.status = 'active' "
+    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = t.organization_id "
+    "AND om.user_id = tm.user_id AND om.status = 'active' "
+    "JOIN enterprise_role er ON tm.role_id = er.id "
+    "WHERE tm.user_id = :uid AND tm.status = 'active' AND er.scope = 'team' AND er.code = 'admin' "
+    "ORDER BY t.id"
+)
+
+
+def department_space_inherits_membership(space) -> bool:
+    """这个空间是否把“读”权限给本部门全体成员。"""
+    return bool(space is not None and space.scope_type == "department" and space.team_id is not None
+                and space.sensitivity != "restricted")
+
+
+def list_space_ids_where_team_member(db, user_id: int) -> List[int]:
+    return [r[0] for r in db.execute(text(_SPACE_IDS_WHERE_TEAM_MEMBER_SQL), {"uid": user_id}).all()]
+
+
+def list_admin_teams(db, user_id: int) -> List[dict]:
+    """用户担任部门管理员的部门（有权把知识库空间发布到这些部门）。"""
+    return [{"id": r[0], "name": r[1], "organization_id": r[2]} for r in db.execute(text(_ADMIN_TEAMS_SQL), {"uid": user_id}).all()]
+
+
+async def list_space_ids_where_team_member_async(db: AsyncSession, user_id: int) -> List[int]:
+    res = await db.execute(text(_SPACE_IDS_WHERE_TEAM_MEMBER_SQL), {"uid": user_id})
+    return [row[0] for row in res.all()]
+
+
+async def list_admin_teams_async(db: AsyncSession, user_id: int) -> List[dict]:
+    res = await db.execute(text(_ADMIN_TEAMS_SQL), {"uid": user_id})
+    return [{"id": r[0], "name": r[1], "organization_id": r[2]} for r in res.all()]
+
+
+async def get_team_names_async(db: AsyncSession, team_ids) -> dict:
+    ids = sorted({int(t) for t in team_ids if t is not None})
+    if not ids:
+        return {}
+    res = await db.execute(text("SELECT id, name FROM teams WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": ids})
+    return {r[0]: r[1] for r in res.all()}
