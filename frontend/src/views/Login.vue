@@ -497,7 +497,7 @@ const submit = async () => {
 }
 
 onMounted(() => {
-  if (userStore.token) router.push(userStore.user?.is_admin ? '/admin' : '/home')
+  if (userStore.isLoggedIn()) router.push(userStore.user?.is_admin ? '/admin' : '/home')
 })
 
 onUnmounted(() => {

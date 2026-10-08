@@ -1,4 +1,5 @@
 import request from '../utils/request'
+import { csrfHeaders } from '../utils/session'
 
 // SSE 事件类型（与 react_engine.py 中 sse_events.make_* 生成的一致）
 export type SseEventType =
@@ -86,13 +87,13 @@ export interface SendStreamOptions {
  */
 export async function sendStream(opts: SendStreamOptions): Promise<void> {
   const { agentId, conversationId, message, attachmentIds, onEvent, signal } = opts
-  const token = localStorage.getItem('token') || ''
 
   const resp = await fetch(`/api/chat/${agentId}/stream`, {
     method: 'POST',
+    credentials: 'include', // 登录令牌在 HttpOnly Cookie 里
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...csrfHeaders('POST'),
     },
     body: JSON.stringify({
       message,

@@ -109,7 +109,7 @@ app.add_middleware(
     allow_origins=_env_list("CORS_ALLOW_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "traceparent"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "X-CSRF-Token", "traceparent"],
     expose_headers=["X-Request-ID", "X-Trace-ID", "X-Process-Time"],
 )
 app.add_middleware(OperationLogMiddleware)

@@ -18,10 +18,13 @@
 
 ## 1. 准备配置
 
-复制生产模板并填写真实密钥：
+复制生产模板并填写真实密钥。**两份模板按部署方式选一份**（变量一一对应，只有主机地址不同：容器里 `127.0.0.1` 指的是容器自己，所以 Docker 部署要用服务名 `db` / `redis` / `enterprise-hub`）：
 
 ```powershell
+# 直接在服务器上跑（systemd / 进程）：
 Copy-Item .env.production.example .env
+# docker-compose.prod.yml 部署：
+Copy-Item .env.production.docker.example .env
 ```
 
 必须修改：
@@ -194,6 +197,17 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
 `api`/`worker`/`enterprise-hub`。`scripts/release_check.py`/生产启动校验
 （`service/config_validation.py`）会在 `MYSQL_ROOT_PASSWORD` 缺失或跟业务账号
 密码重复时直接报错拦下来，不会等到真出事才发现。
+
+## 2.3 登录会话、内容安全策略、Redis 与上传上限
+
+- **登录 Cookie**：令牌放在 HttpOnly Cookie 里（页面脚本读不到），生产必须带 `Secure`（只在 https 上发送），所以**生产必须走 https**。
+  `SESSION_COOKIE_SECURE=0` 会被启动校验拒绝；`SESSION_COOKIE_SAMESITE` 默认 `lax`，可改 `strict`。前端和 API 必须同源（Nginx 把 `/api/` 反代到后端，模板已经是这样）。
+- **内容安全策略（CSP）**：`deploy/nginx.conf` 里的 `Content-Security-Policy` 只允许加载本站的脚本和向本站发请求。改前端时不要重新引入内联脚本或外部脚本 / 字体 / 图片地址
+  （`npm --prefix frontend run preview` 用同一份策略，能在上线前本地看到有没有挡住页面自己的东西；`tests/test_csp_policy.py` 核对两处一致）。API 响应自带最严格的策略。
+- **Redis**：里面放着限流计数、验证码摘要、模型配置缓存（只有密文）。只放在内网 / 容器内部网络，**不要对外发布端口**；生产建议设口令（`REDIS_URL=redis://:口令@主机:6379/0`），
+  跨主机连接用 `rediss://`（TLS）并配 ACL。没有口令时启动校验会给出警告。缓存内容只用 JSON，不再使用 pickle。
+- **上传上限**：`KNOWLEDGE_UPLOAD_MAX_BYTES`（单个文件，默认 50MB）、`KNOWLEDGE_UPLOAD_REQUEST_MAX_BYTES`（一次请求累计，默认 200MB）、
+  `KNOWLEDGE_UPLOAD_MAX_FILES`（批量个数，默认 20）；Nginx 的 `client_max_body_size` 和 `MAX_REQUEST_BODY_BYTES` 要不小于它们。
 
 ## 3. 健康检查
 

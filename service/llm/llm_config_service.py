@@ -21,6 +21,17 @@ def invalidate_user_config_cache(user_id: int, model_name: str = None):
     config_cache.invalidate(prefix=("llm_config_list", user_id))
     config_cache.invalidate(("embedding_api_config", user_id))
 
+
+def _reveal(payload):
+    """缓存里的配置只带密文（和数据库里一样）；调用方要用时才在内存里解密。Redis 即使被读到，也拿不到明文密钥。"""
+    if not payload:
+        return payload
+    revealed = dict(payload)
+    if revealed.get("api_key"):
+        revealed["api_key"] = decrypt(revealed["api_key"])
+    return revealed
+
+
 def list_configs(db,user)->list:
     """获取用户的模型配置列表（api_key 脱敏显示）"""
     def load():
@@ -177,8 +188,9 @@ def get_api_key(db,user_id:int,model_name:str)->str:
         config = get_config_by_user_and_model(db, user_id, model_name)
         if not config or not config.is_active:
             return None
-        return decrypt(config.api_key)
-    return config_cache.get_or_set(("llm_api_key", user_id, model_name), load)
+        return config.api_key          # 密文；见 _reveal
+    cipher = config_cache.get_or_set(("llm_api_key", user_id, model_name), load)
+    return decrypt(cipher) if cipher else None
 
 def get_api_config(db, user_id: int, model_name: str):
     """获取当前用户某个模型的完整调用配置。"""
@@ -188,10 +200,10 @@ def get_api_config(db, user_id: int, model_name: str):
             return None
         return {
             "model_name": config.model_name,
-            "api_key": decrypt(config.api_key),
+            "api_key": config.api_key,
             "api_url": default_api_url(config.model_name),
         }
-    return config_cache.get_or_set(("llm_api_config", user_id, model_name), load)
+    return _reveal(config_cache.get_or_set(("llm_api_config", user_id, model_name), load))
 
 
 async def async_get_api_config(db, user_id: int, model_name: str):
@@ -200,17 +212,17 @@ async def async_get_api_config(db, user_id: int, model_name: str):
     model_name = normalize_model_name(model_name)
     cached = config_cache.get(("llm_api_config", user_id, model_name))
     if cached is not None:
-        return cached
+        return _reveal(cached)
     config = await get_config_by_user_and_model_async(db, user_id, model_name)
     if not config or not config.is_active:
         return None
     payload = {
         "model_name": config.model_name,
-        "api_key": decrypt(config.api_key),
+        "api_key": config.api_key,
         "api_url": default_api_url(config.model_name),
     }
     config_cache.set(("llm_api_config", user_id, model_name), payload)
-    return payload
+    return _reveal(payload)
 
 
 async def async_get_api_key(db, user_id: int, model_name: str) -> str:
@@ -218,18 +230,18 @@ async def async_get_api_key(db, user_id: int, model_name: str) -> str:
     model_name = normalize_model_name(model_name)
     cached = config_cache.get(("llm_api_key", user_id, model_name))
     if cached is not None:
-        return cached
+        return decrypt(cached)
     config = await get_config_by_user_and_model_async(db, user_id, model_name)
-    value = decrypt(config.api_key) if (config and config.is_active) else None
-    config_cache.set(("llm_api_key", user_id, model_name), value)
-    return value
+    cipher = config.api_key if (config and config.is_active) else None
+    config_cache.set(("llm_api_key", user_id, model_name), cipher)
+    return decrypt(cipher) if cipher else None
 
 
 async def async_get_first_embedding_config(db, user_id: int):
     """`get_first_embedding_config` 的 async 版（缓存键一致）。"""
     cached = config_cache.get(("embedding_api_config", user_id))
     if cached is not None:
-        return cached
+        return _reveal(cached)
     priority = [
         "embedding-3", "embedding-2",
         "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002",
@@ -243,7 +255,7 @@ async def async_get_first_embedding_config(db, user_id: int):
         if config:
             payload = {
                 "model_name": config.model_name,
-                "api_key": decrypt(config.api_key),
+                "api_key": config.api_key,
                 "api_url": default_api_url(config.model_name),
             }
             break
@@ -252,11 +264,11 @@ async def async_get_first_embedding_config(db, user_id: int):
         if glm_config:
             payload = {
                 "model_name": "embedding-3",
-                "api_key": decrypt(glm_config.api_key),
+                "api_key": glm_config.api_key,
                 "api_url": default_api_url("embedding-3"),
             }
     config_cache.set(("embedding_api_config", user_id), payload)
-    return payload
+    return _reveal(payload)
 
 
 def get_first_embedding_config(db, user_id: int):
@@ -279,18 +291,18 @@ def get_first_embedding_config(db, user_id: int):
             if config:
                 return {
                     "model_name": config.model_name,
-                    "api_key": decrypt(config.api_key),
+                    "api_key": config.api_key,
                     "api_url": default_api_url(config.model_name),
                 }
         glm_config = active.get("glm-4")
         if glm_config:
             return {
                 "model_name": "embedding-3",
-                "api_key": decrypt(glm_config.api_key),
+                "api_key": glm_config.api_key,
                 "api_url": default_api_url("embedding-3"),
             }
         return None
-    return config_cache.get_or_set(("embedding_api_config", user_id), load)
+    return _reveal(config_cache.get_or_set(("embedding_api_config", user_id), load))
 
 
 def test_config(db, user, model_name: str) -> Dict[str, Any]:

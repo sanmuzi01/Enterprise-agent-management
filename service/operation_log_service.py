@@ -13,10 +13,15 @@ def _format_dt(value):
     return value.strftime("%Y-%m-%d %H:%M:%S") if value else None
 
 
-def extract_user_from_authorization(authorization: Optional[str]) -> Dict:
-    if not authorization or not authorization.lower().startswith("bearer "):
+def extract_user_from_authorization(authorization: Optional[str], cookie_token: Optional[str] = None) -> Dict:
+    """从请求里认出是谁：Authorization: Bearer 优先，没有就用浏览器的会话 Cookie（操作日志不能因为前端改用 Cookie 就变成匿名）。"""
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+    elif cookie_token:
+        token = cookie_token
+    else:
         return {}
-    payload = decode_access_token(authorization.split(" ", 1)[1].strip())
+    payload = decode_access_token(token)
     if not payload:
         return {}
     user_id = payload.get("user_id")

@@ -1,9 +1,10 @@
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from service.exceptions import InvalidInput
 from pydantic import BaseModel,Field
-from service import auth_async_service
+from service import auth_async_service, session_cookie
+from service.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 from service.password_policy import MAX_LENGTH as PW_MAX_LENGTH, MIN_LENGTH as PW_MIN_LENGTH
 from service.phone_verification_service import normalize_phone
 from service.phone_verification_async_service import async_send_register_code, async_send_verification_code
@@ -91,6 +92,7 @@ class WorkspaceCommandRequest(BaseModel):
 async def login(
         user: LoginUser,
         request: Request,
+        response: Response,
         async_db=Depends(get_async_db),
 ):
     client_ip = request.client.host if request.client else "unknown"
@@ -114,7 +116,17 @@ async def login(
         )
     except LimitExceeded as e:
         raise _limit_error(e)
-    return await auth_async_service.login(async_db, user.name, user.password)
+    result = await auth_async_service.login(async_db, user.name, user.password)
+    # 浏览器前端靠这个 HttpOnly Cookie 保持登录（JavaScript 读不到令牌）；响应体里仍带 access_token，给脚本 / 集成用
+    session_cookie.issue(response, result["access_token"], ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    return result
+
+
+@router.post("/logout", summary="退出登录（清除浏览器里的登录 Cookie）")
+async def logout(response: Response):
+    """不需要登录态：只是让浏览器丢掉两个 Cookie。已经签发的令牌要让它立即失效，用 /user/logout-all。"""
+    session_cookie.clear(response)
+    return {"message": "已退出登录"}
 #注册
 @router.post("/register",summary="用户注册")
 async def register(
@@ -338,6 +350,7 @@ async def change_password(
 
 @router.post("/logout-all", summary="退出所有设备")
 async def logout_all_devices(
+        response: Response,
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_user_async),
 ):
@@ -347,4 +360,5 @@ async def logout_all_devices(
     设备上也登录着"这种场景用的。
     """
     await auth_async_service.logout_all_devices(async_db, current_user.id)
+    session_cookie.clear(response)
     return {"message": "已退出所有设备，请重新登录"}

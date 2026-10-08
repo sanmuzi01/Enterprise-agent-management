@@ -37,6 +37,7 @@ class RouteIsolationTest(unittest.TestCase):
     # ---- 登录 / 鉴权门槛 ----
 
     def test_login_success_and_wrong_password(self):
+        self.addCleanup(self.client.cookies.clear)      # 登录会下发会话 Cookie；别让它留在共享客户端里变成后面用例的“已登录”
         ok = self.client.post("/user/login", json={"name": self.alice["name"], "password": self.alice["password"]})
         self.assertEqual(ok.status_code, 200, ok.text)
         self.assertIn("access_token", ok.json())
@@ -45,6 +46,7 @@ class RouteIsolationTest(unittest.TestCase):
         self.assertEqual(bad.status_code, 401)
 
     def test_protected_route_requires_token(self):
+        self.client.cookies.clear()                     # 真正的“没登录”：既没有 Authorization 头，也没有会话 Cookie
         self.assertIn(self.client.get("/user/widgets").status_code, (401, 403))
         self.assertEqual(self.client.get("/user/widgets", headers=self.alice["headers"]).status_code, 200)
 

@@ -20,6 +20,7 @@ def run(command: List[str]) -> None:
 # 上线关键文件（非容器部署）
 REQUIRED_FILES = [
     ".env.production.example",
+    ".env.production.docker.example",
     "scripts/load_test.py",
     "scripts/crawl_check.py",
     "alembic.ini",
@@ -37,6 +38,16 @@ REQUIRED_FILES = [
     "service/observability/otel.py",
     "scripts/e2e_observability.py",
     "scripts/e2e_kafka.py",
+    "service/session_cookie.py",
+    "utils/upload_limits.py",
+    "frontend/src/utils/session.ts",
+    "frontend/public/theme-init.js",
+    "scripts/check_session_browser.py",
+    "scripts/check_vuln_exceptions.py",
+    ".github/vuln-exceptions.json",
+    ".github/dependabot.yml",
+    "deploy/test-services/docker-compose.yml",
+    "tests/test_redis_concurrency.py",
     "docs/database-migrations.md",
     "docs/testing.md",
     # 知识库空间（阶段1）

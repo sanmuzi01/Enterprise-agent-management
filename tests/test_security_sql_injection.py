@@ -224,7 +224,7 @@ class FuzzTest(unittest.TestCase):
         problems, count = [], 0
         for path, method, operation in self.targets():
             try:
-                base, _ = self.send(who["headers"], path, method, operation, BASELINE)
+                base, base_elapsed = self.send(who["headers"], path, method, operation, BASELINE)
             except Exception:  # noqa: BLE001 —— 客户端抛异常的路由（流式 / 未处理）不属于本测试的判断范围
                 continue
             if base.status_code in (401, 403, 404, 405, 422) and base.status_code != 422:
@@ -243,7 +243,13 @@ class FuzzTest(unittest.TestCase):
                 elif SQL_ERROR.search(text) and not SQL_ERROR.search(base.text[:4000]):
                     problems.append(f"{label} {method} {path} payload={payload!r}: 响应泄漏数据库/堆栈信息：{SQL_ERROR.search(text).group(0)}")
                 elif "SLEEP" in payload and elapsed > 2.5:
-                    problems.append(f"{label} {method} {path} payload={payload!r}: 疑似时间盲注，耗时 {elapsed:.1f}s")
+                    # 判据是“比同一路由的正常请求多出来的时间”：SLEEP(3) 的注入会稳定多出 3 秒；
+                    # 而像 /system/readiness 这种本来就要探测好几个依赖的路由，机器忙的时候自己就会慢到 2.5 秒，跟载荷无关。
+                    # 慢的时候把基线再量一次（取两次里更慢的），仍然多出 2 秒以上才算。
+                    _, recheck = self.send(who["headers"], path, method, operation, BASELINE)
+                    extra = elapsed - max(base_elapsed, recheck)
+                    if extra >= 2.0:
+                        problems.append(f"{label} {method} {path} payload={payload!r}: 疑似时间盲注，耗时 {elapsed:.1f}s（正常请求 {max(base_elapsed, recheck):.1f}s）")
         return problems, count
 
     def test_normal_user_cannot_inject_anywhere(self):

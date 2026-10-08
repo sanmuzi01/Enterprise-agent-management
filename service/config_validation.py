@@ -145,6 +145,22 @@ def validate_runtime_config() -> Dict[str, object]:
     redis_url = os.getenv("REDIS_URL", "")
     if production:
         _add_required(checks, "REDIS_URL", redis_url)
+        if redis_url and not _is_blank(redis_url):
+            # Redis 里放着限流计数、验证码摘要、模型配置缓存：要把它当成“不可信的数据源”来保护，而不是内网里随便连的组件
+            has_password = "@" in redis_url.split("://", 1)[-1].split("/", 1)[0]
+            if not has_password:
+                checks.append({
+                    "name": "REDIS_PASSWORD", "ok": True, "level": "warn",
+                    "message": "REDIS_URL 没有口令：Redis 只能放在内网 / 容器内部网络，且不要对外发布端口；"
+                               "建议用 redis://:口令@主机:6379/0（跨主机连接用 rediss:// 加 TLS）",
+                })
+
+    session_secure = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower()
+    if production and session_secure in {"0", "false", "no"}:
+        checks.append({
+            "name": "SESSION_COOKIE_SECURE", "ok": False, "level": "error",
+            "message": "生产环境登录 Cookie 必须带 Secure（只在 https 上发送）：不要把 SESSION_COOKIE_SECURE 设成 0",
+        })
     else:
         checks.append({
             "name": "REDIS_URL",

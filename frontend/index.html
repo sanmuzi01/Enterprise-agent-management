@@ -6,14 +6,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="color-scheme" content="light dark" />
     <title>AI 助手工作台</title>
-    <script>
-      // 首屏前就定好主题，避免深色用户先闪一下白屏
-      try {
-        var t = localStorage.getItem('theme')
-        if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-        document.documentElement.setAttribute('data-theme', t)
-      } catch (e) {}
-    </script>
+    <!-- 首屏前就定好主题，避免深色用户先闪一下白屏。放在外部文件里，这样内容安全策略（CSP）可以完全禁止内联脚本 -->
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="app"></div>

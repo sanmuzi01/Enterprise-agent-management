@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，880 条（2026-09-28 更新）。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1777 条（2026-10-07 更新）；前端 Vitest 32 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -31,10 +31,31 @@ npm run frontend:build
 npm run load:test -- --base-url http://127.0.0.1 --scenario health --requests 200 --concurrency 20
 ```
 
+## 测试用的 MySQL 和 Redis（一条命令）
+
+没有 MySQL / Redis 时，依赖它们的用例会自动**跳过**——本地容易误以为“全绿”。起一套测试用的：
+
+```powershell
+docker compose -f deploy/test-services/docker-compose.yml up -d
+$env:DB_HOST='127.0.0.1'; $env:DB_PORT='3307'; $env:DB_USER='root'; $env:DB_PASSWORD='ci-root-password'; $env:DB_NAME='agent_sql'
+.venv\Scripts\python.exe -m alembic upgrade head
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+# 真实 Redis 的并发配额 / 缓存安全测试（单独跑；全量测试不要设 REDIS_URL，否则所有测试都会走 Redis）
+$env:REDIS_URL='redis://127.0.0.1:6390/0'; .venv\Scripts\python.exe -m unittest tests.test_redis_concurrency
+docker compose -f deploy/test-services/docker-compose.yml down -v
+```
+
+`tests/test_redis_concurrency.py` 在真实 Redis 上验证：很多线程 / 多个进程（模拟多个 API 实例）同时抢同一个并发名额，放行的数量必须恰好等于上限；
+固定窗口限流计数准确且 key 一定带过期时间；Redis 里被塞进 pickle 载荷不会被执行。
+
 ## CI 质量门禁
 
-每次 push / PR，GitHub Actions（`.github/workflows/ci.yml`）依次跑：编译检查 → ruff → 依赖漏洞扫描 →
-单元测试 + 覆盖率 → （前端）依赖漏洞扫描 → 类型检查 + 构建。任意一步失败，PR 不能合。
+每次 push / PR，GitHub Actions（`.github/workflows/ci.yml`）依次跑：编译检查 → ruff → 依赖漏洞扫描 → 漏洞豁免登记表核对 →
+空库跑 Alembic + 模型漂移检查 → 单元测试 + 覆盖率 → （前端）依赖漏洞扫描 → Vitest → 类型检查 + 构建 → Java 测试 → 浏览器冒烟。任意一步失败，PR 不能合。
+
+**漏洞豁免**：CI 里 `pip-audit` 忽略的每一条“暂时没有修复版本”的漏洞，都要登记在 `.github/vuln-exceptions.json`
+（负责人、为什么不影响本项目、复查办法、到期日，最长 180 天）；`scripts/check_vuln_exceptions.py` 核对它和 `ci.yml` 一一对应，到期没复查就失败。
+`.github/dependabot.yml` 每周为 pip / npm / Maven / GitHub Actions / Docker 开升级 PR，上游出了修复版本会自动提醒。
 
 ### 覆盖率
 
@@ -76,7 +97,7 @@ npm run test:coverage
 - 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
 - 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
   文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
-- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1707 项通过、6 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例）。
+- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1777 项通过、15 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 11 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 
@@ -118,6 +139,16 @@ npm run test:coverage
 
 `scripts/e2e_smoke.py` 建的是 `e2e_*` 用户（同一套级联清理逻辑，见 `tests_e2e/fixtures.py::purge_e2e_data`，
 内部直接复用这里的 `_purge_users`），每次跑完（不管流程成不成功）都会自动清一遍，不需要额外操心。
+
+## 前端单元测试（Vitest）
+
+```powershell
+npm --prefix frontend test
+```
+
+覆盖：登录会话（令牌在 HttpOnly Cookie 里，页面只看得到 `csrf_token`）、请求拦截器（带 Cookie、改数据的请求带 `X-CSRF-Token`、从不发 Authorization、401 回登录页）、
+user store（登录不保存令牌、`isLoggedIn()` 不被缓存、退出登录先让后端清 Cookie）、Markdown 安全渲染（脚本 / 事件处理器 / 钓鱼表单 / 外链图片等载荷）。
+更完整的浏览器级验证见 `scripts/check_session_browser.py`（登录 Cookie、CSRF、CSP 真的拦截）和 `scripts/check_xss_browser.py`。
 
 ## 后续应补充
 

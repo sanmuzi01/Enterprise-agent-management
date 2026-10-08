@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from models.init_db import get_db, User
 from models.async_db import get_async_db
 from service.dependencies import get_current_user_async
-from service.exceptions import InvalidInput, NotFound
+from service.exceptions import AppError, InvalidInput, NotFound
 from service.rag.search_entry import search_scoped_async
 from service.knowledge_space.space_service import ensure_default_space_for_agent
 from service import knowledge_async_service, knowledge_diagnostics_async_service, knowledge_service
@@ -16,6 +16,7 @@ from service.web_crawler_service import CrawlerError
 from service.web_crawler_async_service import async_crawl_url_to_markdown
 from service.rag.rag_service import SUPPORTED_FILE_TYPES
 from utils.rate_limit import LimitExceeded, concurrency_guard, require_limit
+from utils.upload_limits import read_upload, read_uploads
 
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
 
@@ -119,8 +120,8 @@ async def upload_document(
     file_name = file.filename
     file_type = _validate_upload_file_name(file_name)
 
-    # 2. 读取文件内容
-    content = await file.read()
+    # 2. 读取文件内容（分块读，超过单文件上限立即 413，不会无上限读进内存）
+    content = await read_upload(file)
 
     # 3. 调用RAG服务上传入库
     try:
@@ -171,12 +172,12 @@ async def upload_documents(
 
     created = []
     try:
-        prepared_files = []
-        for file in files:
-            file_name = file.filename
-            file_type = _validate_upload_file_name(file_name)
-            content = await file.read()
-            prepared_files.append({"file_name": file_name, "file_type": file_type, "content": content})
+        names_and_types = []
+        for file in files:                      # 先把所有文件名都校验完，再开始读内容：有一个不合法就一个字节都不读
+            names_and_types.append((file.filename, _validate_upload_file_name(file.filename)))
+        contents = await read_uploads(files)    # 每个文件、累计大小、个数三个上限
+        prepared_files = [{"file_name": name, "file_type": ftype, "content": content}
+                          for (name, ftype), content in zip(names_and_types, contents)]
         _sid = ensure_default_space_for_agent(db, current_user.id, agent_id)
         created = knowledge_service.create_upload_tasks(
             db, background_tasks, current_user.id, agent_id, prepared_files,
@@ -187,7 +188,7 @@ async def upload_documents(
             "count": len(created),
             "items": created,
         }
-    except HTTPException:
+    except (HTTPException, AppError):      # 用户输入的问题（文件类型、大小）原样返回，不能被下面的兜底变成 500 / 问题中心里的假故障
         db.rollback()
         raise
     except ValueError as e:

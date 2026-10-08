@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { hasSession } from '../utils/session'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -162,7 +163,7 @@ async function hasDepartment(): Promise<boolean> {
 
 // 路由守卫：未登录跳转登录页
 router.beforeEach(async (to, _from) => {
-  const token = localStorage.getItem('token')
+  const token = hasSession()   // 令牌在 HttpOnly Cookie 里，这里只判断会话是否还在；真正的鉴权在后端
   if (to.path !== '/login' && !token) {
     return '/login'
   }

@@ -1,11 +1,51 @@
 import copy
-import pickle
+import datetime as _dt
+import json
+import logging
 import time
+from pathlib import PurePath
 from threading import RLock
 from typing import Any, Callable, Dict, Hashable, Optional, Tuple
 from urllib.parse import quote
 
 from utils.redis_client import RedisClientManager
+
+logger = logging.getLogger("cache")
+
+# Redis 里的键前缀带版本：旧版本用 pickle 存的数据不会被读到（更不会被反序列化），自然过期即可
+_KEY_VERSION = "v2"
+_TYPE_TAG = "__t"
+
+
+def _json_default(value: Any):
+    """缓存值里允许出现的、JSON 原生不支持的类型。其它类型一律拒绝（不写入 Redis，只留在进程内存里）。"""
+    if isinstance(value, _dt.datetime):
+        return {_TYPE_TAG: "datetime", "v": value.isoformat()}
+    if isinstance(value, _dt.date):
+        return {_TYPE_TAG: "date", "v": value.isoformat()}
+    if isinstance(value, PurePath):
+        return str(value)
+    if isinstance(value, (set, frozenset)):
+        return sorted(value, key=repr)
+    raise TypeError(f"缓存值里有不支持写入 Redis 的类型：{type(value).__name__}")
+
+
+def _json_hook(obj: dict):
+    tag = obj.get(_TYPE_TAG)
+    if tag == "datetime":
+        return _dt.datetime.fromisoformat(obj["v"])
+    if tag == "date":
+        return _dt.date.fromisoformat(obj["v"])
+    return obj
+
+
+def encode_value(value: Any) -> bytes:
+    """缓存值 → 字节。只用 JSON：Redis 里的内容即使被别人改过，最坏也只是一份错误的数据，不会变成可执行的代码（不再使用 pickle）。"""
+    return json.dumps(value, ensure_ascii=False, default=_json_default, separators=(",", ":")).encode("utf-8")
+
+
+def decode_value(raw: bytes) -> Any:
+    return json.loads(raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else raw, object_hook=_json_hook)
 
 
 class TTLCache:
@@ -31,12 +71,12 @@ class TTLCache:
 
     def _redis_key(self, key: Hashable) -> str:
         """生成单个缓存项的 Redis key。"""
-        return f"cache:{self.namespace}:" + ":".join(self._key_parts(key))
+        return f"cache:{_KEY_VERSION}:{self.namespace}:" + ":".join(self._key_parts(key))
 
     def _redis_prefix(self, prefix: Tuple[Any, ...]) -> str:
         """生成批量失效用的 Redis key 前缀。"""
         parts = tuple(quote(str(part), safe="") for part in prefix)
-        return f"cache:{self.namespace}:" + ":".join(parts) + "*"
+        return f"cache:{_KEY_VERSION}:{self.namespace}:" + ":".join(parts) + "*"
 
     def _redis_get(self, key: Hashable) -> Tuple[bool, Optional[Any]]:
         """从 Redis 读取缓存。
@@ -47,12 +87,20 @@ class TTLCache:
         if not client:
             return False, None
         try:
-            value = client.get(self._redis_key(key))
-            if value is None:
-                return False, None
-            return True, pickle.loads(value)
+            raw = client.get(self._redis_key(key))
         except Exception:
             self._redis.mark_failed()
+            return False, None
+        if raw is None:
+            return False, None
+        try:
+            return True, decode_value(raw)
+        except Exception:      # 内容不是我们写的合法 JSON（被改过、截断、版本不符）：当作没命中并删掉，不算 Redis 故障
+            logger.warning("缓存内容无法解析，已丢弃：%s", self._redis_key(key))
+            try:
+                client.delete(self._redis_key(key))
+            except Exception:  # noqa: BLE001
+                pass
             return False, None
 
     def _redis_set(self, key: Hashable, value: Any, ttl: int) -> bool:
@@ -61,7 +109,11 @@ class TTLCache:
         if not client:
             return False
         try:
-            client.setex(self._redis_key(key), ttl, pickle.dumps(value))
+            payload = encode_value(value)
+        except (TypeError, ValueError):      # 值里有不能安全序列化的东西：只放进程内存，不是 Redis 的问题
+            return False
+        try:
+            client.setex(self._redis_key(key), ttl, payload)
             return True
         except Exception:
             self._redis.mark_failed()
@@ -124,7 +176,7 @@ class TTLCache:
                 if key is not None:
                     redis_count = client.delete(self._redis_key(key))
                 elif prefix is None:
-                    keys = list(client.scan_iter(f"cache:{self.namespace}:*"))
+                    keys = list(client.scan_iter(f"cache:{_KEY_VERSION}:{self.namespace}:*"))
                     redis_count = client.delete(*keys) if keys else 0
                 else:
                     keys = list(client.scan_iter(self._redis_prefix(prefix)))
@@ -159,7 +211,7 @@ class TTLCache:
         client = self._redis.get_client()
         if client:
             try:
-                redis_size = sum(1 for _ in client.scan_iter(f"cache:{self.namespace}:*"))
+                redis_size = sum(1 for _ in client.scan_iter(f"cache:{_KEY_VERSION}:{self.namespace}:*"))
                 redis_ok = True
             except Exception:
                 self._redis.mark_failed()

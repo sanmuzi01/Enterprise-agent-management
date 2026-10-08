@@ -1,5 +1,6 @@
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import { toastError } from './toast'
+import { csrfHeaders } from './session'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -78,16 +79,15 @@ export const getErrorMessage = (err: any, fallback = '请求失败') => {
 // Axios 单例：统一前缀 /api（匹配 vite.config.ts 的代理）、JWT 注入、401 清理
 const request: AxiosInstance = axios.create({
   baseURL: '/api',
+  withCredentials: true, // 登录令牌在 HttpOnly Cookie 里，由浏览器自动携带
   timeout: 300_000, // 5 分钟，同步对话 + RAG 切分可能很慢
 })
 
 request.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
   config.headers = config.headers || {}
   config.headers[REQUEST_ID_HEADER] = config.headers[REQUEST_ID_HEADER] || createRequestId()
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
+  // 会改数据的请求带上 CSRF 头（值来自页面能读到的 csrf_token Cookie），后端会和会话核对
+  Object.assign(config.headers, csrfHeaders(config.method))
   return config
 })
 
@@ -99,7 +99,6 @@ request.interceptors.response.use(
     const url: string = err.config?.url || ''
     const isLoginRequest = url.includes('/user/login')
     if (err.response?.status === 401 && !isLoginRequest) {
-      localStorage.removeItem('token')
       localStorage.removeItem('user')
       if (location.pathname !== '/login') {
         location.href = '/login'

@@ -4,14 +4,16 @@
 
 ## 当前验证状态（2026-10-07，以此为准；下文的历史数字是当时的快照）
 
-- **Python 全量**：1707 项通过、6 项跳过（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
-  **Java**：138 项通过（`enterprise-business-hub` 里 `mvn test`，跑之前先停掉在 8090 的 Java 进程）；前端 `vue-tsc` 与构建通过。
+- **Python 全量**：1777 项通过、15 项跳过（含 11 项需要真实 Redis 的并发 / 缓存安全测试，设置 `REDIS_URL` 才跑）（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
+  **Java**：143 项通过（`enterprise-business-hub` 里 `mvn test`，跑之前先停掉在 8090 的 Java 进程）；前端 Vitest 32 项、`vue-tsc` 与构建通过；CI（backend / frontend / java / e2e）全绿。
 - **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
   外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
 - **本阶段新增能力**：部门责任执行、文件导入与批量整理、事务性发件箱/收件箱/死信、trace_id 与统一错误、问题中心、
   页面脚本错误上报、Agent 运行失败追踪、试点数据与预检、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
 - **安全专项**（`docs/security-testing.md`）：SSRF、恶意文件、SQL 注入、XSS、提示注入与工具越权、跨部门 / 跨企业越权、重复与并发都有会失败的测试；
   过程中发现并修复了跨企业提权（企业 B 的管理员能审批企业 A 的请假、批准企业 A 的空间删除）、请假 / 采购 / 报销的并发重复处理与预算 / 余额覆盖、SSRF 的 5 类绕过、压缩炸弹等。
+- **代码审查后的收口**（2026-10-07，见 `docs/security-testing.md`）：Redis 并发配额改成原子操作（并修了 Redis 客户端并发首次连接时各线程退回内存限流的竞态）、缓存不再用 pickle 且 Redis 里只存模型密钥的密文、登录令牌改放 HttpOnly Cookie + 签名 CSRF 并上线内容安全策略、知识库上传加单文件 / 累计 / 个数上限。同时加了前端 Vitest、漏洞豁免登记表（负责人 / 到期日）、Dependabot、Docker 与直接部署两份生产环境模板、测试用 MySQL / Redis 一条命令。
+  **还没做**：OIDC / SAML 单点登录、SCIM / LDAP 同步、管理员 MFA、短期令牌 + 轮换刷新令牌、真实 SAP 连接器、第三方渗透测试、生产规模容量基准与 RTO / RPO 演练。
 - **真实基础设施联调**（`docs/observability-integration.md`）：Kafka（KRaft 单节点，消费者组 / 手动提交 / 重试 / 死信 Topic，`scripts/e2e_kafka.py` 28 项）、
   OpenTelemetry Collector → Tempo / Loki、Prometheus、Grafana（`scripts/e2e_observability.py` 40 项，含 Collector / Loki / Tempo 中断后恢复、Sentry 未配置与不可达）。
   联调中发现并修复了 span 全被丢弃、成功请求没有日志、`/metrics` 被 Host 白名单拒绝等问题。

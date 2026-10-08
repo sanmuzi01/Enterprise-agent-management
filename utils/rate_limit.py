@@ -27,6 +27,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# 并发令牌的“清理过期 → 数当前 → 判断上限 → 占位”必须是 Redis 里的一个原子操作：
+# 分成几次往返，两个 API 实例会同时看到“还没满”然后都占位，上限就被突破了。
+# 返回 1 = 占到了；返回 0 = 已满。
+_ACQUIRE_LUA = """
+redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then
+    return 0
+end
+redis.call('ZADD', KEYS[1], ARGV[4], ARGV[3])
+redis.call('EXPIRE', KEYS[1], ARGV[5])
+return 1
+"""
+
+
 class _RedisMixin:
     """Redis 客户端初始化混入类，统一处理连接失败后的降级。"""
 
@@ -55,10 +69,12 @@ class FixedWindowRateLimiter(_RedisMixin):
         client = self._redis.get_client()
         if client:
             try:
-                current = client.incr(redis_key)
-                if current == 1:
-                    # 多加 2 秒是为了覆盖时钟边界，避免 key 过早消失导致统计不稳定。
-                    client.expire(redis_key, window_seconds + 2)
+                # INCR 和 EXPIRE 在同一个事务里：进程恰好死在两步之间，也不会留下一个永不过期的计数 key。
+                # 多加 2 秒是为了覆盖时钟边界，避免 key 过早消失导致统计不稳定。
+                pipe = client.pipeline()
+                pipe.incr(redis_key)
+                pipe.expire(redis_key, window_seconds + 2)
+                current = pipe.execute()[0]
                 if current > limit:
                     ttl = client.ttl(redis_key)
                     raise LimitExceeded(f"{label}过于频繁，请稍后再试", ttl if ttl > 0 else window_seconds)
@@ -117,6 +133,14 @@ class ConcurrencyLimiter(_RedisMixin):
         self._lock = RLock()
         self._items: Dict[str, Dict[str, float]] = {}
 
+    def _acquire_script(self, client):
+        """按连接缓存脚本对象（首次 EVALSHA 找不到脚本时 redis-py 会自动改用 EVAL 装载）。"""
+        cached = getattr(self, "_script_cache", None)
+        if cached is None or cached[0] is not client:
+            cached = (client, client.register_script(_ACQUIRE_LUA))
+            self._script_cache = cached
+        return cached[1]
+
     def acquire(self, key: str, limit: int, ttl_seconds: int, label: str) -> ConcurrencyLease:
         """尝试获取并发令牌，超过上限时抛出 LimitExceeded。"""
 
@@ -129,16 +153,11 @@ class ConcurrencyLimiter(_RedisMixin):
         client = self._redis.get_client()
         if client:
             try:
-                # sorted set 的 score 存过期时间；每次获取令牌前先清掉过期令牌。
-                pipe = client.pipeline()
-                pipe.zremrangebyscore(redis_key, 0, now)
-                pipe.zcard(redis_key)
-                _, current = pipe.execute()
-                if current >= limit:
+                # sorted set 的 score 存过期时间；token 是本次任务的唯一凭证，任务结束时按 token 精确释放。
+                granted = self._acquire_script(client)(
+                    keys=[redis_key], args=[now, limit, token, now + ttl_seconds, ttl_seconds + 5])
+                if not granted:
                     raise LimitExceeded(f"{label}正在运行的任务过多，请等待已有任务完成", ttl_seconds)
-                # token 是本次任务的唯一凭证，任务结束时按 token 精确释放。
-                client.zadd(redis_key, {token: now + ttl_seconds})
-                client.expire(redis_key, ttl_seconds + 5)
                 return ConcurrencyLease(self, key, token)
             except LimitExceeded:
                 raise

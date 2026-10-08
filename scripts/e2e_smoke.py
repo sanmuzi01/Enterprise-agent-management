@@ -398,7 +398,7 @@ def _flow_chat_and_citations(page, base_url, agent_id) -> bool:
 def _flow_admin_edit_and_rollback_skill(browser, base_url, admin_name, admin_password, admin_api, skill_id) -> bool:
     edited_prompt = f"改过的提示词-{int(time.time())}"
     skill_name = admin_api.get(f"/skill/{skill_id}")["data"]["name"]
-    # 独立浏览器上下文：普通用户的登录态（localStorage token）留在原来那个 page 里，
+    # 独立浏览器上下文：普通用户的登录态（HttpOnly 会话 Cookie）留在原来那个 page 里，
     # 不新开一个上下文的话，导航到 /login 会被 Login.vue 的 onMounted 直接重定向回工作台。
     context = browser.new_context(viewport={"width": 1360, "height": 900})
     page = context.new_page()

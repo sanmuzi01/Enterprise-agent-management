@@ -3,7 +3,7 @@ import request from './request'
 /**
  * 下载一个需要登录态的接口返回的文件（如 CSV 导出）。
  *
- * 普通 <a href> 拿不到 Authorization 头，所以走 axios 实例（带拦截器自动加 token）+
+ * 普通 <a href> 带不上 CSRF 头等，所以走 axios 实例（带拦截器：Cookie 登录态 + CSRF 头）+
  * responseType: 'blob'，再用临时 <a download> 触发浏览器保存。
  */
 export async function downloadFile(url: string, params?: Record<string, unknown>, fallbackName = 'download') {

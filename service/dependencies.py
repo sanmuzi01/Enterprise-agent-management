@@ -1,6 +1,8 @@
 from utils.timeutil import utcnow
 
-from fastapi import Depends, HTTPException, status
+from typing import Optional
+
+from fastapi import Depends, HTTPException, Request, Security, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -12,10 +14,33 @@ from models.user_dao import get_user_by_id
 from models.user_async_dao import get_user_by_id_async, touch_user_seen_async
 from service.auth import decode_access_token
 from service.admin_service import is_admin_user
+from service import session_cookie
 
 # 使用 HTTPBearer：Swagger 会显示一个简单的 Bearer Token 输入框
 # 用户直接填 token 即可，不需要走 OAuth2 密码流表单
-security = HTTPBearer()
+_bearer = HTTPBearer(auto_error=False)
+
+
+def security(
+    request: Request,
+    bearer: Optional[HTTPAuthorizationCredentials] = Security(_bearer),
+) -> HTTPAuthorizationCredentials:
+    """取出登录令牌：先看 Authorization: Bearer（脚本 / 集成 / 测试），没有再看 HttpOnly 会话 Cookie（浏览器前端）。
+
+    Cookie 是浏览器自动携带的，所以用 Cookie 鉴权的、会改数据的请求还要通过 CSRF 校验（见 service/session_cookie.py）；
+    Bearer 头不会被浏览器自动带上，不需要。
+    """
+    if bearer is not None and bearer.credentials:
+        return bearer
+    cookie_token = request.cookies.get(session_cookie.SESSION_COOKIE)
+    if cookie_token:
+        session_cookie.verify_csrf(request, cookie_token)
+        return HTTPAuthorizationCredentials(scheme="Cookie", credentials=cookie_token)
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="未登录或登录已过期",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
 
 
 def _touch_user_seen(user_id: int) -> bool:

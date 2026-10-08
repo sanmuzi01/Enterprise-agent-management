@@ -11,6 +11,8 @@
 | 前端 XSS 载荷矩阵（真实浏览器 + 真实渲染模块） | `$env:PLAYWRIGHT_CHANNEL='msedge'; .venv\Scripts\python.exe scripts\check_xss_browser.py` | Vite 在 5174 端口 |
 | 跨部门 / 跨企业越权矩阵 + 重复与并发（真实 Java + MySQL） | `.venv\Scripts\python.exe scripts\e2e_security.py` | Java 业务服务在 8090 |
 | Java 全部测试（含跨企业越权用例） | 先停掉 8090 上的 Java，再在 `enterprise-business-hub` 里 `mvn test` | MySQL |
+| 真实 Redis 上的并发配额 + 缓存安全 | `$env:REDIS_URL='redis://127.0.0.1:6390/0'; .venv\Scripts\python.exe -m unittest tests.test_redis_concurrency` | Redis（`deploy/test-services`） |
+| 登录会话 Cookie / CSRF / CSP 的真实浏览器验证 | `$env:PLAYWRIGHT_CHANNEL='msedge'; .venv\Scripts\python.exe scripts\check_session_browser.py` | 后端 8011 + `npm run preview`（4173） |
 
 ## 覆盖与结果
 
@@ -24,6 +26,10 @@
 | **跨部门 / 跨企业越权** | `scripts/e2e_security.py` 第一部分（请假、报销、IT 工单、AI 整理结果、责任计划与任务；同部门同事 / 别部门成员 / 别部门负责人 / 别企业成员与管理员 / 未登录）+ Java `TeamAccessGuardTest`、`LeaveControllerIntegrationTest` + `tests/test_org_admin_scope.py` | **严重**：企业管理员的身份是全局布尔值，企业 B 的管理员可以审批企业 A 的请假、查看企业 A 的 IT 工单。现在签进业务系统的身份按资源所属企业重新计算，并带上该企业的部门范围（`org_team_ids`），Java 要求资源所在部门必须在范围内 |
 | **平台审批** | `tests/test_approval_org_scope.py`：企业 A 的“删除知识库空间”审批，企业 B 的管理员看不到、批不了；未登记所属企业的审批类型对所有人不可见 | `/approvals/pending` 与 `/approvals/{id}/decide` 只要求“是任何一个企业的管理员”：企业 B 的管理员能看到并批准企业 A 的空间删除申请（破坏性操作）。现在按资源所属企业限定，新增审批类型必须在 `approval_service.resource_org_id` 登记 |
 | **重复与并发** | `scripts/e2e_security.py` 第二部分：同一请求并发 8 次；两张不同的单据争同一份余额 / 预算；相同 Idempotency-Key 重放 | **严重**：请假、采购、CRM 确认没有行锁，同一张请假单并发审批 8 次全部成功（8 条“批准”审计），同一个人的两张请假同时批准会覆盖余额，同部门两张报销 / 采购同时批准会把预算花两遍。现已加行锁（请假单与余额、采购单与预算、报销预算、报销单、CRM 跟进） |
+| **并发配额（Redis）** | `tests/test_redis_concurrency.py`（真实 Redis：40 个线程 + 6 个进程抢同一个名额） | ① “清理过期 → 数当前 → 判断 → 占位”分成几次往返，上限 5 的名额实际放行了 13 个——现在是一个 Lua 脚本里的原子操作；② `RedisClientManager` 的并发首次连接：第一个线程还在连，其余线程因为“重试窗口”拿到 `None`，各自退回进程内限流，上限被成倍突破——现在连接加锁，且只有连接失败后才开启重试窗口；③ 固定窗口的 `INCR` 和 `EXPIRE` 分开执行，进程恰好死在中间会留下永不过期的计数 key——现在在同一个事务里 |
+| **缓存反序列化 / 密钥** | `tests/test_cache_safety.py`（假 Redis）+ `tests/test_redis_concurrency.py`（真实 Redis） | ① Redis 里的缓存用 `pickle.loads`——只要有人能写 Redis 就能执行代码，现在只用 JSON，无法解析的内容当作没命中并丢弃，旧版本的数据用新前缀读不到；② 解密后的模型 API Key 和完整配置被放进这个缓存——现在缓存里只有数据库里那份密文，解密只在调用方拿到之后在内存里发生 |
+| **登录令牌与 CSP** | `tests/test_session_cookie.py`、`tests/test_csp_policy.py`、`frontend` Vitest、`scripts/check_session_browser.py`（真实浏览器 23 项） | ① 令牌放在 `localStorage`，任何一次 XSS 都能读走——现在是 HttpOnly + SameSite Cookie，页面脚本读不到，会改数据的请求要带绑定会话的签名 CSRF 值（攻击者能往子域名塞 Cookie 也伪造不了）；② 没有内容安全策略——现在 Nginx 下发 `script-src 'self'`（页面里没有任何内联脚本）、`connect-src 'self'`，真实浏览器里注入的内联脚本和往外发数据都被拦下；③ API 响应带最严格的策略；④ 操作日志改用 Cookie 登录后会变成匿名——已让它也认会话 Cookie |
+| **上传大小** | `tests/test_upload_limits.py`（假文件数读了多少字节 + 真实路由） | 知识库上传 `await file.read()` 没有上限，批量上传还不限个数——现在分块读取、超过单文件 / 一次请求累计 / 文件个数上限立即 413（不先读完再判断）；批量上传里“不支持的文件类型”（用户输入错误）会被兜底变成 500 并在问题中心记一条假故障——已修 |
 
 ## 修复之后的不变式（e2e 里逐条断言）
 
@@ -40,6 +46,8 @@
 - 采购申请的预算 / 库存并发没有端到端用例（代码已加锁，评审过，没有造库存数据去压）；
 - Docker / 反向代理层的安全头、TLS、限流在真实部署里的表现；
 - 真实模型被注入后的行为（只能验证输出进入业务系统前的确定性防线，不能验证模型“会不会被说服”）；
-- 依赖库漏洞扫描（CI 里有前端 `npm audit`，Python 依赖没有）；
+- 依赖库漏洞：CI 里有 `npm audit` 和 `pip-audit`，没有修复版本的漏洞登记在 `.github/vuln-exceptions.json`（负责人 / 原因 / 到期日）；
+- 管理员多因素认证（MFA）、短期访问令牌 + 轮换刷新令牌、Trusted Types：这几项还没做，现在的令牌有效期是 `JWT_ACCESS_TOKEN_EXPIRE_MINUTES`（默认 60 分钟），“退出所有设备”会立即让它失效；
+- 第三方渗透测试 / 正式安全审计报告；
 - 管理后台（`/admin/organization/...`）按设计只管“默认企业”，由平台管理员账号访问，不是多企业接口，没有做跨企业用例；
 - Python 侧用 `require_org_role` 授权的其他接口只剩平台审批一处会跨资源操作（已修）；以后新增这类接口必须同时限定企业范围（`enterprise_access.admin_org_ids_async`）。

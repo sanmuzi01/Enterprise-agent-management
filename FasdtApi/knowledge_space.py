@@ -20,6 +20,7 @@ from service.knowledge_space import document_service, health_service, space_asyn
 from service.web_crawler_service import CrawlerError
 from service.web_crawler_async_service import async_crawl_url_to_markdown
 from utils.rate_limit import LimitExceeded, require_limit
+from utils.upload_limits import read_upload, read_uploads
 
 router = APIRouter(prefix="/knowledge-spaces", tags=["知识库空间"])
 
@@ -138,7 +139,7 @@ async def upload_space_document_route(
         current_user: User = Depends(get_current_user_async),
 ):
     _rate_limit_upload(current_user.id)
-    content = await file.read()
+    content = await read_upload(file)
     try:
         return document_service.upload(
             db, background_tasks, current_user.id, space_id, file.filename or "", content,
@@ -160,7 +161,8 @@ async def upload_space_documents_batch_route(
         current_user: User = Depends(get_current_user_async),
 ):
     _rate_limit_upload(current_user.id)
-    prepared = [{"file_name": f.filename or "", "content": await f.read()} for f in files]
+    contents = await read_uploads(files)          # 个数、每个文件、累计大小三个上限，超限立即 413
+    prepared = [{"file_name": f.filename or "", "content": c} for f, c in zip(files, contents)]
     try:
         items = document_service.upload_batch(db, background_tasks, current_user.id, space_id, prepared)
         return {"message": f"已创建{len(items)}个入库任务", "count": len(items), "items": items}

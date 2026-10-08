@@ -45,6 +45,32 @@ class ConfigValidationTest(unittest.TestCase):
             self.assertEqual(result["environment"], "production")
             assert_runtime_config()
 
+    def test_production_rejects_insecure_session_cookie(self):
+        for value in ("0", "false", "No"):
+            env = _valid_env()
+            env["SESSION_COOKIE_SECURE"] = value
+            with patch.dict(os.environ, env, clear=True):
+                result = validate_runtime_config()
+                self.assertFalse(result["ok"], value)
+                self.assertIn("SESSION_COOKIE_SECURE", [c["name"] for c in result["checks"] if c["level"] == "error"])
+                with self.assertRaises(RuntimeError):
+                    assert_runtime_config()
+        for value in ("", "1", "true"):
+            env = _valid_env()
+            env["SESSION_COOKIE_SECURE"] = value
+            with patch.dict(os.environ, env, clear=True):
+                self.assertTrue(validate_runtime_config()["ok"], value)
+
+    def test_production_warns_when_redis_has_no_password(self):
+        with patch.dict(os.environ, _valid_env(), clear=True):
+            result = validate_runtime_config()
+            self.assertTrue(result["ok"], "没有口令只是警告，不阻止启动（容器内部网络的 Redis 常见）")
+            self.assertIn("REDIS_PASSWORD", [c["name"] for c in result["checks"] if c["level"] == "warn"])
+        env = _valid_env()
+        env["REDIS_URL"] = "rediss://:s3cret@redis.internal:6380/0"
+        with patch.dict(os.environ, env, clear=True):
+            self.assertNotIn("REDIS_PASSWORD", [c["name"] for c in validate_runtime_config()["checks"]])
+
     def test_production_config_rejects_placeholders(self):
         env = _valid_env()
         env["JWT_SECRET_KEY"] = "change-me-random-64-hex-or-long-secret"

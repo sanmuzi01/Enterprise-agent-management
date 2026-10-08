@@ -31,7 +31,7 @@ class OperationLogMiddleware(BaseHTTPMiddleware):
             elapsed_seconds = time.perf_counter() - started
             elapsed_ms = int(elapsed_seconds * 1000)
             observe_http_request(request.method, path, status_code, elapsed_seconds)
-            user_payload = extract_user_from_authorization(request.headers.get("authorization"))
+            user_payload = extract_user_from_authorization(request.headers.get("authorization"), request.cookies.get("session_token"))
             request_id = getattr(request.state, "request_id", None)
             log_error_msg = error_msg
             if request_id:

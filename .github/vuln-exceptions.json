@@ -1,0 +1,40 @@
+{
+  "说明": "CI 里 pip-audit 忽略的漏洞登记表：只允许登记“目前没有修复版本”的漏洞，每条必须写清楚为什么不影响本项目、谁负责、什么时候必须重新评估。到期没复查 CI 会失败（scripts/check_vuln_exceptions.py）；ci.yml 里的 --ignore-vuln 必须和这里一一对应。",
+  "exceptions": [
+    {
+      "id": "PYSEC-2026-286", "package": "asyncmy", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "asyncmy 驱动的 SQL 注入（目前没有修复版本）。本项目所有 SQL 都走 SQLAlchemy 参数绑定，并有静态守卫测试禁止拼接 SQL（tests/test_security_sql_injection.py）；生产也可以关闭异步驱动回退同步链路。",
+      "recheck": "asyncmy 发布修复版本后升级并删除本条；或评估换成 aiomysql。"
+    },
+    {
+      "id": "PYSEC-2026-311", "package": "chromadb", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "ChromaDB 服务端的预认证代码注入（目前没有修复版本）。生产里 Chroma 只在容器内部网络可达，docker-compose.prod.yml 没有对外发布端口，只有 api / worker 能访问。",
+      "recheck": "chromadb 发布修复版本后升级；上线前确认 Chroma 端口没有对外暴露。"
+    },
+    {
+      "id": "PYSEC-2026-3814", "package": "chromadb", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "ChromaDB 需要已认证身份才能触发的代码注入（目前没有修复版本）。同上：服务端不对外暴露，调用方只有本项目自己的 api / worker。",
+      "recheck": "同 PYSEC-2026-311。"
+    },
+    {
+      "id": "PYSEC-2026-3815", "package": "chromadb", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "ChromaDB 的 SimpleRBACAuthorizationProvider 漏洞（目前没有修复版本）。本项目没有启用这个授权提供者，权限在应用层（空间 / 企业 / 部门）判断。",
+      "recheck": "同 PYSEC-2026-311。"
+    },
+    {
+      "id": "PYSEC-2026-3813", "package": "chromadb", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "ChromaDB 服务端缺少授权校验，任何已认证用户可访问其它库（目前没有修复版本）。Chroma 不对外暴露，所有访问都经过本项目应用层的权限判断。",
+      "recheck": "同 PYSEC-2026-311。"
+    },
+    {
+      "id": "PYSEC-2026-1325", "package": "ecdsa", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "python-ecdsa 的 Minerva 侧信道时序攻击，只影响 ECDSA 签名（目前没有修复版本，上游声明不修）。本项目的 JWT 用 HS256，不做 ECDSA 签名。",
+      "recheck": "如果以后改用 ES256 之类的算法必须先评估；或让 python-jose 改用 cryptography 后端。"
+    },
+    {
+      "id": "CVE-2026-85394", "package": "python-jose", "owner": "李森", "added": "2026-10-07", "expires": "2027-01-05",
+      "reason": "python-jose 3.5.0 在 HMAC 初始化时接受 DER 编码的公钥（目前没有修复版本）。只有“拿公钥当 HMAC 密钥验证、且不限定算法”才能伪造令牌；本项目用 HS256 + 服务端私有密钥，jwt.decode 显式写了 algorithms=[ALGORITHM]（service/auth.py）。",
+      "recheck": "python-jose 发布修复版本后升级；或迁移到 PyJWT / Authlib。"
+    }
+  ]
+}
