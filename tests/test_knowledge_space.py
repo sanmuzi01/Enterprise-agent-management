@@ -59,7 +59,7 @@ class ToDictTest(unittest.TestCase):
         self.assertEqual(d["bound_agent_count"], 2)
         self.assertEqual(d["scope"], "personal")
         self.assertEqual(d["my_role"], "owner")
-        self.assertEqual((d["team_id"], d["sensitivity"], d["sensitivity_label"]), (None, "internal", "内部"))
+        self.assertEqual((d["departments"], d["sensitivity"], d["sensitivity_label"]), ([], "internal", "内部"))
 
 
 class CollectionKeyTest(unittest.TestCase):

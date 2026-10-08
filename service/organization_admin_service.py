@@ -196,9 +196,11 @@ async def team_permissions(db, team_id: int) -> Dict:
     team = await _get_team_or_404(db, team_id)
     members = await list_team_members(db, team_id)
 
+    from models.init_db import KnowledgeSpaceDepartment
     space_result = await db.execute(
         select(KnowledgeSpace.id, KnowledgeSpace.name, KnowledgeSpace.status)
-        .where(KnowledgeSpace.team_id == team_id)
+        .where((KnowledgeSpace.team_id == team_id) | KnowledgeSpace.id.in_(
+            select(KnowledgeSpaceDepartment.space_id).where(KnowledgeSpaceDepartment.team_id == team_id)))
     )
     spaces = [{"id": sid, "name": sname, "status": sstatus} for sid, sname, sstatus in space_result.all()]
 

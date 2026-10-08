@@ -251,7 +251,7 @@
           <tr>
             <th class="px-4 py-2.5 font-medium">名称</th>
             <th class="px-4 py-2.5 font-medium">类型</th>
-            <th class="px-4 py-2.5 font-medium">所属部门</th>
+            <th class="px-4 py-2.5 font-medium">划分给</th>
             <th class="px-4 py-2.5 font-medium">发布状态</th>
             <th class="px-4 py-2.5 font-medium">操作</th>
           </tr>
@@ -268,8 +268,13 @@
               </span>
             </td>
             <td class="px-4 py-2.5 text-slate-600">
-              <span v-if="a.agent_type === 'department'">{{ a.team_name || '—' }}（{{ departmentCodeLabel(a.department_code) }}）</span>
-              <span v-else class="text-slate-400">全企业</span>
+              <span v-if="a.assignment === 'enterprise'" class="rounded bg-purple-50 px-2 py-0.5 text-xs text-purple-700">全企业</span>
+              <span v-else-if="a.assignment === 'department'">{{ a.team_name || '—' }}（{{ a.department_code ? departmentCodeLabel(a.department_code) : '通用办公' }}）</span>
+              <span v-else class="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700" data-testid="agent-unassigned">未划分</span>
+              <p v-if="a.knowledge_gaps?.length" class="mt-1 max-w-xs text-[11px] leading-snug text-amber-700" data-testid="agent-gaps"
+                :title="a.knowledge_gaps.map(g => `${g.name}：${g.reason}`).join('\n')">
+                有 {{ a.knowledge_gaps.length }} 份绑定的资料，使用者读不到：{{ a.knowledge_gaps.map(g => g.name).join('、') }}。到「企业知识库」里把它们划分给对应部门。
+              </p>
             </td>
             <td class="px-4 py-2.5">
               <span class="rounded px-2 py-0.5 text-xs" :class="lifecycleBadgeClass(a.lifecycle_status)">
@@ -282,9 +287,20 @@
                   编辑
                 </button>
                 <button
+                  @click="openAssign(a)"
+                  :disabled="a.lifecycle_status === 'published'"
+                  :title="a.lifecycle_status === 'published' ? '已发布的智能体正在被使用，请先停用，再调整划分' : '划分给部门或全企业'"
+                  data-testid="agent-assign"
+                  class="rounded border border-indigo-200 px-2.5 py-1 text-xs text-indigo-700 hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  划分
+                </button>
+                <button
                   v-if="a.lifecycle_status !== 'published'"
                   @click="onSetAgentLifecycle(a, 'published')"
-                  class="rounded border border-emerald-200 px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-50"
+                  :disabled="a.assignment === 'unassigned'"
+                  :title="a.assignment === 'unassigned' ? '还没有划分，先划分再发布' : ''"
+                  class="rounded border border-emerald-200 px-2.5 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   发布
                 </button>
@@ -332,8 +348,8 @@
           <div v-if="!agentDialog.editing">
             <label class="mb-1 block text-xs text-slate-500">类型</label>
             <select v-model="agentDialog.form.agent_type" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-              <option value="central">中央 Agent（全企业）</option>
-              <option value="department">部门 Agent</option>
+              <option value="central">中央智能体（全企业可用）</option>
+              <option value="department">业务智能体（创建后再划分给部门）</option>
             </select>
           </div>
           <div>
@@ -397,22 +413,17 @@
                 <option v-for="tpl in templatesForType('department')" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
               </select>
             </div>
-            <div>
+            <div v-if="!agentDialog.editing">
               <label class="mb-1 block text-xs text-slate-500">业务方向</label>
               <select v-model="agentDialog.form.department_code" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                <option value="">通用办公</option>
                 <option value="hr">人事</option>
                 <option value="procurement">采购</option>
                 <option value="sales">销售</option>
                 <option value="finance">财务</option>
                 <option value="it">IT</option>
               </select>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">绑定部门</label>
-              <select v-model.number="agentDialog.form.team_id" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option :value="null" disabled>选择部门</option>
-                <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
-              </select>
+              <p class="mt-1 text-[11px] text-slate-400">先创建，之后在列表里点「划分」，把它分给具体部门。</p>
             </div>
           </template>
           <template v-if="runtimeForm.type === 'builtin'">
@@ -437,10 +448,65 @@
           <button @click="agentDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
           <button
             @click="submitAgentDialog"
-            :disabled="acting || !agentDialog.form.name.trim() || (agentDialog.form.agent_type === 'department' && !agentDialog.form.team_id)"
+            :disabled="acting || !agentDialog.form.name.trim()"
             class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
           >
             保存
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 弹窗：划分智能体 ============ -->
+    <div v-if="assignDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" @click.self="assignDialog.visible = false">
+      <div class="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-xl" data-testid="agent-assign-dialog">
+        <h3 class="mb-1 text-base font-semibold text-slate-800">划分：{{ assignDialog.agent?.name }}</h3>
+        <p class="mb-4 text-xs text-slate-500">智能体统一创建，再由管理员决定它服务哪些人。划分后，对应范围内的成员就能使用它（发布之后）。</p>
+        <div class="space-y-3 text-sm">
+          <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+            <input v-model="assignDialog.target" type="radio" value="department" class="mt-0.5" />
+            <span class="min-w-0 flex-1">
+              <span class="block font-medium text-slate-800">划分给一个部门</span>
+              <span class="block text-xs text-slate-500">该部门的成员使用，并成为这个部门的主助手（每个部门同时只能发布一个）。</span>
+              <template v-if="assignDialog.target === 'department'">
+                <select v-model.number="assignDialog.teamId" data-testid="agent-assign-team"
+                  class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                  <option :value="null" disabled>选择部门</option>
+                  <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
+                </select>
+                <select v-model="assignDialog.departmentCode"
+                  class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
+                  <option value="">业务方向：沿用智能体和部门的设置</option>
+                  <option value="hr">业务方向：人事</option>
+                  <option value="procurement">业务方向：采购</option>
+                  <option value="sales">业务方向：销售</option>
+                  <option value="finance">业务方向：财务</option>
+                  <option value="it">业务方向：IT</option>
+                </select>
+              </template>
+            </span>
+          </label>
+          <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+            <input v-model="assignDialog.target" type="radio" value="enterprise" class="mt-0.5" />
+            <span>
+              <span class="block font-medium text-slate-800">全企业可用</span>
+              <span class="block text-xs text-slate-500">成为中央智能体，所有在职成员都能使用。</span>
+            </span>
+          </label>
+          <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+            <input v-model="assignDialog.target" type="radio" value="unassigned" class="mt-0.5" />
+            <span>
+              <span class="block font-medium text-slate-800">暂不划分</span>
+              <span class="block text-xs text-slate-500">只有创建者能试用，不能发布。</span>
+            </span>
+          </label>
+          <p v-if="assignDialog.error" class="text-xs text-red-600">{{ assignDialog.error }}</p>
+        </div>
+        <div class="mt-5 flex justify-end gap-2">
+          <button @click="assignDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
+          <button @click="submitAssign" :disabled="assignDialog.saving || (assignDialog.target === 'department' && !assignDialog.teamId)" data-testid="agent-assign-save"
+            class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50">
+            {{ assignDialog.saving ? '保存中…' : '保存' }}
           </button>
         </div>
       </div>
@@ -828,7 +894,6 @@ const agentDialog = ref<{
     name: string
     agent_type: ManagedAgentType
     department_code: string
-    team_id: number | null
     model_name: string
     role: string
     task: string
@@ -837,8 +902,47 @@ const agentDialog = ref<{
 }>({
   visible: false,
   editing: null,
-  form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
+  form: { name: '', agent_type: 'central', department_code: '', model_name: 'glm-4', role: '', task: '', template_id: '' },
 })
+
+// ---- 划分：部门 / 全企业 / 暂不划分（智能体先统一创建，再由管理员划分）----
+const assignDialog = ref({
+  visible: false,
+  agent: null as ManagedAgent | null,
+  target: 'department' as 'department' | 'enterprise' | 'unassigned',
+  teamId: null as number | null,
+  departmentCode: '',
+  saving: false,
+  error: '',
+})
+
+const openAssign = (a: ManagedAgent) => {
+  assignDialog.value = {
+    visible: true, agent: a, target: a.assignment === 'unassigned' ? 'department' : a.assignment,
+    teamId: a.team_id, departmentCode: '', saving: false, error: '',
+  }
+}
+
+const submitAssign = async () => {
+  const d = assignDialog.value
+  if (!d.agent) return
+  d.saving = true
+  d.error = ''
+  try {
+    await orgApi.assignManagedAgent(d.agent.id, {
+      target: d.target,
+      team_id: d.target === 'department' ? (d.teamId ?? undefined) : undefined,
+      department_code: d.target === 'department' && d.departmentCode ? d.departmentCode : undefined,
+      expected_row_version: d.agent.row_version,
+    })
+    d.visible = false
+    await loadManagedAgents()
+  } catch (e: any) {
+    d.error = getErrorMessage(e, '划分失败')
+  } finally {
+    d.saving = false
+  }
+}
 
 // 运行方式：平台自带 / 接入外部智能体服务。外部服务的配置单独保存（有自己的接口），
 // 签名密钥只在生成那一刻返回一次，所以保存后要先让管理员复制，再关闭弹窗。
@@ -873,7 +977,7 @@ const openCreateAgent = () => {
   agentDialog.value = {
     visible: true,
     editing: null,
-    form: { name: '', agent_type: 'central', department_code: 'hr', team_id: null, model_name: 'glm-4', role: '', task: '', template_id: '' },
+    form: { name: '', agent_type: 'central', department_code: '', model_name: 'glm-4', role: '', task: '', template_id: '' },
   }
 }
 
@@ -979,8 +1083,8 @@ const openEditAgent = (a: ManagedAgent) => {
     visible: true,
     editing: a,
     form: {
-      name: a.name, agent_type: a.agent_type, department_code: a.department_code || 'hr',
-      team_id: a.team_id, model_name: a.model_name, role: '', task: '', template_id: '',
+      name: a.name, agent_type: a.agent_type, department_code: a.department_code || '',
+      model_name: a.model_name, role: '', task: '', template_id: '',
     },
   }
 }
@@ -998,8 +1102,6 @@ const submitAgentDialog = async () => {
       const updated = await orgApi.updateManagedAgent(agentDialog.value.editing.id, {
         name: agentDialog.value.form.name.trim(),
         model_name: agentDialog.value.form.model_name || undefined,
-        department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
-        team_id: agentDialog.value.form.agent_type === 'department' ? (agentDialog.value.form.team_id ?? undefined) : undefined,
         role: agentDialog.value.form.role || undefined,
         task: agentDialog.value.form.task || undefined,
         expected_row_version: agentDialog.value.editing.row_version,
@@ -1014,8 +1116,8 @@ const submitAgentDialog = async () => {
       const created = await orgApi.createManagedAgent({
         name: agentDialog.value.form.name.trim(),
         agent_type: agentDialog.value.form.agent_type,
-        department_code: agentDialog.value.form.agent_type === 'department' ? agentDialog.value.form.department_code : undefined,
-        team_id: agentDialog.value.form.agent_type === 'department' ? (agentDialog.value.form.team_id ?? undefined) : undefined,
+        department_code: agentDialog.value.form.agent_type === 'department' && agentDialog.value.form.department_code
+          ? agentDialog.value.form.department_code : undefined,
         model_name: agentDialog.value.form.model_name || undefined,
         role: agentDialog.value.form.role || undefined,
         task: agentDialog.value.form.task || undefined,

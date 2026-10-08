@@ -1,7 +1,7 @@
 <template>
   <div class="p-6">
     <div class="mb-5 flex flex-wrap items-center justify-between gap-3">
-      <p class="text-xs text-slate-500">按部门查看和管理知识库空间：部门成员自动可读，绝密空间需要单独加人。</p>
+      <p class="text-xs text-slate-500">知识库统一在这里创建，再划分给需要的部门或全企业；被划分到的部门成员自动可读，绝密资料需要单独加人。</p>
       <div class="flex items-center gap-2">
         <button
           @click="openCreate()"
@@ -25,7 +25,7 @@
     <p v-if="actionErr" class="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{{ actionErr }}</p>
 
     <div class="grid gap-4 lg:grid-cols-[14rem_minmax(0,1fr)]">
-      <!-- 部门清单 -->
+      <!-- 按部门看 -->
       <nav class="rounded-lg border border-slate-200 bg-white p-2 lg:self-start" data-testid="space-department-nav" aria-label="按部门筛选">
         <template v-for="entry in scopeEntries" :key="entry.key">
           <p v-if="entry.group" class="px-3 pb-1 pt-3 text-[11px] font-medium text-slate-400">{{ entry.group }}</p>
@@ -46,7 +46,7 @@
             <thead class="bg-slate-50 text-xs text-slate-500">
               <tr>
                 <th class="px-3 py-2 text-left">空间</th>
-                <th class="px-3 py-2 text-left">所属部门</th>
+                <th class="px-3 py-2 text-left">划分给</th>
                 <th class="px-3 py-2 text-left">密级</th>
                 <th class="px-3 py-2 text-left">所有者</th>
                 <th class="px-3 py-2 text-right">文档</th>
@@ -64,8 +64,11 @@
                   <div class="text-xs text-slate-400">编号 {{ s.id }}</div>
                 </td>
                 <td class="px-3 py-2 text-slate-600">
-                  <span v-if="s.scope_type === 'department' && s.team_name" class="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{{ s.team_name }}</span>
-                  <span v-else class="text-xs text-slate-400">个人空间</span>
+                  <div v-if="s.scope_type === 'department'" class="flex flex-wrap gap-1">
+                    <span v-for="d in s.departments" :key="d.id" class="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700">{{ d.name }}</span>
+                  </div>
+                  <span v-else-if="s.scope_type === 'enterprise'" class="rounded bg-purple-50 px-2 py-0.5 text-xs text-purple-700">全企业</span>
+                  <span v-else class="rounded bg-amber-50 px-2 py-0.5 text-xs text-amber-700">未划分</span>
                 </td>
                 <td class="px-3 py-2">
                   <span class="rounded px-2 py-0.5 text-xs" :class="sensitivityClass(s.sensitivity)">{{ s.sensitivity_label }}</span>
@@ -88,8 +91,8 @@
                 </td>
                 <td class="px-3 py-2">
                   <div class="flex flex-wrap gap-1.5">
-                    <button @click="openMove(s)" data-testid="space-move"
-                      class="rounded border border-indigo-200 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-50">调整归属</button>
+                    <button @click="openAssign(s)" data-testid="space-assign"
+                      class="rounded border border-indigo-200 px-2 py-1 text-xs text-indigo-700 hover:bg-indigo-50">划分</button>
                     <button
                       @click="toggleEnabled(s)"
                       :disabled="actingId === s.id"
@@ -119,26 +122,49 @@
       </section>
     </div>
 
-    <!-- 新建 / 调整归属 -->
+    <!-- 新建 / 划分 -->
     <div v-if="dialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" @click.self="dialog.visible = false">
-      <div class="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-xl" data-testid="space-dialog">
-        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ dialog.target ? `调整归属：${dialog.target.name}` : '新建知识库' }}</h3>
-        <div class="space-y-3">
+      <div class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl" data-testid="space-dialog">
+        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ dialog.target ? `划分：${dialog.target.name}` : '新建知识库' }}</h3>
+        <div class="space-y-4">
           <div v-if="!dialog.target">
             <label for="space-name" class="mb-1 block text-xs text-slate-500">名称</label>
             <input id="space-name" v-model="dialog.name" maxlength="120" placeholder="例如：销售部报价资料"
               class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
           </div>
-          <div>
-            <label for="space-team" class="mb-1 block text-xs text-slate-500">所属部门</label>
-            <select id="space-team" v-model="dialog.teamId" data-testid="space-team-select"
-              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-              <option :value="null">个人空间（只有所有者和被加入的人能看到）</option>
-              <option v-for="d in departments" :key="d.id" :value="d.id">
-                {{ multipleOrganizations ? `${d.organization_name} · ${d.name}` : d.name }}（部门成员自动可读）
-              </option>
-            </select>
-          </div>
+
+          <fieldset>
+            <legend class="mb-1 block text-xs text-slate-500">划分给谁</legend>
+            <div class="space-y-2 text-sm">
+              <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+                <input v-model="dialog.scope" type="radio" value="unassigned" class="mt-0.5" />
+                <span><span class="block font-medium text-slate-800">暂不划分</span>
+                  <span class="block text-xs text-slate-500">只有所有者和被加入的成员能看到。</span></span>
+              </label>
+              <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+                <input v-model="dialog.scope" type="radio" value="departments" class="mt-0.5" data-testid="space-scope-departments" />
+                <span class="min-w-0 flex-1"><span class="block font-medium text-slate-800">指定部门（可多选）</span>
+                  <span class="block text-xs text-slate-500">这些部门的成员自动可读，部门负责人还能维护文档。</span>
+                  <div v-if="dialog.scope === 'departments'" class="mt-2 max-h-48 space-y-2 overflow-y-auto rounded border border-slate-200 bg-white p-2" data-testid="space-team-list">
+                    <div v-for="group in departmentGroups" :key="group.name">
+                      <p v-if="multipleOrganizations" class="px-1 pb-1 text-[11px] font-medium text-slate-400">{{ group.name }}</p>
+                      <label v-for="d in group.items" :key="d.id" class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-slate-50">
+                        <input type="checkbox" :value="d.id" v-model="dialog.teamIds" />
+                        <span class="truncate">{{ d.name }}</span>
+                      </label>
+                    </div>
+                    <p v-if="!departmentGroups.length" class="px-1 text-xs text-slate-400">还没有可选的部门。</p>
+                  </div>
+                </span>
+              </label>
+              <label class="flex cursor-pointer items-start gap-2 rounded border border-slate-200 p-2.5 has-[:checked]:border-indigo-400 has-[:checked]:bg-indigo-50/40">
+                <input v-model="dialog.scope" type="radio" value="enterprise" class="mt-0.5" />
+                <span><span class="block font-medium text-slate-800">全企业</span>
+                  <span class="block text-xs text-slate-500">所有在职成员自动可读，例如公司制度。</span></span>
+              </label>
+            </div>
+          </fieldset>
+
           <div>
             <label for="space-sensitivity" class="mb-1 block text-xs text-slate-500">密级</label>
             <select id="space-sensitivity" v-model="dialog.sensitivity"
@@ -159,7 +185,7 @@
         </div>
         <div class="mt-5 flex justify-end gap-2">
           <button @click="dialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
-          <button @click="submitDialog" :disabled="dialog.saving || (!dialog.target && !dialog.name.trim())" data-testid="space-dialog-save"
+          <button @click="submitDialog" :disabled="!canSubmit" data-testid="space-dialog-save"
             class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50">
             {{ dialog.saving ? '保存中…' : '保存' }}
           </button>
@@ -175,7 +201,7 @@ import { Plus, RefreshCcw } from 'lucide-vue-next'
 import AdminPagination from '../../components/admin/AdminPagination.vue'
 import {
   createAdminSpace, listAdminKnowledgeSpaces, updateAdminSpace, updateAdminSpaceStatus,
-  type AdminKnowledgeSpace, type AdminSpaceDepartment,
+  type AdminKnowledgeSpace, type AdminSpaceDepartment, type SpaceAssignScope,
 } from '../../api/admin'
 import { getErrorMessage } from '../../utils/request'
 
@@ -188,10 +214,11 @@ const total = ref(0)
 const limit = ref(50)
 const offset = ref(0)
 
-// 筛选：all = 全部；personal = 个人空间；team:<编号> = 某个部门
+// 筛选：all = 全部；team:<编号> = 某个部门；enterprise = 全企业；unassigned = 还没划分
 const scope = ref('all')
 const departments = ref<AdminSpaceDepartment[]>([])
-const personalCount = ref(0)
+const enterpriseCount = ref(0)
+const unassignedCount = ref(0)
 const allCount = ref(0)
 
 const multipleOrganizations = computed(() => new Set(departments.value.map((d) => d.organization_id)).size > 1)
@@ -206,13 +233,28 @@ const scopeEntries = computed(() => {
     lastOrganization = d.organization_id
     entries.push({ key: `team:${d.id}`, label: d.name, count: d.space_count, group: startsGroup ? d.organization_name : undefined })
   }
-  entries.push({ key: 'personal', label: '个人空间', count: personalCount.value, group: multipleOrganizations.value ? '其他' : undefined })
+  entries.push({ key: 'enterprise', label: '全企业', count: enterpriseCount.value, group: '按范围' })
+  entries.push({ key: 'unassigned', label: '未划分', count: unassignedCount.value })
   return entries
 })
+
+// 对话框里的部门多选，按企业分组
+const departmentGroups = computed(() => {
+  const groups = new Map<string, AdminSpaceDepartment[]>()
+  for (const d of departments.value) {
+    const list = groups.get(d.organization_name) || []
+    list.push(d)
+    groups.set(d.organization_name, list)
+  }
+  return [...groups].map(([name, list]) => ({ name, items: list }))
+})
+
 const selectedTeamId = computed(() => (scope.value.startsWith('team:') ? Number(scope.value.slice(5)) : null))
 const emptyText = computed(() => {
-  if (selectedTeamId.value) return '这个部门还没有知识库空间。'
-  return scope.value === 'personal' ? '还没有个人空间。' : '暂无知识库空间'
+  if (selectedTeamId.value) return '这个部门还没有被划分知识库。'
+  if (scope.value === 'enterprise') return '还没有划分给全企业的知识库。'
+  if (scope.value === 'unassigned') return '没有未划分的知识库。'
+  return '暂无知识库空间'
 })
 
 const sensitivityClass = (level: string) =>
@@ -233,7 +275,8 @@ const load = async () => {
     items.value = page.items
     total.value = page.total
     departments.value = page.departments
-    personalCount.value = page.personal_count
+    enterpriseCount.value = page.enterprise_count
+    unassignedCount.value = page.unassigned_count
     allCount.value = page.all_count
   } catch (e: any) {
     err.value = getErrorMessage(e, '加载失败')
@@ -253,35 +296,48 @@ const onPageChange = (nextOffset: number) => {
   load()
 }
 
-// ---------- 新建 / 调整归属 ----------
+// ---------- 新建 / 划分 ----------
 const dialog = ref({
   visible: false,
   target: null as AdminKnowledgeSpace | null,
   name: '',
   description: '',
-  teamId: null as number | null,
+  scope: 'unassigned' as SpaceAssignScope,
+  teamIds: [] as number[],
   sensitivity: 'internal',
   saving: false,
   error: '',
+})
+
+const canSubmit = computed(() => {
+  const d = dialog.value
+  if (d.saving) return false
+  if (!d.target && !d.name.trim()) return false
+  return d.scope !== 'departments' || d.teamIds.length > 0
 })
 
 const sensitivityHint = computed(() => {
   switch (dialog.value.sensitivity) {
     case 'public': return '公开：可以发给任何模型。'
     case 'confidential': return '机密：只会发给企业批准的模型，不会发给外部云模型和外部智能体服务。'
-    case 'restricted': return '绝密：不会发给任何模型；发布在部门里时，部门成员也不会自动获得访问权限。'
+    case 'restricted': return '绝密：不会发给任何模型；即使划分给部门，成员也不会自动获得访问权限。'
     default: return '内部：默认级别，可以发给已配置的模型。'
   }
 })
 
 const openCreate = (teamId: number | null = selectedTeamId.value) => {
-  dialog.value = { visible: true, target: null, name: '', description: '', teamId, sensitivity: 'internal', saving: false, error: '' }
+  const fromScope: SpaceAssignScope = teamId ? 'departments' : scope.value === 'enterprise' ? 'enterprise' : 'unassigned'
+  dialog.value = {
+    visible: true, target: null, name: '', description: '', scope: fromScope, teamIds: teamId ? [teamId] : [],
+    sensitivity: 'internal', saving: false, error: '',
+  }
 }
 
-const openMove = (s: AdminKnowledgeSpace) => {
+const openAssign = (s: AdminKnowledgeSpace) => {
   dialog.value = {
     visible: true, target: s, name: s.name, description: '',
-    teamId: s.scope_type === 'department' ? s.team_id : null, sensitivity: s.sensitivity || 'internal', saving: false, error: '',
+    scope: s.scope_type === 'department' ? 'departments' : s.scope_type === 'enterprise' ? 'enterprise' : 'unassigned',
+    teamIds: s.departments.map((d) => d.id), sensitivity: s.sensitivity || 'internal', saving: false, error: '',
   }
 }
 
@@ -289,9 +345,10 @@ const submitDialog = async () => {
   const d = dialog.value
   d.saving = true
   d.error = ''
+  const teamIds = d.scope === 'departments' ? d.teamIds : []
   try {
-    if (d.target) await updateAdminSpace(d.target.id, { team_id: d.teamId, sensitivity: d.sensitivity })
-    else await createAdminSpace({ name: d.name.trim(), description: d.description.trim() || undefined, team_id: d.teamId, sensitivity: d.sensitivity })
+    if (d.target) await updateAdminSpace(d.target.id, { scope: d.scope, team_ids: teamIds, sensitivity: d.sensitivity })
+    else await createAdminSpace({ name: d.name.trim(), description: d.description.trim() || undefined, scope: d.scope, team_ids: teamIds, sensitivity: d.sensitivity })
     d.visible = false
     await load()
   } catch (e: any) {

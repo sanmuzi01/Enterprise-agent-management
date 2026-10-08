@@ -77,13 +77,14 @@ class ManagedAgentCrudTest(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             _run_db(lambda db: svc.create_managed_agent(db, self.admin["id"], "aa-test-bad", "personal"))
 
-    def test_create_department_agent_without_team_id_raises(self):
+    def test_create_department_agent_without_team_id_is_created_unassigned(self):
+        """统一创建、再划分：不选部门也能创建，先是未划分的草稿；划分见 tests/test_agent_assignment.py。"""
         import service.agent_admin_service as svc
 
-        with self.assertRaises(InvalidInput):
-            _run_db(lambda db: svc.create_managed_agent(
-                db, self.admin["id"], "aa-test-noteam", "department", department_code="hr",
-            ))
+        created = _run_db(lambda db: svc.create_managed_agent(
+            db, self.admin["id"], "aa-test-noteam", "department", department_code="hr",
+        ))
+        self.assertEqual((created["assignment"], created["team_id"], created["lifecycle_status"]), ("unassigned", None, "draft"))
 
     def test_create_department_agent_invalid_department_code_raises(self):
         import service.agent_admin_service as svc

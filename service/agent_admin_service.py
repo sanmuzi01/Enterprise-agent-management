@@ -37,6 +37,13 @@ logger = get_logger("agent_admin_service")
 VALID_MANAGED_AGENT_TYPES = {"central", "department"}
 
 
+def assignment_of(agent: Agent) -> str:
+    """划分状态：enterprise = 全企业可用；department = 划分给了某个部门；unassigned = 已创建、还没划分。"""
+    if agent.agent_type == "central":
+        return "enterprise"
+    return "department" if agent.team_id is not None else "unassigned"
+
+
 def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, Any]:
     from prompt.prompt_manager import read_prompt_file
     return {
@@ -46,6 +53,7 @@ def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, A
         "department_code": agent.department_code,
         "team_id": agent.team_id,
         "team_name": team_name,
+        "assignment": assignment_of(agent),
         "model_name": agent.model_name,
         "runtime_type": agent.runtime_type or "builtin",
         "lifecycle_status": agent.lifecycle_status,
@@ -97,7 +105,47 @@ async def list_managed_agents(db) -> List[Dict[str, Any]]:
     # Agent.skills 是 lazy=False（联表预加载），查完整 Agent 实体的结果集必须先
     # .unique() 去重（一个 Agent 绑了多个 Skill 会因为联表 JOIN 出现重复行），
     # 不然 SQLAlchemy 直接报错，不是可选的优化。
-    return [_agent_to_dict(agent, team_name) for agent, team_name in result.unique().all()]
+    rows = result.unique().all()
+    gaps = await knowledge_gaps(db, [agent for agent, _ in rows])
+    return [{**_agent_to_dict(agent, team_name), "knowledge_gaps": gaps.get(agent.id, [])} for agent, team_name in rows]
+
+
+async def knowledge_gaps(db, agents: List[Agent]) -> Dict[int, List[Dict[str, Any]]]:
+    """智能体绑定的知识库里，哪些是它的使用者读不到的。
+
+    聊天时的检索按提问者本人的权限校验：智能体划分给了销售部，却绑着没划分给销售部的资料，
+    销售部的人问问题时这份资料检索不到。这里提前给管理员提示，而不是等用户发现“怎么没答上来”。
+    规则与 models/enterprise_dao.py 的“划分”一致：全企业资料所有人可读；部门资料需要划分给该部门；
+    绝密资料不会被任何划分继承。未划分的智能体还没有使用者，不提示。"""
+    from models.enterprise_dao import get_space_departments_async
+    from models.init_db import AgentKnowledgeSpace, KnowledgeSpace
+
+    audience = {a.id: a for a in agents if assignment_of(a) != "unassigned"}
+    if not audience:
+        return {}
+    rows = (await db.execute(
+        select(AgentKnowledgeSpace.agent_id, KnowledgeSpace)
+        .join(KnowledgeSpace, KnowledgeSpace.id == AgentKnowledgeSpace.space_id)
+        .where(AgentKnowledgeSpace.agent_id.in_(list(audience)))
+    )).all()
+    grants = await get_space_departments_async(db, [s.id for _, s in rows if s.scope_type == "department"])
+    result: Dict[int, List[Dict[str, Any]]] = {}
+    for agent_id, space in rows:
+        agent = audience[agent_id]
+        reason = None
+        if space.sensitivity == "restricted":
+            reason = "绝密资料不会自动开放给使用者"
+        elif space.scope_type == "enterprise":
+            reason = None
+        elif agent.agent_type == "central":
+            reason = "没有划分给全企业"
+        elif space.scope_type == "department" and any(d["id"] == agent.team_id for d in grants.get(space.id, [])):
+            reason = None
+        else:
+            reason = "没有划分给这个智能体所在的部门"
+        if reason:
+            result.setdefault(agent_id, []).append({"id": space.id, "name": space.name, "reason": reason})
+    return result
 
 
 def publish_key_for_team(team_id: Optional[int]) -> Optional[str]:
@@ -164,10 +212,12 @@ async def create_managed_agent(
         if department_code is not None and department_code not in VALID_DEPARTMENT_CODES:
             raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一或不填")
         if team_id is None:
-            raise InvalidInput("部门 Agent 必须绑定一个部门（team_id）")
-        team = await _get_active_team_or_404(db, team_id, org_id)
-        team_name = team.name
-        scope_type = "department"
+            # 统一创建、再划分：先建好（草稿，只有创建者能试用），之后由管理员“划分”给部门
+            scope_type = "personal"
+        else:
+            team = await _get_active_team_or_404(db, team_id, org_id)
+            team_name = team.name
+            scope_type = "department"
     else:
         department_code = None
         team_id = None
@@ -229,6 +279,9 @@ async def update_managed_agent(
         values["department_code"] = new_code
         values["team_id"] = new_team_id
 
+    if (values.get("lifecycle_status") == "published" and agent.agent_type == "department"
+            and values.get("team_id", agent.team_id) is None):
+        raise InvalidInput("这个智能体还没有划分给部门，请先在列表里点「划分」，再发布")
     if agent.agent_type == "department" and (
             "lifecycle_status" in values or "department_code" in values or "team_id" in values):
         # 同一个部门（team）同时只能有一个 published 的部门 Agent：
@@ -315,3 +368,69 @@ async def update_managed_agent(
             detail={k: v for k, v in values.items() if k != "row_version"},
         )
     return _agent_to_dict(agent, team_name)
+
+
+ASSIGNMENT_TARGETS = ("department", "enterprise", "unassigned")
+
+
+async def assign_managed_agent(
+        db, agent_id: int, operator_id: int, target: str, *, team_id: Optional[int] = None,
+        department_code: Optional[str] = None, expected_row_version: Optional[int] = None,
+) -> Dict[str, Any]:
+    """划分智能体：划分给某个部门 / 全企业 / 收回成未划分。
+
+    智能体统一创建（草稿），再由管理员决定它服务谁。已发布的智能体正在被使用，不能直接改划分，
+    先停用再调整，避免正在聊天的人突然换了一个智能体或失去访问。
+    划分给部门时：业务方向默认沿用部门已设置的业务类型；专业技能（由模板生成的）跟着换到新的部门范围。"""
+    if target not in ASSIGNMENT_TARGETS:
+        raise InvalidInput(f"划分方式只能是 {list(ASSIGNMENT_TARGETS)} 之一")
+    agent = (await db.execute(
+        select(Agent).where(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
+    )).unique().scalar_one_or_none()
+    if agent is None:
+        raise NotFound("智能体不存在")
+    if agent.lifecycle_status == "published":
+        raise InvalidInput("已发布的智能体正在被使用，请先停用，再调整划分")
+
+    values: Dict[str, Any] = {"department_publish_key": None}
+    team_name = None
+    if target == "department":
+        if team_id is None:
+            raise InvalidInput("请选择要划分给的部门")
+        team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
+        if team is None or team.status != "active":
+            raise InvalidInput("部门不存在或已停用")
+        code = department_code if department_code is not None else (agent.department_code or team.department_code)
+        if code is not None and code not in VALID_DEPARTMENT_CODES:
+            raise InvalidInput(f"业务方向只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一或不填")
+        if team.department_code is not None and code != team.department_code:
+            raise InvalidInput(f"智能体的业务方向（{code or '通用办公'}）与部门「{team.name}」的业务类型（{team.department_code}）不一致")
+        team_name = team.name
+        values.update(agent_type="department", team_id=team.id, department_code=code,
+                      organization_id=team.organization_id, scope_type="department")
+    elif target == "enterprise":
+        values.update(agent_type="central", team_id=None, department_code=None,
+                      organization_id=await _get_default_organization_id(db), scope_type="enterprise")
+    else:
+        values.update(agent_type="department", team_id=None, department_code=None, scope_type="personal")
+
+    values["row_version"] = Agent.row_version + 1
+    stmt = sa_update(Agent).where(Agent.id == agent_id)
+    if expected_row_version is not None:
+        stmt = stmt.where(Agent.row_version == expected_row_version)
+    result = await db.execute(stmt.values(**values))
+    if result.rowcount == 0:
+        await db.refresh(agent)
+        raise Conflict(f"智能体已被其他人修改（当前版本 {agent.row_version}），请刷新后重试")
+
+    # 模板生成的专业技能跟着智能体换范围，否则技能还留在旧部门里
+    skill_values = {k: values[k] for k in ("organization_id", "scope_type") if k in values}
+    skill_values["team_id"] = values.get("team_id")
+    await db.execute(sa_update(Skill).where(Skill.config_file == f"enterprise/agent_{agent_id}.yml").values(**skill_values))
+    await db.commit()
+    await db.refresh(agent)
+    await audit_service.record_async(
+        operator_id, "org.managed_agent_assigned", resource_type="agent", resource_id=agent_id,
+        detail={"target": target, "team_id": values.get("team_id"), "department_code": values.get("department_code")},
+    )
+    return {**_agent_to_dict(agent, team_name), "knowledge_gaps": (await knowledge_gaps(db, [agent])).get(agent_id, [])}

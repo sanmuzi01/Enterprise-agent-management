@@ -166,9 +166,9 @@ export interface AdminKnowledgeSpace {
   owner_user_id: number
   owner_name: string
   organization_id: number | null
-  team_id: number | null
-  team_name: string | null
-  scope_type: string
+  /** personal = 未划分；department = 划分给了若干部门；enterprise = 划分给全企业 */
+  scope_type: 'personal' | 'department' | 'enterprise' | string
+  departments: { id: number; name: string }[]
   sensitivity: string
   sensitivity_label: string
   status: string
@@ -196,16 +196,19 @@ export interface AdminKnowledgeSpacePage {
   total: number
   limit: number
   offset: number
-  /** 所有启用中的部门（含还没有空间的），以及个人空间和全部的数量 */
+  /** 所有启用中的部门（含还没有空间的），以及全企业、未划分和全部的数量 */
   departments: AdminSpaceDepartment[]
-  personal_count: number
+  enterprise_count: number
+  unassigned_count: number
   all_count: number
 }
+
+export type SpaceAssignScope = 'unassigned' | 'departments' | 'enterprise'
 
 export async function listAdminKnowledgeSpaces(params: {
   limit?: number
   offset?: number
-  /** all / personal / team:<部门编号> */
+  /** all / unassigned / enterprise / team:<部门编号> */
   scope?: string
 } = {}): Promise<AdminKnowledgeSpacePage> {
   const { data } = await request.get('/admin/knowledge-spaces', { params })
@@ -215,17 +218,18 @@ export async function listAdminKnowledgeSpaces(params: {
 export async function createAdminSpace(payload: {
   name: string
   description?: string
-  team_id: number | null
+  scope: SpaceAssignScope
+  team_ids: number[]
   sensitivity: string
 }): Promise<{ id: number; name: string; team_id: number | null; sensitivity: string }> {
   const { data } = await request.post('/admin/knowledge-spaces', payload)
   return data
 }
 
-/** 调整空间的所属部门（null = 收回成个人空间）和密级 */
+/** 划分：未划分 / 指定部门（可多个）/ 全企业，以及密级 */
 export async function updateAdminSpace(
   spaceId: number,
-  patch: { team_id: number | null; sensitivity: string },
+  patch: { scope: SpaceAssignScope; team_ids: number[]; sensitivity: string },
 ): Promise<{ id: number; name: string }> {
   const { data } = await request.patch(`/admin/knowledge-spaces/${spaceId}`, patch)
   return data

@@ -169,55 +169,91 @@ async def enroll_in_default_organization_async(db: AsyncSession, user_id: int) -
 
 
 # ---------------- 知识库按部门划分 ----------------
-# 部门空间（scope_type='department'）对本部门在职成员自动可读（viewer）；
-# 但 restricted（绝密）密级不继承部门成员资格，只能由所有者 / 部门管理员 / 被明确加入的成员访问。
-# 编辑、管理仍然需要空间角色或部门管理员身份，成员资格本身只给“读”。
-_SPACE_IDS_WHERE_TEAM_MEMBER_SQL = (
-    "SELECT ks.id FROM knowledge_spaces ks "
-    "JOIN team_members tm ON tm.team_id = ks.team_id "
-    "JOIN teams t ON tm.team_id = t.id AND t.status = 'active' "
-    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+# 管理员把知识库“划分”给部门（knowledge_space_departments，多对多）或全企业（scope_type=enterprise）：
+#   - 被划分到的部门的在职成员自动只读（viewer）；部门负责人（部门管理员）可编辑文档（editor）；
+#   - 全企业空间对该企业全部在职成员只读；
+#   - “绝密”密级（restricted）不继承任何部门 / 全企业身份，只能由所有者、被明确加入的成员访问。
+# 成员资格只给“读”，改设置 / 管成员 / 删空间始终需要空间角色或平台管理员。
+_VALID_DEPARTMENT_MEMBER = (
+    "JOIN teams t ON t.id = tm.team_id AND t.status = 'active' "
+    "JOIN organizations o ON o.id = t.organization_id AND o.status = 'active' "
     "JOIN organization_members om ON om.organization_id = t.organization_id "
     "AND om.user_id = tm.user_id AND om.status = 'active' "
+)
+
+_READER_SPACE_IDS_SQL = (
+    "SELECT ksd.space_id FROM knowledge_space_departments ksd "
+    "JOIN knowledge_spaces ks ON ks.id = ksd.space_id AND ks.scope_type = 'department' AND ks.sensitivity <> 'restricted' "
+    "JOIN team_members tm ON tm.team_id = ksd.team_id "
+    + _VALID_DEPARTMENT_MEMBER +
     "WHERE tm.user_id = :uid AND tm.status = 'active' "
-    "AND ks.scope_type = 'department' AND ks.sensitivity <> 'restricted'"
+    "UNION "
+    "SELECT ks.id FROM knowledge_spaces ks "
+    "JOIN organizations o ON o.id = ks.organization_id AND o.status = 'active' "
+    "JOIN organization_members om ON om.organization_id = ks.organization_id AND om.status = 'active' "
+    "WHERE ks.scope_type = 'enterprise' AND ks.sensitivity <> 'restricted' AND om.user_id = :uid"
 )
 
-_ADMIN_TEAMS_SQL = (
-    "SELECT t.id, t.name, t.organization_id FROM team_members tm "
-    "JOIN teams t ON tm.team_id = t.id AND t.status = 'active' "
-    "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
-    "JOIN organization_members om ON om.organization_id = t.organization_id "
-    "AND om.user_id = tm.user_id AND om.status = 'active' "
-    "JOIN enterprise_role er ON tm.role_id = er.id "
-    "WHERE tm.user_id = :uid AND tm.status = 'active' AND er.scope = 'team' AND er.code = 'admin' "
-    "ORDER BY t.id"
+# 这个用户在“该空间被划分到的部门”里的角色代码（可能有多行）
+_GRANTED_TEAM_ROLES_SQL = (
+    "SELECT er.code FROM knowledge_space_departments ksd "
+    "JOIN team_members tm ON tm.team_id = ksd.team_id "
+    + _VALID_DEPARTMENT_MEMBER +
+    "JOIN enterprise_role er ON er.id = tm.role_id AND er.scope = 'team' "
+    "WHERE ksd.space_id = :sid AND tm.user_id = :uid AND tm.status = 'active'"
+)
+
+_ENTERPRISE_MEMBER_OF_SQL = (
+    "SELECT 1 FROM organization_members om JOIN organizations o ON o.id = om.organization_id AND o.status = 'active' "
+    "WHERE om.organization_id = :org AND om.user_id = :uid AND om.status = 'active' LIMIT 1"
 )
 
 
-def department_space_inherits_membership(space) -> bool:
-    """这个空间是否把“读”权限给本部门全体成员。"""
-    return bool(space is not None and space.scope_type == "department" and space.team_id is not None
-                and space.sensitivity != "restricted")
+def _role_from(space, granted_codes, enterprise_member: bool):
+    """纯逻辑：划分带来的角色。granted_codes = 用户在被划分部门里的角色代码列表。"""
+    if space is None or space.sensitivity == "restricted":
+        return None
+    if space.scope_type == "department" and granted_codes:
+        return "editor" if "admin" in granted_codes else "viewer"
+    if space.scope_type == "enterprise" and enterprise_member:
+        return "viewer"
+    return None
 
 
-def list_space_ids_where_team_member(db, user_id: int) -> List[int]:
-    return [r[0] for r in db.execute(text(_SPACE_IDS_WHERE_TEAM_MEMBER_SQL), {"uid": user_id}).all()]
+def inherited_space_role(db, user_id: int, space) -> Optional[str]:
+    """划分带来的角色：None / viewer / editor。不含所有者、显式成员、旧的 team_id 部门负责人这几条来源。"""
+    if space is None or space.sensitivity == "restricted":
+        return None
+    codes = []
+    if space.scope_type == "department":
+        codes = [r[0] for r in db.execute(text(_GRANTED_TEAM_ROLES_SQL), {"sid": space.id, "uid": user_id}).all()]
+    enterprise = (space.scope_type == "enterprise" and space.organization_id is not None
+                  and db.execute(text(_ENTERPRISE_MEMBER_OF_SQL), {"org": space.organization_id, "uid": user_id}).first() is not None)
+    return _role_from(space, codes, enterprise)
 
 
-def list_admin_teams(db, user_id: int) -> List[dict]:
-    """用户担任部门管理员的部门（有权把知识库空间发布到这些部门）。"""
-    return [{"id": r[0], "name": r[1], "organization_id": r[2]} for r in db.execute(text(_ADMIN_TEAMS_SQL), {"uid": user_id}).all()]
+def list_reader_space_ids(db, user_id: int) -> List[int]:
+    """被划分给本人所在部门、或划分给全企业的空间编号。"""
+    return [r[0] for r in db.execute(text(_READER_SPACE_IDS_SQL), {"uid": user_id}).all()]
 
 
-async def list_space_ids_where_team_member_async(db: AsyncSession, user_id: int) -> List[int]:
-    res = await db.execute(text(_SPACE_IDS_WHERE_TEAM_MEMBER_SQL), {"uid": user_id})
+async def inherited_space_role_async(db: AsyncSession, user_id: int, space) -> Optional[str]:
+    if space is None or space.sensitivity == "restricted":
+        return None
+    codes = []
+    if space.scope_type == "department":
+        res = await db.execute(text(_GRANTED_TEAM_ROLES_SQL), {"sid": space.id, "uid": user_id})
+        codes = [r[0] for r in res.all()]
+    enterprise = False
+    if space.scope_type == "enterprise" and space.organization_id is not None:
+        res = await db.execute(text(_ENTERPRISE_MEMBER_OF_SQL), {"org": space.organization_id, "uid": user_id})
+        enterprise = res.first() is not None
+    return _role_from(space, codes, enterprise)
+
+
+async def list_reader_space_ids_async(db: AsyncSession, user_id: int) -> List[int]:
+    res = await db.execute(text(_READER_SPACE_IDS_SQL), {"uid": user_id})
     return [row[0] for row in res.all()]
-
-
-async def list_admin_teams_async(db: AsyncSession, user_id: int) -> List[dict]:
-    res = await db.execute(text(_ADMIN_TEAMS_SQL), {"uid": user_id})
-    return [{"id": r[0], "name": r[1], "organization_id": r[2]} for r in res.all()]
 
 
 async def get_team_names_async(db: AsyncSession, team_ids) -> dict:
@@ -226,3 +262,17 @@ async def get_team_names_async(db: AsyncSession, team_ids) -> dict:
         return {}
     res = await db.execute(text("SELECT id, name FROM teams WHERE id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": ids})
     return {r[0]: r[1] for r in res.all()}
+
+
+async def get_space_departments_async(db: AsyncSession, space_ids) -> dict:
+    """{space_id: [{id, name}, ...]}：这些空间被划分给了哪些部门。"""
+    ids = sorted({int(s) for s in space_ids})
+    if not ids:
+        return {}
+    res = await db.execute(text(
+        "SELECT ksd.space_id, t.id, t.name FROM knowledge_space_departments ksd JOIN teams t ON t.id = ksd.team_id "
+        "WHERE ksd.space_id IN :ids ORDER BY t.id").bindparams(bindparam("ids", expanding=True)), {"ids": ids})
+    out: dict = {}
+    for space_id, team_id, name in res.all():
+        out.setdefault(space_id, []).append({"id": team_id, "name": name})
+    return out

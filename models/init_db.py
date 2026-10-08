@@ -651,6 +651,24 @@ class KnowledgeSpace(Base):
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
+class KnowledgeSpaceDepartment(Base):
+    """知识库空间 ↔ 部门：管理员把一个知识库“划分”给哪些部门（多对多）。
+
+    scope_type = department 的空间，被划分到的部门的在职成员自动只读，部门负责人可编辑文档；
+    scope_type = enterprise 的空间对全企业在职成员只读，不需要这张表；
+    scope_type = personal 的空间还没有划分，只有所有者和被加入的成员能看到。
+    “绝密”密级的空间不继承任何部门 / 全企业身份。"""
+    __tablename__ = "knowledge_space_departments"
+    __table_args__ = (
+        Index("uq_kspace_department", "space_id", "team_id", unique=True),
+        Index("idx_kspace_department_team", "team_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    space_id = Column(Integer, ForeignKey("knowledge_spaces.id", name="fk_ksd_space", ondelete="CASCADE"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_ksd_team", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
 class AgentKnowledgeSpace(Base):
     """Agent ↔ 知识库空间 多对多绑定。"""
     __tablename__ = "agent_knowledge_space"

@@ -7,7 +7,10 @@
       <div class="min-w-0">
         <p class="truncate text-sm font-semibold text-slate-900">{{ space.name }}</p>
         <p class="mt-0.5 flex flex-wrap items-center gap-1 text-[11px] text-slate-400">
-          <span v-if="space.scope === 'department' && space.team_name" class="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-600">{{ space.team_name }}</span>
+          <template v-if="space.scope === 'department'">
+            <span v-for="d in space.departments" :key="d.id" class="rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-600">{{ d.name }}</span>
+          </template>
+          <span v-if="space.scope === 'enterprise'" class="rounded bg-purple-50 px-1.5 py-0.5 text-purple-600">全企业</span>
           <span v-else-if="space.scope === 'shared'" class="rounded bg-violet-50 px-1.5 py-0.5 text-violet-600">别人分享给我</span>
           <span v-if="space.sensitivity && space.sensitivity !== 'internal'" class="rounded px-1.5 py-0.5" :class="sensitivityClass">{{ space.sensitivity_label }}</span>
           <span v-if="space.purpose_label" class="rounded bg-sky-50 px-1.5 py-0.5 text-sky-600">{{ space.purpose_label }}</span>

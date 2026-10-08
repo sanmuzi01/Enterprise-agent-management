@@ -79,18 +79,12 @@
           <option v-for="p in purposes" :key="p.key" :value="p.key">{{ p.label }}</option>
         </select>
 
-        <label class="mt-3 block text-xs text-slate-500">归属</label>
-        <select v-model="form.team_id" :disabled="!canChangeScope" data-testid="space-scope-select"
-          class="mt-1 w-full rounded border border-sky-200 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:bg-slate-50 disabled:text-slate-400">
-          <option :value="null">个人空间（只有我和被我加入的人能看到）</option>
-          <option v-for="d in publishableDepartments" :key="d.id" :value="d.id">发布到「{{ d.name }}」（部门成员自动可读）</option>
-          <option v-if="lockedDepartment" :value="lockedDepartment.id" disabled>已发布在「{{ lockedDepartment.name }}」</option>
-        </select>
-        <p v-if="!canChangeScope" class="mt-1 text-[11px] text-slate-400">这个空间已经发布在部门里，只有该部门的部门管理员可以调整归属和密级。</p>
-        <p v-else-if="!publishableDepartments.length" class="mt-1 text-[11px] text-slate-400">只有部门管理员可以把知识库发布到部门。</p>
+        <p v-if="editing && editing.scope !== 'personal' && editing.scope !== 'shared'" class="mt-3 rounded bg-slate-50 px-3 py-2 text-xs text-slate-500" data-testid="space-assigned-note">
+          这个知识库已由管理员划分给{{ assignedText(editing) }}。划分范围和密级由管理员在「企业知识库」里统一调整。
+        </p>
 
         <label class="mt-3 block text-xs text-slate-500">密级</label>
-        <select v-model="form.sensitivity" :disabled="!canChangeScope" data-testid="space-sensitivity-select"
+        <select v-model="form.sensitivity" :disabled="!canChangeLevel" data-testid="space-sensitivity-select"
           class="mt-1 w-full rounded border border-sky-200 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:bg-slate-50 disabled:text-slate-400">
           <option v-for="s in sensitivities" :key="s.key" :value="s.key">{{ s.label }}</option>
         </select>
@@ -134,7 +128,6 @@ const router = useRouter()
 
 const spaces = ref<KnowledgeSpace[]>([])
 const purposes = ref<{ key: string; label: string }[]>([])
-const publishableDepartments = ref<{ id: number; name: string }[]>([])
 const sensitivities = ref<{ key: string; label: string }[]>([])
 const scopeFilter = ref<string>('all')
 const loading = ref(true)
@@ -142,7 +135,7 @@ const loadError = ref('')
 
 const formOpen = ref(false)
 const editing = ref<KnowledgeSpace | null>(null)
-const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [], team_id: null, sensitivity: 'internal' })
+const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [], sensitivity: 'internal' })
 const tagsText = ref('')
 const formError = ref('')
 const saving = ref(false)
@@ -154,7 +147,6 @@ async function reload() {
     const res = await listSpaces()
     spaces.value = res.items
     purposes.value = res.purposes
-    publishableDepartments.value = res.publishable_departments || []
     sensitivities.value = res.sensitivities || []
   } catch (e: any) {
     loadError.value = getErrorMessage(e, '加载知识库空间失败')
@@ -163,39 +155,45 @@ async function reload() {
   }
 }
 
-// 筛选：全部 / 个人 / 各部门
+// 筛选：全部 / 我的与分享 / 全企业 / 各部门（一个知识库划分给了多个部门，就出现在每个部门下）
 const scopeOptions = computed(() => {
   const departments = new Map<number, { name: string; count: number }>()
-  let personal = 0
+  let mine = 0
+  let company = 0
   for (const s of spaces.value) {
-    if (s.scope === 'department' && s.team_id != null) {
-      const entry = departments.get(s.team_id) || { name: s.team_name || '部门', count: 0 }
-      entry.count += 1
-      departments.set(s.team_id, entry)
+    if (s.scope === 'department') {
+      for (const d of s.departments) {
+        const entry = departments.get(d.id) || { name: d.name, count: 0 }
+        entry.count += 1
+        departments.set(d.id, entry)
+      }
+    } else if (s.scope === 'enterprise') {
+      company += 1
     } else {
-      personal += 1
+      mine += 1
     }
   }
   const options = [{ key: 'all', label: '全部', count: spaces.value.length }]
-  if (personal) options.push({ key: 'personal', label: '个人与分享', count: personal })
+  if (mine) options.push({ key: 'mine', label: '我的与分享', count: mine })
+  if (company) options.push({ key: 'enterprise', label: '全企业', count: company })
   for (const [id, entry] of departments) options.push({ key: `team:${id}`, label: entry.name, count: entry.count })
   return options
 })
 
 const visibleSpaces = computed(() => {
-  if (scopeFilter.value === 'all') return spaces.value
-  if (scopeFilter.value === 'personal') return spaces.value.filter((s) => s.scope !== 'department')
-  const teamId = Number(scopeFilter.value.replace('team:', ''))
-  return spaces.value.filter((s) => s.scope === 'department' && s.team_id === teamId)
+  const key = scopeFilter.value
+  if (key === 'all') return spaces.value
+  if (key === 'mine') return spaces.value.filter((s) => s.scope === 'personal' || s.scope === 'shared')
+  if (key === 'enterprise') return spaces.value.filter((s) => s.scope === 'enterprise')
+  const teamId = Number(key.replace('team:', ''))
+  return spaces.value.filter((s) => s.scope === 'department' && s.departments.some((d) => d.id === teamId))
 })
 
-// 已经发布在部门里的空间，只有该部门的部门管理员能改归属和密级
-const lockedDepartment = computed(() => {
-  const s = editing.value
-  if (!s || s.scope !== 'department' || s.team_id == null) return null
-  return publishableDepartments.value.some((d) => d.id === s.team_id) ? null : { id: s.team_id, name: s.team_name || '部门' }
-})
-const canChangeScope = computed(() => !lockedDepartment.value)
+// 已经划分给部门 / 全企业的知识库，密级由管理员统一调整
+const canChangeLevel = computed(() => !editing.value || editing.value.scope === 'personal')
+
+const assignedText = (s: KnowledgeSpace) =>
+  s.scope === 'enterprise' ? '全企业' : s.departments.map((d) => `「${d.name}」`).join('、') || '部门'
 
 const sensitivityHint = computed(() => {
   switch (form.sensitivity) {
@@ -210,7 +208,6 @@ function openCreate() {
   editing.value = null
   form.name = ''
   form.description = ''
-  form.team_id = null
   form.sensitivity = 'internal'
   form.purpose = null
   tagsText.value = ''
@@ -222,7 +219,6 @@ function openEdit(s: KnowledgeSpace) {
   editing.value = s
   form.name = s.name
   form.description = s.description
-  form.team_id = s.scope === 'department' ? s.team_id : null
   form.sensitivity = s.sensitivity || 'internal'
   form.purpose = s.purpose
   tagsText.value = s.tags.join(', ')
@@ -239,16 +235,8 @@ async function submit() {
     purpose: form.purpose,
     tags: tagsText.value.split(',').map((t) => t.trim()).filter(Boolean),
   }
-  // 创建时只在选了部门时才带上；编辑时只有可以调整归属的人才带（否则后端会拒绝）
-  if (editing.value) {
-    if (canChangeScope.value) {
-      payload.team_id = form.team_id ?? null
-      payload.sensitivity = form.sensitivity
-    }
-  } else {
-    if (form.team_id != null) payload.team_id = form.team_id
-    payload.sensitivity = form.sensitivity
-  }
+  // 已划分的知识库密级由管理员统一调整（后端也会拒绝），这里不带
+  if (canChangeLevel.value) payload.sensitivity = form.sensitivity
   try {
     if (editing.value) await updateSpace(editing.value.id, payload)
     else await createSpace(payload)

@@ -173,8 +173,22 @@ export interface ManagedAgent {
   team_name: string | null
   model_name: string
   runtime_type: 'builtin' | 'external'
+  /** 划分状态：全企业 / 某个部门 / 还没划分 */
+  assignment: 'enterprise' | 'department' | 'unassigned'
+  /** 绑定的知识库里，这个智能体的使用者读不到的那些（没划分给对应部门） */
+  knowledge_gaps?: { id: number; name: string; reason: string }[]
   lifecycle_status: LifecycleStatus
   row_version: number
+}
+
+export async function assignManagedAgent(agentId: number, payload: {
+  target: 'department' | 'enterprise' | 'unassigned'
+  team_id?: number
+  department_code?: string
+  expected_row_version?: number
+}): Promise<ManagedAgent> {
+  const { data } = await request.put(`/admin/org/agents/${agentId}/assignment`, payload)
+  return data as ManagedAgent
 }
 
 export interface AgentRuntimeInfo {

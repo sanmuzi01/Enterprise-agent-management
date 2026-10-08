@@ -62,6 +62,13 @@ class ManagedAgentCreate(BaseModel):
     output: Optional[str] = None
 
 
+class AgentAssignment(BaseModel):
+    target: str = Field(description="department 划分给某个部门 / enterprise 全企业可用 / unassigned 收回成未划分")
+    team_id: Optional[int] = Field(default=None, description="target=department 时必填")
+    department_code: Optional[str] = Field(default=None, description="业务方向；不填则沿用部门已设置的业务类型")
+    expected_row_version: Optional[int] = None
+
+
 class AgentRuntimeUpdate(BaseModel):
     runtime_type: str = Field(description="builtin = 平台自带运行方式；external = 转发给企业自己的 Agent 服务")
     url: Optional[str] = Field(default=None, max_length=1000, description="外部 Agent 服务地址")
@@ -282,6 +289,19 @@ async def create_managed_agent(
         department_code=data.department_code, team_id=data.team_id, model_name=data.model_name,
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
         template_id=data.template_id,
+    )
+
+
+@router.put("/agents/{agent_id}/assignment", summary="划分智能体：部门 / 全企业 / 未划分（已发布的需先停用）")
+async def assign_agent(
+        agent_id: int,
+        data: AgentAssignment,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.assign_managed_agent(
+        async_db, agent_id, current_user.id, data.target, team_id=data.team_id,
+        department_code=data.department_code, expected_row_version=data.expected_row_version,
     )
 
 

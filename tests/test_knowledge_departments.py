@@ -1,17 +1,19 @@
-"""企业知识库按部门划分：部门空间对本部门成员自动可读，管理和发布只属于部门管理员。
+"""企业知识库“统一创建、再划分”：管理员把知识库划分给一个或多个部门，或划分给全企业。
 
-规则（见 models/enterprise_dao.py 的“知识库按部门划分”和 service/access_control.py）：
-- scope_type=department 的空间：本部门在职成员自动只读（viewer）；绝密（restricted）不继承；
-- 成员资格只给“读”，写 / 管理仍需要空间角色或部门管理员身份；
-- 只有该部门的部门管理员能把空间发布到这个部门，也只有他们能调整它的归属和密级；
-- 同步和异步两条访问路径都要验证（各有一份实现）。
+规则（models/enterprise_dao.py 的“知识库按部门划分”、service/access_control.py）：
+- 划分给部门（scope_type=department，knowledge_space_departments）：被划分到的部门的在职成员自动只读，部门负责人可编辑文档；
+- 划分给全企业（scope_type=enterprise）：该企业全部在职成员只读；
+- 还没划分（scope_type=personal）：只有所有者和被加入的成员；
+- “绝密”不继承任何部门 / 全企业身份；
+- 成员资格只给“读”（负责人给“编辑”），改设置 / 管成员 / 删空间不会因此获得；
+- 同步和异步两条访问路径各验证一遍（各有一份实现）。
 """
 import unittest
 
 from sqlalchemy import text
 
-from models.init_db import (EnterpriseRole, KnowledgeSpace, Organization, OrganizationMember, SessionLocal,
-                            SpaceMember, Team, TeamMember)
+from models.init_db import (EnterpriseRole, KnowledgeSpace, KnowledgeSpaceDepartment, Organization, OrganizationMember,
+                            SessionLocal, SpaceMember, Team, TeamMember)
 from service import access_control
 from service.exceptions import InvalidInput, PermissionDenied
 from service.knowledge_space import membership, space_async_service as svc
@@ -35,58 +37,74 @@ def _run_db(fn):
 class DepartmentKnowledgeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.admin = rc.create_user("kd-admin")
-        cls.member = rc.create_user("kd-member")
-        cls.other_member = rc.create_user("kd-other-member")      # 另一个部门的成员
-        cls.outsider = rc.create_user("kd-outsider")
-        cls.left = rc.create_user("kd-left")                      # 已被移出部门
+        cls.owner = rc.create_user("kd-owner")                # 创建者（管理员），空间所有者
+        cls.member_a = rc.create_user("kd-member-a")
+        cls.head_a = rc.create_user("kd-head-a")              # A 部门负责人
+        cls.member_b = rc.create_user("kd-member-b")
+        cls.member_c = rc.create_user("kd-member-c")          # 只在 C 部门
+        cls.org_only = rc.create_user("kd-org-only")          # 是企业成员，但不在任何部门
+        cls.outsider = rc.create_user("kd-outsider")          # 不在任何企业
+        cls.left = rc.create_user("kd-left")                  # 已被移出 A 部门
 
         db = SessionLocal()
         cls.db = db
-        org = Organization(name="kd-test-org", owner_user_id=cls.admin["id"])
+        org = Organization(name="kd-test-org", owner_user_id=cls.owner["id"])
         db.add(org)
         db.commit()
         cls.org_id = org.id
-        cls.team = Team(name="kd-team-a", owner_user_id=cls.admin["id"], organization_id=cls.org_id)
-        cls.team_b = Team(name="kd-team-b", owner_user_id=cls.admin["id"], organization_id=cls.org_id)
-        db.add_all([cls.team, cls.team_b])
-        db.commit()
-        cls.team_id, cls.team_b_id = cls.team.id, cls.team_b.id
+        cls.teams = {}
+        for key in ("a", "b", "c"):
+            team = Team(name=f"kd-team-{key}", owner_user_id=cls.owner["id"], organization_id=cls.org_id)
+            db.add(team)
+            db.commit()
+            cls.teams[key] = team.id
         org_role = db.query(EnterpriseRole.id).filter_by(scope="organization", code="member").scalar()
         admin_role = db.query(EnterpriseRole.id).filter_by(scope="team", code="admin").scalar()
         member_role = db.query(EnterpriseRole.id).filter_by(scope="team", code="member").scalar()
-        for user in (cls.admin, cls.member, cls.other_member, cls.left):
+        for user in (cls.owner, cls.member_a, cls.head_a, cls.member_b, cls.member_c, cls.org_only, cls.left):
             db.add(OrganizationMember(organization_id=cls.org_id, user_id=user["id"], role_id=org_role, status="active"))
         db.commit()
         db.add_all([
-            TeamMember(team_id=cls.team_id, user_id=cls.admin["id"], role_id=admin_role, status="active"),
-            TeamMember(team_id=cls.team_id, user_id=cls.member["id"], role_id=member_role, status="active"),
-            TeamMember(team_id=cls.team_b_id, user_id=cls.other_member["id"], role_id=member_role, status="active"),
-            TeamMember(team_id=cls.team_id, user_id=cls.left["id"], role_id=member_role, status="disabled"),
+            TeamMember(team_id=cls.teams["a"], user_id=cls.member_a["id"], role_id=member_role, status="active"),
+            TeamMember(team_id=cls.teams["a"], user_id=cls.head_a["id"], role_id=admin_role, status="active"),
+            TeamMember(team_id=cls.teams["b"], user_id=cls.member_b["id"], role_id=member_role, status="active"),
+            TeamMember(team_id=cls.teams["c"], user_id=cls.member_c["id"], role_id=member_role, status="active"),
+            TeamMember(team_id=cls.teams["a"], user_id=cls.left["id"], role_id=member_role, status="disabled"),
         ])
         db.commit()
 
-        def make(name, **kw):
-            space = KnowledgeSpace(user_id=cls.admin["id"], name=name, **kw)
+        def make(name, scope_type, sensitivity="internal", team_ids=(), **kw):
+            space = KnowledgeSpace(user_id=cls.owner["id"], name=name, scope_type=scope_type, sensitivity=sensitivity,
+                                   organization_id=cls.org_id if scope_type != "personal" else None, **kw)
             db.add(space)
+            db.commit()
+            for team_id in team_ids:
+                db.add(KnowledgeSpaceDepartment(space_id=space.id, team_id=team_id))
             db.commit()
             return space.id
 
-        cls.dept_space = make("kd-dept", team_id=cls.team_id, organization_id=cls.org_id, scope_type="department", sensitivity="internal")
-        cls.restricted_space = make("kd-restricted", team_id=cls.team_id, organization_id=cls.org_id, scope_type="department", sensitivity="restricted")
-        cls.personal_with_team = make("kd-personal", team_id=cls.team_id, scope_type="personal")
-        cls.explicit_member_space = make("kd-explicit", team_id=cls.team_id, organization_id=cls.org_id, scope_type="department", sensitivity="restricted")
-        db.add(SpaceMember(space_id=cls.explicit_member_space, user_id=cls.member["id"], role="viewer"))
+        a, b = cls.teams["a"], cls.teams["b"]
+        cls.only_a = make("kd-only-a", "department", team_ids=[a])
+        cls.a_and_b = make("kd-a-and-b", "department", team_ids=[a, b])
+        cls.restricted = make("kd-restricted", "department", "restricted", [a])
+        cls.whole_company = make("kd-company", "enterprise")
+        cls.restricted_company = make("kd-company-secret", "enterprise", "restricted")
+        cls.unassigned = make("kd-unassigned", "personal")
+        cls.stale_grant = make("kd-stale", "personal", team_ids=[a])    # 授权记录还在，但空间已经收回成未划分
+        cls.explicit = make("kd-explicit", "department", "restricted", [a])
+        db.add(SpaceMember(space_id=cls.explicit, user_id=cls.member_a["id"], role="viewer"))
         db.commit()
 
     @classmethod
     def tearDownClass(cls):
         db = cls.db
-        db.execute(text("DELETE FROM kb_audit_log WHERE space_id IN (SELECT id FROM knowledge_spaces WHERE name LIKE 'kd-%')"))
-        db.execute(text("DELETE FROM space_members WHERE space_id IN (SELECT id FROM knowledge_spaces WHERE name LIKE 'kd-%')"))
+        ids = "SELECT id FROM knowledge_spaces WHERE name LIKE 'kd-%'"
+        db.execute(text(f"DELETE FROM kb_audit_log WHERE space_id IN ({ids})"))
+        db.execute(text(f"DELETE FROM space_members WHERE space_id IN ({ids})"))
         db.execute(text("DELETE FROM knowledge_spaces WHERE name LIKE 'kd-%'"))
-        db.execute(text("DELETE FROM team_members WHERE team_id IN (:a,:b)"), {"a": cls.team_id, "b": cls.team_b_id})
-        db.execute(text("DELETE FROM teams WHERE id IN (:a,:b)"), {"a": cls.team_id, "b": cls.team_b_id})
+        for team_id in cls.teams.values():
+            db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
+            db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": team_id})
         db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org_id})
         db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": cls.org_id})
         db.commit()
@@ -94,137 +112,166 @@ class DepartmentKnowledgeTest(unittest.TestCase):
         rc.cleanup()
 
     @staticmethod
+    def role(user, space_id):
+        with SessionLocal() as db:
+            return access_control.get_space_role(db, user["id"], space_id)
+
+    @staticmethod
     def can_read(user, space_id):
         with SessionLocal() as db:
             return access_control.get_owned_space(db, user["id"], space_id) is not None
 
     @staticmethod
-    def row(sql, params):
+    def ids(user):
         with SessionLocal() as db:
-            return db.execute(text(sql), params).first()
+            return access_control.user_space_ids(db, user["id"])
 
-    # ---------------- 访问规则（同步） ----------------
-    def test_members_read_department_spaces_automatically(self):
-        self.assertIsNotNone(access_control.get_owned_space(self.db, self.member["id"], self.dept_space))
-        self.assertEqual(access_control.get_space_role(self.db, self.member["id"], self.dept_space), "viewer")
-        self.assertIn(self.dept_space, access_control.user_space_ids(self.db, self.member["id"]))
-
-    def test_membership_gives_read_only(self):
-        role = access_control.get_space_role(self.db, self.member["id"], self.dept_space)
+    # ---------------- 划分给部门 ----------------
+    def test_members_of_the_assigned_department_read_automatically_but_cannot_write(self):
+        self.assertEqual(self.role(self.member_a, self.only_a), "viewer")
+        self.assertTrue(self.can_read(self.member_a, self.only_a))
+        self.assertIn(self.only_a, self.ids(self.member_a))
+        role = self.role(self.member_a, self.only_a)
         self.assertFalse(membership.can_write_doc(role))
         self.assertFalse(membership.can_manage_space(role))
         self.assertFalse(membership.can_delete_space(role))
 
-    def test_team_admin_manages_it(self):
-        self.assertEqual(access_control.get_space_role(self.db, self.admin["id"], self.dept_space), "owner")
-        self.assertIn(self.dept_space, access_control.user_space_ids(self.db, self.admin["id"]))
+    def test_department_head_can_edit_documents_but_not_manage_the_space(self):
+        role = self.role(self.head_a, self.only_a)
+        self.assertEqual(role, "editor")
+        self.assertTrue(membership.can_write_doc(role))
+        self.assertFalse(membership.can_manage_space(role))
+        self.assertFalse(membership.can_manage_members(role))
 
-    def test_restricted_does_not_inherit_membership(self):
-        self.assertIsNone(access_control.get_owned_space(self.db, self.member["id"], self.restricted_space))
-        self.assertIsNone(access_control.get_space_role(self.db, self.member["id"], self.restricted_space))
-        self.assertNotIn(self.restricted_space, access_control.user_space_ids(self.db, self.member["id"]))
+    def test_a_space_assigned_to_several_departments_is_readable_by_each(self):
+        for user in (self.member_a, self.member_b):
+            self.assertTrue(self.can_read(user, self.a_and_b), user)
+        self.assertFalse(self.can_read(self.member_c, self.a_and_b), "没被划分到的部门看不到")
+
+    def test_other_departments_and_people_outside_get_nothing(self):
+        for user in (self.member_b, self.member_c, self.org_only, self.outsider, self.left):
+            self.assertFalse(self.can_read(user, self.only_a), user)
+            self.assertNotIn(self.only_a, self.ids(user))
+
+    def test_owner_keeps_full_control(self):
+        self.assertEqual(self.role(self.owner, self.only_a), "owner")
+
+    # ---------------- 划分给全企业 ----------------
+    def test_enterprise_wide_space_is_readable_by_every_member_of_the_company(self):
+        for user in (self.member_a, self.member_b, self.member_c, self.org_only):
+            self.assertEqual(self.role(user, self.whole_company), "viewer", user)
+            self.assertIn(self.whole_company, self.ids(user))
+
+    def test_enterprise_wide_space_is_not_readable_outside_the_company(self):
+        self.assertFalse(self.can_read(self.outsider, self.whole_company))
+
+    # ---------------- 绝密 / 未划分 ----------------
+    def test_restricted_never_inherits(self):
+        for space in (self.restricted, self.restricted_company):
+            self.assertFalse(self.can_read(self.member_a, space))
+            self.assertIsNone(self.role(self.member_a, space))
+            self.assertNotIn(space, self.ids(self.member_a))
+        self.assertFalse(self.can_read(self.head_a, self.restricted), "绝密连部门负责人也不继承")
 
     def test_restricted_is_still_reachable_by_explicit_membership(self):
-        self.assertEqual(access_control.get_space_role(self.db, self.member["id"], self.explicit_member_space), "viewer")
+        self.assertEqual(self.role(self.member_a, self.explicit), "viewer")
 
-    def test_other_departments_and_outsiders_get_nothing(self):
-        for user in (self.other_member, self.outsider, self.left):
-            self.assertIsNone(access_control.get_owned_space(self.db, user["id"], self.dept_space), user)
-            self.assertNotIn(self.dept_space, access_control.user_space_ids(self.db, user["id"]))
+    def test_unassigned_spaces_stay_private_even_if_a_stale_grant_row_exists(self):
+        self.assertFalse(self.can_read(self.member_a, self.unassigned))
+        self.assertFalse(self.can_read(self.member_a, self.stale_grant), "scope_type 不是部门时，授权记录不生效")
 
-    def test_a_space_that_is_not_published_to_the_department_stays_private(self):
-        """有 team_id 但 scope_type 还是 personal（旧数据）：不因为部门成员身份就开放。"""
-        self.assertIsNone(access_control.get_owned_space(self.db, self.member["id"], self.personal_with_team))
+    def test_the_highest_source_wins(self):
+        """显式是 viewer、又是被划分部门的负责人（editor）：取更高的 editor。"""
+        with SessionLocal() as db:
+            db.add(SpaceMember(space_id=self.only_a, user_id=self.head_a["id"], role="viewer"))
+            db.commit()
+        try:
+            self.assertEqual(self.role(self.head_a, self.only_a), "editor")
+        finally:
+            with SessionLocal() as db:
+                db.execute(text("DELETE FROM space_members WHERE space_id=:s AND user_id=:u"), {"s": self.only_a, "u": self.head_a["id"]})
+                db.commit()
 
-    # ---------------- 访问规则（异步，另一份实现） ----------------
+    # ---------------- 异步路径（另一份实现） ----------------
     def test_async_paths_agree_with_sync(self):
         async def check(db):
-            member, outsider = self.member["id"], self.outsider["id"]
             return {
-                "read": await access_control.get_owned_space_async(db, member, self.dept_space) is not None,
-                "role": await access_control.get_space_role_async(db, member, self.dept_space),
-                "ids": await access_control.user_space_ids_async(db, member),
-                "restricted": await access_control.get_owned_space_async(db, member, self.restricted_space),
-                "restricted_role": await access_control.get_space_role_async(db, member, self.restricted_space),
-                "outsider": await access_control.get_owned_space_async(db, outsider, self.dept_space),
-                "personal": await access_control.get_owned_space_async(db, member, self.personal_with_team),
+                "dept_read": await access_control.get_owned_space_async(db, self.member_a["id"], self.only_a) is not None,
+                "dept_role": await access_control.get_space_role_async(db, self.member_a["id"], self.only_a),
+                "head_role": await access_control.get_space_role_async(db, self.head_a["id"], self.only_a),
+                "multi_b": await access_control.get_owned_space_async(db, self.member_b["id"], self.a_and_b) is not None,
+                "multi_c": await access_control.get_owned_space_async(db, self.member_c["id"], self.a_and_b),
+                "company": await access_control.get_space_role_async(db, self.org_only["id"], self.whole_company),
+                "company_outsider": await access_control.get_owned_space_async(db, self.outsider["id"], self.whole_company),
+                "restricted": await access_control.get_owned_space_async(db, self.member_a["id"], self.restricted),
+                "unassigned": await access_control.get_owned_space_async(db, self.member_a["id"], self.unassigned),
+                "stale": await access_control.get_owned_space_async(db, self.member_a["id"], self.stale_grant),
+                "ids": await access_control.user_space_ids_async(db, self.member_a["id"]),
             }
         got = _run_db(check)
-        self.assertTrue(got["read"])
-        self.assertEqual(got["role"], "viewer")
-        self.assertIn(self.dept_space, got["ids"])
-        self.assertNotIn(self.restricted_space, got["ids"])
+        self.assertTrue(got["dept_read"])
+        self.assertEqual((got["dept_role"], got["head_role"]), ("viewer", "editor"))
+        self.assertTrue(got["multi_b"])
+        self.assertIsNone(got["multi_c"])
+        self.assertEqual(got["company"], "viewer")
+        self.assertIsNone(got["company_outsider"])
         self.assertIsNone(got["restricted"])
-        self.assertIsNone(got["restricted_role"])
-        self.assertIsNone(got["outsider"])
-        self.assertIsNone(got["personal"])
+        self.assertIsNone(got["unassigned"])
+        self.assertIsNone(got["stale"])
+        self.assertTrue({self.only_a, self.a_and_b, self.whole_company} <= got["ids"])
+        self.assertFalse({self.restricted, self.restricted_company, self.unassigned, self.stale_grant} & got["ids"])
 
-    # ---------------- 列表 ----------------
-    def test_list_shows_department_spaces_with_their_department(self):
-        listing = _run_db(lambda db: svc.list_spaces(db, self.member["id"]))
+    # ---------------- 用户侧的知识库中心 ----------------
+    def test_list_shows_where_each_space_was_assigned(self):
+        listing = _run_db(lambda db: svc.list_spaces(db, self.member_a["id"]))
         by_name = {item["name"]: item for item in listing["items"]}
-        self.assertIn("kd-dept", by_name)
-        item = by_name["kd-dept"]
-        self.assertEqual((item["scope"], item["team_name"], item["my_role"], item["can_write_doc"]), ("department", "kd-team-a", "viewer", False))
-        self.assertEqual(item["sensitivity_label"], "内部")
-        self.assertNotIn("kd-restricted", by_name)
-        self.assertNotIn("kd-personal", by_name)
-        self.assertEqual(listing["publishable_departments"], [], "普通成员不能发布到部门")
+        self.assertEqual(by_name["kd-only-a"]["scope"], "department")
+        self.assertEqual([d["name"] for d in by_name["kd-only-a"]["departments"]], ["kd-team-a"])
+        self.assertEqual([d["name"] for d in by_name["kd-a-and-b"]["departments"]], ["kd-team-a", "kd-team-b"])
+        self.assertEqual(by_name["kd-company"]["scope"], "enterprise")
+        self.assertEqual((by_name["kd-only-a"]["my_role"], by_name["kd-only-a"]["can_write_doc"]), ("viewer", False))
+        for hidden in ("kd-restricted", "kd-company-secret", "kd-unassigned", "kd-stale"):
+            self.assertNotIn(hidden, by_name)
+        self.assertNotIn("publishable_departments", listing, "划分是管理员统一做的，用户侧不再提供发布到部门")
 
-    def test_list_offers_only_the_departments_the_user_administers(self):
-        listing = _run_db(lambda db: svc.list_spaces(db, self.admin["id"]))
-        self.assertEqual([d["id"] for d in listing["publishable_departments"]], [self.team_id])
-        self.assertEqual([s["key"] for s in listing["sensitivities"]], ["public", "internal", "confidential", "restricted"])
+    def test_users_create_personal_spaces_only(self):
+        created = _run_db(lambda db: svc.create_space(db, self.member_a["id"], {"name": "kd-mine", "team_id": self.teams["a"]}))
+        self.assertEqual((created["scope"], created["departments"]), ("personal", []))
+        row = self.db_row("SELECT scope_type, team_id FROM knowledge_spaces WHERE id=:i", {"i": created["id"]})
+        self.assertEqual(tuple(row), ("personal", None), "即使请求里带了部门，普通用户创建的也只是个人空间")
 
-    # ---------------- 发布 / 调整 ----------------
-    def test_only_the_department_admin_can_publish_to_a_department(self):
-        created = _run_db(lambda db: svc.create_space(db, self.admin["id"], {"name": "kd-created", "team_id": self.team_id, "sensitivity": "confidential"}))
-        self.assertEqual((created["scope"], created["team_name"], created["sensitivity"]), ("department", "kd-team-a", "confidential"))
-        row = self.row("SELECT scope_type, team_id, organization_id FROM knowledge_spaces WHERE id=:i", {"i": created["id"]})
-        self.assertEqual(tuple(row), ("department", self.team_id, self.org_id))
-        for user in (self.member, self.outsider, self.other_member):
-            with self.assertRaises(PermissionDenied, msg=user):
-                _run_db(lambda db: svc.create_space(db, user["id"], {"name": "kd-nope", "team_id": self.team_id}))
+    @staticmethod
+    def db_row(sql, params):
+        with SessionLocal() as db:
+            return db.execute(text(sql), params).first()
+
+    def test_sensitivity_of_an_assigned_space_is_changed_by_the_admin_not_the_owner(self):
         with self.assertRaises(PermissionDenied):
-            _run_db(lambda db: svc.create_space(db, self.admin["id"], {"name": "kd-nope", "team_id": self.team_b_id}))   # 管理员只能发布到自己管理的部门
-
-    def test_invalid_sensitivity_is_rejected_and_default_is_internal(self):
+            _run_db(lambda db: svc.update_space(db, self.owner["id"], self.only_a, {"sensitivity": "public"}))
+        personal = _run_db(lambda db: svc.create_space(db, self.member_a["id"], {"name": "kd-own-level"}))
+        changed = _run_db(lambda db: svc.update_space(db, self.member_a["id"], personal["id"], {"sensitivity": "confidential"}))
+        self.assertEqual(changed["sensitivity"], "confidential")
         with self.assertRaises(InvalidInput):
-            _run_db(lambda db: svc.create_space(db, self.member["id"], {"name": "kd-bad", "sensitivity": "top-secret"}))
-        plain = _run_db(lambda db: svc.create_space(db, self.member["id"], {"name": "kd-plain"}))
-        self.assertEqual((plain["scope"], plain["sensitivity"], plain["team_id"]), ("personal", "internal", None))
+            _run_db(lambda db: svc.update_space(db, self.member_a["id"], personal["id"], {"sensitivity": "nope"}))
 
-    def test_owner_who_is_not_department_admin_cannot_move_or_reclassify_a_department_space(self):
-        # 把一个部门空间的所有权交给普通成员（模拟“成员创建、后来才被发布到部门”之类的历史数据）
-        self.db.execute(text("UPDATE knowledge_spaces SET user_id=:u WHERE id=:s"), {"u": self.member["id"], "s": self.dept_space})
-        self.db.commit()
-        try:
-            with self.assertRaises(PermissionDenied):
-                _run_db(lambda db: svc.update_space(db, self.member["id"], self.dept_space, {"team_id": None}))
-            with self.assertRaises(PermissionDenied):
-                _run_db(lambda db: svc.update_space(db, self.member["id"], self.dept_space, {"sensitivity": "public"}))
-        finally:
-            self.db.execute(text("UPDATE knowledge_spaces SET user_id=:u WHERE id=:s"), {"u": self.admin["id"], "s": self.dept_space})
-            self.db.commit()
-
-    def test_department_admin_can_unshare_and_reshare(self):
-        space = _run_db(lambda db: svc.create_space(db, self.admin["id"], {"name": "kd-toggle", "team_id": self.team_id}))
-        back = _run_db(lambda db: svc.update_space(db, self.admin["id"], space["id"], {"team_id": None}))
-        self.assertEqual((back["scope"], back["team_id"]), ("personal", None))
-        self.assertFalse(self.can_read(self.member, space["id"]), "收回后成员立即失去访问")
-        again = _run_db(lambda db: svc.update_space(db, self.admin["id"], space["id"], {"team_id": self.team_id}))
-        self.assertEqual(again["scope"], "department")
-        self.assertTrue(self.can_read(self.member, space["id"]))
-
-    def test_raising_sensitivity_to_restricted_takes_access_away_from_members(self):
-        space = _run_db(lambda db: svc.create_space(db, self.admin["id"], {"name": "kd-raise", "team_id": self.team_id}))
-        self.assertTrue(self.can_read(self.member, space["id"]))
-        _run_db(lambda db: svc.update_space(db, self.admin["id"], space["id"], {"sensitivity": "restricted"}))
-        self.assertFalse(self.can_read(self.member, space["id"]))
-
-    def test_department_member_can_read_but_not_write_through_the_service(self):
+    def test_department_members_cannot_change_settings(self):
         with self.assertRaises(PermissionDenied):
-            _run_db(lambda db: svc.update_space(db, self.member["id"], self.dept_space, {"name": "hijack"}))
+            _run_db(lambda db: svc.update_space(db, self.member_a["id"], self.only_a, {"name": "hijack"}))
+        with self.assertRaises(PermissionDenied):
+            _run_db(lambda db: svc.update_space(db, self.head_a["id"], self.only_a, {"name": "hijack"}))
+
+    def test_deleting_a_space_removes_its_assignments(self):
+        with SessionLocal() as db:
+            space = KnowledgeSpace(user_id=self.owner["id"], name="kd-to-delete", scope_type="department", organization_id=self.org_id)
+            db.add(space)
+            db.commit()
+            db.add(KnowledgeSpaceDepartment(space_id=space.id, team_id=self.teams["a"]))
+            db.commit()
+            space_id = space.id
+            db.execute(text("DELETE FROM knowledge_spaces WHERE id=:i"), {"i": space_id})
+            db.commit()
+            left = db.execute(text("SELECT COUNT(*) FROM knowledge_space_departments WHERE space_id=:i"), {"i": space_id}).scalar()
+        self.assertEqual(left, 0)
 
 
 if __name__ == "__main__":
