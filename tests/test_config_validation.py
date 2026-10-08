@@ -45,6 +45,29 @@ class ConfigValidationTest(unittest.TestCase):
             self.assertEqual(result["environment"], "production")
             assert_runtime_config()
 
+    def test_every_check_appears_exactly_once(self):
+        """曾经把 Cookie 检查插进 Redis 的 if/else 中间：生产报告里 REDIS_URL 出现两次、Cookie 成功项缺失，而总结果仍然是成功，没人发现。"""
+        for label, env in (("生产", _valid_env()), ("开发", {"APP_ENV": "development", "REDIS_URL": "redis://127.0.0.1:6379/0"}),
+                           ("开发-无 Redis", {"APP_ENV": "development"})):
+            with patch.dict(os.environ, env, clear=True):
+                names = [c["name"] for c in validate_runtime_config()["checks"]]
+            self.assertEqual(len(names), len(set(names)), f"{label}：检查项重复 {sorted({n for n in names if names.count(n) > 1})}")
+
+    def test_production_reports_redis_and_secure_cookie_once_each(self):
+        with patch.dict(os.environ, _valid_env(), clear=True):
+            checks = {c["name"]: c for c in validate_runtime_config()["checks"]}
+        self.assertEqual(checks["REDIS_URL"]["level"], "ok")
+        self.assertEqual(checks["SESSION_COOKIE_SECURE"]["level"], "ok")
+        self.assertIn("Secure", checks["SESSION_COOKIE_SECURE"]["message"])
+
+    def test_development_does_not_report_the_cookie_check_and_still_reports_redis(self):
+        with patch.dict(os.environ, {"APP_ENV": "development", "REDIS_URL": "redis://127.0.0.1:6379/0"}, clear=True):
+            checks = {c["name"]: c for c in validate_runtime_config()["checks"]}
+        self.assertNotIn("SESSION_COOKIE_SECURE", checks)
+        self.assertEqual(checks["REDIS_URL"]["level"], "ok")
+        with patch.dict(os.environ, {"APP_ENV": "development"}, clear=True):
+            self.assertEqual({c["name"]: c for c in validate_runtime_config()["checks"]}["REDIS_URL"]["level"], "warn")
+
     def test_production_rejects_insecure_session_cookie(self):
         for value in ("0", "false", "No"):
             env = _valid_env()

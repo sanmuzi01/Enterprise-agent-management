@@ -125,13 +125,9 @@ def _probe_route_environment() -> tuple[bool, str]:
         socket.create_connection((host, port), timeout=1.5).close()
     except OSError as exc:
         return False, f"数据库不可用: 连不上 {host}:{port}（{exc}）。一条命令起测试用的 MySQL：docker compose -f deploy/test-services/docker-compose.yml up -d"
-    try:
-        from models.init_db import SessionLocal
-        db = SessionLocal()
-        db.execute(__import__("sqlalchemy").text("SELECT 1"))
-        db.close()
-    except Exception as exc:  # noqa: BLE001
-        return False, f"数据库不可用: {exc}"
+    from utils.db_probe import ping_database
+    if not ping_database(timeout=2.0):       # 独立短连接 + 连接 / 读 / 写超时：数据库“半通不通”（握手不回应）时也不会卡住
+        return False, f"数据库不可用: {host}:{port} 连得上但没有正常响应（超时 2 秒）。一条命令起测试用的 MySQL：docker compose -f deploy/test-services/docker-compose.yml up -d"
     return True, ""
 
 

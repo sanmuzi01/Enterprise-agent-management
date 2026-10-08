@@ -51,6 +51,8 @@ REQUIRED_FILES = [
     "service/health.py",
     "FasdtApi/auth_token.py",
     "utils/limiter_metrics.py",
+    "utils/db_probe.py",
+    "tests/test_db_timeouts.py",
     "docs/database-migrations.md",
     "docs/testing.md",
     # 知识库空间（阶段1）

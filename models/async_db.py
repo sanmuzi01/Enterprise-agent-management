@@ -9,6 +9,7 @@ import importlib.util
 import os
 from typing import AsyncGenerator
 
+from utils.db_probe import connect_args
 from sqlalchemy.engine import URL
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -61,7 +62,7 @@ else:
 async_engine = create_async_engine(
     ASYNC_DATABASE_URL,
     echo=False,
-    connect_args={"charset": "utf8mb4"},
+    connect_args=connect_args(async_driver=True),      # 含 connect_timeout：数据库“半通不通”时连接线程不会无限卡住（见 utils/db_probe.py）
     **_pool_options,
 )
 AsyncSessionLocal = async_sessionmaker(

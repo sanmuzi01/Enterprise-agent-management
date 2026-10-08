@@ -21,7 +21,8 @@ export default defineConfig({
     environment: 'jsdom',
     include: ['src/**/*.test.ts'],
     restoreMocks: true,
-    // 文件很小：串行跑，避免多个 worker 同时写临时 / 缓存文件（Windows 和一些沙箱里会出现临时文件 ENOENT）
+    // 文件很小：串行跑，避免多个 worker 同时写临时 / 缓存文件（Windows 和一些沙箱里会出现临时文件 ENOENT）。
+    // package.json 的 test 脚本另外带了 --configLoader runner（不写临时配置文件）和 --no-cache（不写结果缓存）。
     fileParallelism: false,
     pool: 'forks',
   },

@@ -1,6 +1,7 @@
 from utils.timeutil import utcnow
 from typing import List
 from typing import Generator
+from utils.db_probe import connect_args
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Table, Index, Float, UniqueConstraint
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.engine import URL
@@ -72,7 +73,7 @@ engine = create_engine(
     pool_recycle=DB_POOL_RECYCLE,
     pool_pre_ping=DB_POOL_PRE_PING,
     pool_use_lifo=True,
-    connect_args={"charset": "utf8mb4"},
+    connect_args=connect_args(),      # 含 connect_timeout：数据库“半通不通”时连接线程不会无限卡住（见 utils/db_probe.py）
 )
 
 # ORM基类

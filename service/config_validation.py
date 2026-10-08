@@ -143,7 +143,14 @@ def validate_runtime_config() -> Dict[str, object]:
             checks.append({"name": "DB_AUTO_BOOTSTRAP", "ok": True, "level": "ok", "message": "已关闭进程内自动建表"})
 
     redis_url = os.getenv("REDIS_URL", "")
-    if production:
+    if not production:
+        checks.append({
+            "name": "REDIS_URL",
+            "ok": True,
+            "level": "ok" if redis_url else "warn",
+            "message": "已配置 Redis" if redis_url else "未配置 Redis，当前会使用进程内缓存兜底",
+        })
+    else:
         _add_required(checks, "REDIS_URL", redis_url)
         if redis_url and not _is_blank(redis_url):
             # Redis 里放着限流计数、验证码摘要、模型配置缓存：要把它当成“不可信的数据源”来保护，而不是内网里随便连的组件
@@ -167,13 +174,8 @@ def validate_runtime_config() -> Dict[str, object]:
             "name": "SESSION_COOKIE_SECURE", "ok": False, "level": "error",
             "message": "生产环境登录 Cookie 必须带 Secure（只在 https 上发送）：不要把 SESSION_COOKIE_SECURE 设成 0",
         })
-    else:
-        checks.append({
-            "name": "REDIS_URL",
-            "ok": True,
-            "level": "ok" if redis_url else "warn",
-            "message": "已配置 Redis" if redis_url else "未配置 Redis，当前会使用进程内缓存兜底",
-        })
+    elif production:
+        checks.append({"name": "SESSION_COOKIE_SECURE", "ok": True, "level": "ok", "message": "登录 Cookie 带 Secure"})
 
     sms_provider = os.getenv("SMS_PROVIDER", "console").strip().lower()
     if sms_provider not in {"console", "webhook", "aliyun"} or (production and sms_provider == "console"):

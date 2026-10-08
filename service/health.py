@@ -16,10 +16,10 @@ import asyncio
 import os
 from typing import Dict
 
-from sqlalchemy import text
 from starlette.concurrency import run_in_threadpool
 
 from utils import limiter_metrics
+from utils.db_probe import ping_database
 from utils.redis_client import RedisClientManager, configured as redis_configured
 
 _redis = RedisClientManager(decode_responses=True)
@@ -37,18 +37,10 @@ def _timeout_seconds() -> float:
 
 
 def _check_database() -> bool:
-    from models.init_db import SessionLocal
-    db = SessionLocal()
-    try:
-        db.execute(text("SELECT 1"))
-        return True
-    except Exception:  # noqa: BLE001
-        return False
-    finally:
-        try:
-            db.close()
-        except Exception:  # noqa: BLE001
-            pass
+    """用独立的短连接探活，不借连接池里的连接（池被占满时探针不能跟着卡住），连接 / 读 / 写都有驱动级超时，线程超时后自己结束。
+    超时比 READY_TIMEOUT_SECONDS 短：asyncio.wait_for 只能让探针按时返回，取消不了线程池里的同步 connect()，
+    不靠驱动超时的话，数据库“半通不通”时每次探针都会留下一个卡住的线程。"""
+    return ping_database(timeout=max(1.0, _timeout_seconds() - 1.0))
 
 
 async def ready() -> Dict[str, bool]:

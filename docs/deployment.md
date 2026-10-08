@@ -223,6 +223,12 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
 | `/ready` | 现在能接业务流量吗？查数据库（必须）和 Redis。Docker healthcheck 和负载均衡用它 | 就绪 200，**数据库不可用 503**；`{"ok": bool, "degraded": bool}` |
 | `/health` | 旧地址，语义和 `/ready` 相同（以前不管依赖是否可用都返回 200，容器永远是 healthy） | 同 `/ready` |
 
+就绪探针查数据库用的是**独立的短连接**（不借连接池里的连接：池被占满时探针不能跟着卡住），连接 / 读 / 写都有驱动级超时（比 `READY_TIMEOUT_SECONDS` 短）。
+这很重要：`asyncio.wait_for` 只能让探针按时返回 503，取消不了线程池里正在进行的同步 `connect()`；数据库网络“半通不通”（端口能连上、握手没有回应）时，
+没有驱动级超时的话每次探针都会留下一个卡死的线程，每 10 秒一次的健康检查会逐步耗尽线程池。实测只设 `connect_timeout` 不够（握手阶段仍然无限等待），必须再设 `read_timeout`。
+应用自己的连接池（同步、异步、审计）同样带 `DB_CONNECT_TIMEOUT`（默认 5 秒）和兜底的 `DB_READ_TIMEOUT`（默认 60 秒，大于 MySQL 默认的 `innodb_lock_wait_timeout=50` 秒，不会误伤正常的锁等待；
+需要跑超长查询的部署自己调大）。
+
 Redis 配置了却连不上算“降级”（`degraded: true`，并有 `agent_redis_up` 指标和告警），**默认仍然就绪**：限流 / 并发控制会按下面的策略收紧，
 而不是 Redis 抖一下所有实例同时被摘掉。更看重一致性的部署设 `READY_REQUIRE_REDIS=1`，Redis 不可用时也返回 503。
 

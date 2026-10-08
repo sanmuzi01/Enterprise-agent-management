@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，1825 条（2026-10-08 更新）；前端 Vitest 32 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1839 条（2026-10-08 更新）；前端 Vitest 32 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -97,7 +97,7 @@ npm run test:coverage
 - 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
 - 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
   文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
-- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1825 项通过、14 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
+- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1839 项通过、15 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 
@@ -144,6 +144,9 @@ npm run test:coverage
 
 - **数据库探测只做一次，并且很快**：每个路由测试模块导入时都会问一遍“数据库能不能用”。以前每次都等操作系统级的连接超时（Windows 上约 20 秒 × 60 多个模块），MySQL 没起来时看起来就像测试卡死了。
   现在整个进程只探测一次，先用 1.5 秒的端口探测，失败信息里直接给出“一条命令起测试用的 MySQL”。
+- **数据库“半通不通”也不会卡住测试**：探测用独立短连接并带连接 / 读 / 写超时（`utils/db_probe.py`）；`tests/test_db_timeouts.py` 用一个“接受连接但从不发握手包”的本机黑洞服务验证
+  就绪探针按时返回 503、探针线程不残留、四个数据库引擎（同步 / 异步 / 审计）都带超时参数。
+- **Vitest 不依赖磁盘上的临时文件**：`npm test` 带 `--configLoader runner`（在内存里处理 vite.config.ts，不写打包后的临时配置）和 `--no-cache`（不写结果缓存）。Windows 上的 `ENOENT` 都出在往磁盘写临时 / 缓存文件这一步。
 - **TestClient 的弃用警告**：Starlette 的 TestClient 要求安装 `httpx2`（`requirements-dev.txt` 已经包含）。不再用过滤器把这条警告藏起来；缺了会直接看到。
 - **Vitest 串行跑**（`fileParallelism: false`、`pool: 'forks'`）：几个 worker 同时写临时 / 缓存文件，在 Windows 和一些沙箱里会出现临时文件 ENOENT。CI 里还有一个 `frontend-windows` 任务在 Windows 上跑前端单测。
 - **CI 里 Linux 才出现的问题**：OTel SDK 在 Linux 上给批处理器注册了 fork 回调，批处理器被回收后，之后任何一次 fork 都会报 `'NoneType' object is not callable`
