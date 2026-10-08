@@ -51,9 +51,9 @@ def hub_pid():
 
 
 def login(name):
-    r = requests.post(f"{API}/user/login", json={"name": name, "password": "Demo@12345"}, timeout=10)
+    r = requests.post(f"{API}/auth/token", json={"name": name, "password": "Demo@12345"}, timeout=10)
     r.raise_for_status()
-    token = r.json().get("access_token") or r.json().get("token")
+    token = r.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
 
 

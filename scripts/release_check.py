@@ -48,6 +48,9 @@ REQUIRED_FILES = [
     ".github/dependabot.yml",
     "deploy/test-services/docker-compose.yml",
     "tests/test_redis_concurrency.py",
+    "service/health.py",
+    "FasdtApi/auth_token.py",
+    "utils/limiter_metrics.py",
     "docs/database-migrations.md",
     "docs/testing.md",
     # 知识库空间（阶段1）

@@ -123,6 +123,13 @@ def _validate_file(file_name: str) -> str:
     return ext
 
 
+def precheck_upload(db, user_id: int, space_id: int, file_names: List[str]) -> None:
+    """路由在接收文件内容（写临时文件）之前先调用：没有写权限、文件类型不支持的请求，一个字节都不用收。"""
+    _require_write(db, user_id, space_id)
+    for name in file_names:
+        _validate_file(name)
+
+
 def upload(db, background_tasks, user_id: int, space_id: int, file_name: str, content: bytes,
           *, category: str = None, tags: List[str] = None, version: str = None) -> Dict[str, Any]:
     _require_write(db, user_id, space_id)

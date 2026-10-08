@@ -196,6 +196,17 @@ class OtelUnreachableCollectorTests(unittest.TestCase):
             self.assertLess(time.perf_counter() - shutdown_started, 8.0)
             self.assertFalse(otel.active())
 
+    def test_shutdown_keeps_retired_providers_alive_for_sdk_fork_callbacks(self):
+        """OTel SDK 的 fork 回调只持有批处理器的弱引用：provider 被回收后，之后任何一次 fork 都会报
+        “'NoneType' object is not callable”（在 Linux CI 上看到过）。shutdown 之后要留着引用。"""
+        with mock.patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:1", "OTEL_EXPORT_TIMEOUT_SECONDS": "1"}):
+            self.assertTrue(otel.init("retire-test"))
+            provider = otel._state["tracer_provider"]
+            before = len(otel._RETIRED)
+            otel.shutdown(timeout_seconds=1.0)
+        self.assertGreater(len(otel._RETIRED), before)
+        self.assertTrue(any(p is provider for p in otel._RETIRED))
+
     def test_init_failure_is_swallowed(self):
         otel.shutdown()
         with mock.patch.dict(os.environ, {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:1"}):

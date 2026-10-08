@@ -40,7 +40,10 @@ class RouteIsolationTest(unittest.TestCase):
         self.addCleanup(self.client.cookies.clear)      # 登录会下发会话 Cookie；别让它留在共享客户端里变成后面用例的“已登录”
         ok = self.client.post("/user/login", json={"name": self.alice["name"], "password": self.alice["password"]})
         self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertIn("access_token", ok.json())
+        self.assertNotIn("access_token", ok.json(), "浏览器登录接口不返回 JWT（令牌只在 HttpOnly Cookie 里）")
+        token = self.client.post("/auth/token", json={"name": self.alice["name"], "password": self.alice["password"]})
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertIn("access_token", token.json())
 
         bad = self.client.post("/user/login", json={"name": self.alice["name"], "password": "wrong-password"})
         self.assertEqual(bad.status_code, 401)

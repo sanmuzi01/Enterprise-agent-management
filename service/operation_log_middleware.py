@@ -8,7 +8,7 @@ from service.operation_log_service import create_operation_log, extract_user_fro
 
 
 SKIP_PREFIXES = ("/static",)
-SKIP_PATHS = {"/health", "/metrics"}
+SKIP_PATHS = {"/health", "/live", "/ready", "/metrics"}
 
 
 class OperationLogMiddleware(BaseHTTPMiddleware):

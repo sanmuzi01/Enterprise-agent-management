@@ -124,6 +124,25 @@ jobs:
           path: coverage.xml
           retention-days: 14
 
+  frontend-windows:
+    # 本项目主要在 Windows 上开发：前端单测只在 Linux 绿不够（临时文件、路径、行尾这类问题只会在 Windows 上出现）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests (Vitest, Windows)
+        run: npm test
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

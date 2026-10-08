@@ -25,6 +25,7 @@ from service.rag.rerank.factory import RerankFactory
 from models.knowledge_chunk_dao import create_chunks_batch, get_chunks_by_vector_ids, delete_chunks_by_knowledge
 from utils.logger_handler import get_logger
 from utils.path_tool import get_abs_path
+from utils.upload_limits import StoredUpload
 # 导入 RAG 底层两层能力
 from service.rag.embedding_service import embed_texts,embed_query
 from service.rag.embedding_service import aembed_query_async
@@ -372,9 +373,14 @@ def prepare_upload(db, user_id: int, agent_id, file_name: str,
     os.makedirs(file_dir,exist_ok=True)#创建文件目录，如果文件夹存在则不报错
     safe_name = f"{uuid.uuid4().hex}_{file_name}"
     file_path = os.path.join(file_dir, safe_name)#把文件夹路径和文件名拼接成完整文件路径。
-    with open(file_path,"wb") as f:
-        f.write(file_content)#文本内容打开写入二进制文件真是内容
-    file_size = len(file_content)
+    if isinstance(file_content, StoredUpload):
+        # 上传接口已经把内容流式写进了临时文件：直接移到最终位置（同一个文件系统上的 rename），不再经过内存
+        file_size = file_content.size
+        file_content.move_to(file_path)
+    else:
+        with open(file_path,"wb") as f:
+            f.write(file_content)#文本内容打开写入二进制文件真是内容
+        file_size = len(file_content)
     # ---------- 第2步：DB 建 knowledge 记录（status=pending） ----------
     knowledge = create_knowledge(
         db, user_id=user_id, agent_id=agent_id, file_name=file_name,

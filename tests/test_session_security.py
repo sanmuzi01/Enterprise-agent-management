@@ -47,7 +47,7 @@ class ChangePasswordInvalidatesOldTokenTest(unittest.TestCase):
         self.assertIn("失效", stale.json()["detail"])
 
         # 用新密码重新登录拿到的 token（带最新 ver）可以正常用
-        login = self.client.post("/user/login", json={"name": user["name"], "password": STRONG_B})
+        login = self.client.post("/auth/token", json={"name": user["name"], "password": STRONG_B})
         self.assertEqual(login.status_code, 200, login.text)
         new_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         self.assertEqual(self.client.get("/user/me", headers=new_headers).status_code, 200)

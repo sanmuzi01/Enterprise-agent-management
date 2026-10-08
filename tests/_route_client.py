@@ -14,12 +14,9 @@ import os
 import sys
 import time
 import uuid
-import warnings
 
-# starlette 提示“TestClient 将改用 httpx2”：这是第三方库的升级提示，项目代码无可修改，等依赖整体升级时再处理。
-# 只按这一条消息过滤，其他弃用警告照常显示。
-warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated", category=DeprecationWarning)
-warnings.filterwarnings("ignore", message=r"Using `httpx` with `starlette\.testclient` is deprecated")
+# 这里不再过滤 Starlette 的“TestClient 将改用 httpx2”弃用提示：requirements-dev.txt 已经装了 httpx2，正常环境没有这条警告；
+# 如果你的环境没装（pip install -r requirements-dev.txt），会直接看到它——这是想要的：不要靠过滤器把警告藏起来。
 
 # FasdtApi.main 在模块导入时就会 assert_runtime_config() —— 用非生产环境跑，避免生产校验拦截。
 # 测试默认只在控制台显示 CRITICAL（预期内的故障日志太多会淹没真正的失败）；要看细节：TEST_LOG_LEVEL=INFO。文件日志不受影响。
@@ -100,7 +97,20 @@ def _purge_issues() -> None:
         _created_event_ids.clear()
 
 
+_availability: "tuple[bool, str] | None" = None
+
+
 def route_tests_available() -> tuple[bool, str]:
+    """路由级测试的前置条件（JWT 密钥 + 能连上数据库）。每个路由测试模块在导入时都会问一遍：
+    整个进程只真正探测一次（缓存结果），并且先用 1.5 秒的端口探测——数据库没起来时不能每个模块都等一次操作系统级的
+    连接超时（Windows 上约 20 秒 × 60 多个模块，看起来就像测试卡死了）。"""
+    global _availability
+    if _availability is None:
+        _availability = _probe_route_environment()
+    return _availability
+
+
+def _probe_route_environment() -> tuple[bool, str]:
     if not os.getenv("JWT_SECRET_KEY"):
         try:
             from dotenv import load_dotenv
@@ -109,6 +119,12 @@ def route_tests_available() -> tuple[bool, str]:
             pass
     if not os.getenv("JWT_SECRET_KEY"):
         return False, "缺少 JWT_SECRET_KEY"
+    import socket
+    host, port = os.getenv("DB_HOST", "127.0.0.1"), int(os.getenv("DB_PORT", "3306") or 3306)
+    try:
+        socket.create_connection((host, port), timeout=1.5).close()
+    except OSError as exc:
+        return False, f"数据库不可用: 连不上 {host}:{port}（{exc}）。一条命令起测试用的 MySQL：docker compose -f deploy/test-services/docker-compose.yml up -d"
     try:
         from models.init_db import SessionLocal
         db = SessionLocal()

@@ -11,6 +11,14 @@ from tests import _route_client as rc
 _AVAILABLE, _WHY = rc.route_tests_available()
 
 
+def client_token(response) -> str:
+    """从 Set-Cookie 里取出会话令牌（用来断言它没有出现在响应体里）。"""
+    for cookie in response.headers.get_list("set-cookie"):
+        if cookie.startswith("session_token="):
+            return cookie.split("=", 1)[1].split(";", 1)[0]
+    raise AssertionError("没有下发 session_token")
+
+
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
 class SessionCookieTests(unittest.TestCase):
     @classmethod
@@ -45,7 +53,9 @@ class SessionCookieTests(unittest.TestCase):
             self.assertIn("samesite=lax", cookie.lower())
             self.assertIn("Path=/", cookie)
             self.assertIn("Max-Age=", cookie)
-        self.assertIn("access_token", response.json(), "响应体里的令牌仍然保留，给脚本 / 集成使用")
+        self.assertNotIn("access_token", response.json(), "登录响应体里不能有 JWT：登录时运行的页面脚本也读不到令牌")
+        self.assertNotIn("token_type", response.json())
+        self.assertNotIn(client_token(response), response.text)
 
     def test_secure_flag_follows_configuration(self):
         with mock.patch.dict(os.environ, {"SESSION_COOKIE_SECURE": "1"}):

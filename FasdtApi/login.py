@@ -99,6 +99,7 @@ async def login(
     try:
         # 按 IP 限：防止单一来源脚本化撞库；按用户名限：防止分布式撞同一个账号。
         require_limit(
+            critical=True,
             key=f"login:ip:{client_ip}",
             limit_env="LOGIN_IP_RATE_LIMIT",
             default_limit=20,
@@ -107,6 +108,7 @@ async def login(
             label="登录",
         )
         require_limit(
+            critical=True,
             key=f"login:user:{user.name.strip().lower()}",
             limit_env="LOGIN_USER_RATE_LIMIT",
             default_limit=8,
@@ -117,9 +119,10 @@ async def login(
     except LimitExceeded as e:
         raise _limit_error(e)
     result = await auth_async_service.login(async_db, user.name, user.password)
-    # 浏览器前端靠这个 HttpOnly Cookie 保持登录（JavaScript 读不到令牌）；响应体里仍带 access_token，给脚本 / 集成用
+    # 浏览器靠这个 HttpOnly Cookie 保持登录。响应体里不返回 JWT：登录时运行的页面脚本（哪怕是被注入的）也读不到令牌。
+    # 脚本 / CLI / 集成需要 Bearer 令牌的，走专用的 POST /auth/token（有单独的限流和审计，生产默认关闭）。
     session_cookie.issue(response, result["access_token"], ACCESS_TOKEN_EXPIRE_MINUTES * 60)
-    return result
+    return {key: value for key, value in result.items() if key not in ("access_token", "token_type")}
 
 
 @router.post("/logout", summary="退出登录（清除浏览器里的登录 Cookie）")
@@ -137,6 +140,7 @@ async def register(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"register:ip:{client_ip}",
             limit_env="REGISTER_RATE_LIMIT",
             default_limit=10,
@@ -167,6 +171,7 @@ async def send_register_sms_code(
     # 查库之前先限流：否则对"已注册"的号码可以无限次探测，一次短信都不会发也就不会被发送环节的限制拦住。
     try:
         require_limit(
+            critical=True,
             key=f"sms:register-probe:ip:{client_ip or 'unknown'}",
             limit_env="SMS_CODE_IP_LIMIT",
             default_limit=20,
@@ -192,6 +197,7 @@ async def send_reset_password_sms_code(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"sms:reset-probe:ip:{client_ip}",
             limit_env="SMS_CODE_IP_LIMIT",
             default_limit=20,
@@ -225,6 +231,7 @@ async def reset_password(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"reset-password:ip:{client_ip}",
             limit_env="RESET_PASSWORD_RATE_LIMIT",
             default_limit=10,

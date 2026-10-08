@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Dict, Iterator, Optional, Tuple
 
-from utils.redis_client import RedisClientManager
+from utils import limiter_metrics
+from utils.redis_client import RedisClientManager, configured as redis_configured
 
 
 class LimitExceeded(Exception):
@@ -41,6 +42,28 @@ return 1
 """
 
 
+def _production() -> bool:
+    return os.getenv("APP_ENV", "development").lower() == "production"
+
+
+def critical_fallback_mode() -> str:
+    """登录 / 短信 / 注册 / 找回密码这类“被撞库、被刷短信”的入口，在 Redis 不可用时怎么办：
+      open    各进程用自己的内存额度（可用性优先；多个进程时攻击者可用的额度 = 额度 × 进程数）
+      strict  各进程用内存，但额度按进程数（API_WORKERS）均分，合计不超过原额度（默认，生产）
+      closed  直接拒绝（最保守；Redis 一抖这些入口就暂时不可用）
+    没配置 Redis 的单进程部署不受影响。"""
+    default = "strict" if _production() else "open"
+    value = os.getenv("RATE_LIMIT_CRITICAL_FALLBACK", default).strip().lower()
+    return value if value in ("open", "strict", "closed") else default
+
+
+def concurrency_fallback_mode() -> str:
+    """重任务的并发名额在 Redis 不可用时怎么办：closed 停止接收新任务（默认，生产）；local 各进程自己数。"""
+    default = "closed" if _production() else "local"
+    value = os.getenv("CONCURRENCY_REDIS_DOWN", default).strip().lower()
+    return value if value in ("local", "closed") else default
+
+
 class _RedisMixin:
     """Redis 客户端初始化混入类，统一处理连接失败后的降级。"""
 
@@ -57,8 +80,8 @@ class FixedWindowRateLimiter(_RedisMixin):
         self._lock = RLock()
         self._items: Dict[str, Tuple[int, float]] = {}
 
-    def check(self, key: str, limit: int, window_seconds: int, label: str) -> None:
-        """检查当前请求是否超过固定窗口限制。"""
+    def check(self, key: str, limit: int, window_seconds: int, label: str, critical: bool = False) -> None:
+        """检查当前请求是否超过固定窗口限制。critical=True 表示安全敏感入口（登录、短信等），Redis 不可用时按 critical_fallback_mode() 降级。"""
 
         if limit <= 0:
             # limit <= 0 表示关闭该限制，便于本地调试或特殊部署场景临时放开。
@@ -84,6 +107,15 @@ class FixedWindowRateLimiter(_RedisMixin):
             except Exception:
                 # Redis 异常时降级到内存限流，不影响主请求流程继续受保护。
                 self._redis.mark_failed()
+
+        if redis_configured():
+            # 本该用 Redis 却用不了：计数并告警；安全敏感入口按策略收紧或拒绝
+            mode = critical_fallback_mode() if critical else "local"
+            limiter_metrics.observe_degraded(self.namespace, mode)
+            if mode == "closed":
+                raise LimitExceeded("服务暂时繁忙，请稍后再试", 5)
+            if mode == "strict":
+                limit = max(1, limit // max(1, _env_int("API_WORKERS", 2)))      # 每个进程只用自己那一份，合计不超过原额度
 
         expires_at = now + window_seconds
         with self._lock:
@@ -165,6 +197,12 @@ class ConcurrencyLimiter(_RedisMixin):
                 # Redis 异常时降级到内存并发控制，只保护当前进程。
                 self._redis.mark_failed()
 
+        if redis_configured():
+            mode = concurrency_fallback_mode()
+            limiter_metrics.observe_degraded(self.namespace, "closed" if mode == "closed" else "local")
+            if mode == "closed":
+                raise LimitExceeded("系统繁忙，暂时无法接收新的任务，请稍后再试", 5)
+
         with self._lock:
             active = self._items.setdefault(key, {})
             expired = [item_token for item_token, expires_at in active.items() if expires_at <= now]
@@ -217,14 +255,16 @@ rate_limiter = FixedWindowRateLimiter()
 concurrency_limiter = ConcurrencyLimiter()
 
 
-def require_limit(key: str, limit_env: str, default_limit: int, window_env: str, default_window: int, label: str) -> None:
-    """按环境变量配置执行一次限流检查。"""
+def require_limit(key: str, limit_env: str, default_limit: int, window_env: str, default_window: int, label: str,
+                  critical: bool = False) -> None:
+    """按环境变量配置执行一次限流检查。critical=True：登录 / 短信 / 注册 / 找回密码这类安全敏感入口（Redis 不可用时的降级策略不同）。"""
 
     rate_limiter.check(
         key=key,
         limit=_env_int(limit_env, default_limit),
         window_seconds=_env_int(window_env, default_window),
         label=label,
+        critical=critical,
     )
 
 

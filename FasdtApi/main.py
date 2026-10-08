@@ -19,6 +19,7 @@ from sqlalchemy import text
 from service.exceptions import AppError
 from utils.logger_handler import get_logger
 from FasdtApi.login import router as login_router
+from FasdtApi.auth_token import router as auth_token_router
 from FasdtApi.agent import router as agent_router
 from FasdtApi.llm_config import router as llm_config_router
 from FasdtApi.chat import router as chat_router
@@ -54,6 +55,7 @@ from models.init_db import SessionLocal, engine, bootstrap_database, User
 from service.operation_log_middleware import OperationLogMiddleware
 from service.background_task_service import task_execution_mode
 from service.http_resilience import circuit_breaker
+from service import health as health_probe
 from service.metrics_async_service import async_metrics_response
 from service.metrics_service import update_runtime_metrics
 from service.request_context_middleware import RequestContextMiddleware
@@ -119,6 +121,7 @@ app.add_middleware(RequestContextMiddleware)
 BASE_DIR = Path(__file__).resolve().parent.parent
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='my_static')
 app.include_router(login_router)
+app.include_router(auth_token_router)
 app.include_router(agent_router)
 app.include_router(llm_config_router)
 app.include_router(chat_router)
@@ -365,12 +368,28 @@ async def _build_health_payload() -> dict:
     }
 
 
-@app.get("/health", summary="服务健康检查（公开，仅返回是否正常）")
+@app.get("/live", summary="存活探针（公开，永远轻量）")
+async def live_probe():
+    """进程还活着就返回 200，不查任何依赖。"""
+    return health_probe.live()
+
+
+async def _ready_response():
+    result = await health_probe.ready()
+    return JSONResponse(result, status_code=200 if result["ok"] else 503)
+
+
+@app.get("/ready", summary="就绪探针（公开，依赖故障时返回 503）")
+async def ready_probe():
+    """数据库不可用（或 READY_REQUIRE_REDIS=1 时 Redis 不可用）返回 503，Docker healthcheck / 负载均衡据此摘掉实例。
+    只回布尔值（ok / degraded），详细诊断见 `/system/diagnose`（需要登录）。"""
+    return await _ready_response()
+
+
+@app.get("/health", summary="服务健康检查（公开；等同 /ready，依赖故障时返回 503）")
 async def health_check():
-    """给 Docker healthcheck / 负载均衡这类不带登录态的探活用。
-    只回布尔值，详细诊断数据见 `/system/diagnose`（需要登录）。"""
-    payload = await _build_health_payload()
-    return {"ok": payload["ok"]}
+    """沿用的旧地址：语义与 `/ready` 相同。以前不管依赖是否可用都返回 200，容器永远是 healthy。"""
+    return await _ready_response()
 
 
 @app.get("/system/diagnose", summary="详细运行诊断（需要登录）")

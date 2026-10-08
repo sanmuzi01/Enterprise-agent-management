@@ -69,9 +69,9 @@ def attempt(headers, team, db, size):
 
 def main():
     db = engine()
-    login = requests.post(f"{API}/user/login", json={"name": "demo_emp", "password": "Demo@12345"}, timeout=10)
+    login = requests.post(f"{API}/auth/token", json={"name": "demo_emp", "password": "Demo@12345"}, timeout=10)
     login.raise_for_status()
-    headers = {"Authorization": f"Bearer {login.json().get('access_token') or login.json().get('token')}"}
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
     team = requests.get(f"{API}/enterprise/workspace", headers=headers, timeout=10).json()["departments"][0]["id"]
 
     print("== 1. 提交批次后立即杀掉后端 ==")
@@ -81,8 +81,8 @@ def main():
             subprocess.run([PY, str(ROOT / "scripts" / "demo.py"), "start"], capture_output=True, timeout=300)
             time.sleep(3)
             # 前一轮杀得太晚（全部已整理完）：等它们都结束，再试
-            login = requests.post(f"{API}/user/login", json={"name": "demo_emp", "password": "Demo@12345"}, timeout=10)
-            headers = {"Authorization": f"Bearer {login.json().get('access_token') or login.json().get('token')}"}
+            login = requests.post(f"{API}/auth/token", json={"name": "demo_emp", "password": "Demo@12345"}, timeout=10)
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
         batch_id, mid = attempt(headers, team, db, 10)
         if any(s in ("queued", "processing") for s in mid):
             break

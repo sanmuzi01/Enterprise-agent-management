@@ -13,7 +13,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 TRACE_ID_HEADER = "X-Trace-ID"
 PROCESS_TIME_HEADER = "X-Process-Time"
 _ACCESS_LOG = logging.getLogger("http_request")
-_UNTRACED_PATHS = {"/health", "/metrics", "/favicon.ico"}
+_UNTRACED_PATHS = {"/health", "/live", "/ready", "/metrics", "/favicon.ico"}
 _REQUEST_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_.:-]{8,80}$")
 
 

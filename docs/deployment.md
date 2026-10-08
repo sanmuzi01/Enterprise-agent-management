@@ -206,17 +206,31 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
   （`npm --prefix frontend run preview` 用同一份策略，能在上线前本地看到有没有挡住页面自己的东西；`tests/test_csp_policy.py` 核对两处一致）。API 响应自带最严格的策略。
 - **Redis**：里面放着限流计数、验证码摘要、模型配置缓存（只有密文）。只放在内网 / 容器内部网络，**不要对外发布端口**；生产建议设口令（`REDIS_URL=redis://:口令@主机:6379/0`），
   跨主机连接用 `rediss://`（TLS）并配 ACL。没有口令时启动校验会给出警告。缓存内容只用 JSON，不再使用 pickle。
-- **上传上限**：`KNOWLEDGE_UPLOAD_MAX_BYTES`（单个文件，默认 50MB）、`KNOWLEDGE_UPLOAD_REQUEST_MAX_BYTES`（一次请求累计，默认 200MB）、
-  `KNOWLEDGE_UPLOAD_MAX_FILES`（批量个数，默认 20）；Nginx 的 `client_max_body_size` 和 `MAX_REQUEST_BODY_BYTES` 要不小于它们。
+- **上传**：流式写进临时文件（`knowledge_files/.incoming`，和最终位置同一个文件系统，入库时是 rename，不占内存）。上限：`KNOWLEDGE_UPLOAD_MAX_BYTES`（单个文件，默认 50MB）、
+  `KNOWLEDGE_UPLOAD_REQUEST_MAX_BYTES`（一次请求累计，默认 50MB，与 Nginx `client_max_body_size 50m` 一致）、`KNOWLEDGE_UPLOAD_MAX_FILES`（批量个数，默认 20）、
+  `USER_MAX_CONCURRENT_UPLOADS`（同一用户同时上传的个数，默认 3）；Nginx 的 `client_max_body_size` 和 `MAX_REQUEST_BODY_BYTES` 要不小于它们。
+  没有写权限或文件类型不支持的请求，在接收文件内容之前就被拒绝。
+- **脚本 / 集成的令牌**：浏览器登录（`POST /user/login`）响应体里没有 JWT。需要 Bearer 令牌的脚本走 `POST /auth/token`（单独限流 + 审计 `auth.token_issued`），
+  **生产默认关闭**（`AUTH_TOKEN_ENDPOINT_ENABLED=1` 才开，开了启动校验会提醒）。压测脚本 `scripts/load_test.py` 和 `scripts/drill_*.py` 用的就是它。
 
 ## 3. 健康检查
 
-`/health` 是公开的、不需要登录的探活端点，只回 `{"ok": true/false}`，给 Docker
-healthcheck、负载均衡这类不带登录态的场景用：
+三个公开的、不需要登录的探针，只回布尔值，给 Docker healthcheck、负载均衡这类不带登录态的场景用：
 
-```text
-http://<域名>/health
-```
+| 地址 | 含义 | 返回 |
+|---|---|---|
+| `/live` | 进程还活着、能响应吗？永远轻量，不查任何依赖。失败才需要重启进程 | 始终 200 `{"ok": true}` |
+| `/ready` | 现在能接业务流量吗？查数据库（必须）和 Redis。Docker healthcheck 和负载均衡用它 | 就绪 200，**数据库不可用 503**；`{"ok": bool, "degraded": bool}` |
+| `/health` | 旧地址，语义和 `/ready` 相同（以前不管依赖是否可用都返回 200，容器永远是 healthy） | 同 `/ready` |
+
+Redis 配置了却连不上算“降级”（`degraded: true`，并有 `agent_redis_up` 指标和告警），**默认仍然就绪**：限流 / 并发控制会按下面的策略收紧，
+而不是 Redis 抖一下所有实例同时被摘掉。更看重一致性的部署设 `READY_REQUIRE_REDIS=1`，Redis 不可用时也返回 503。
+
+Redis 不可用时的降级策略（没配置 Redis 的单进程部署不受影响）：
+
+- 登录 / 短信 / 注册 / 找回密码（`RATE_LIMIT_CRITICAL_FALLBACK`）：`strict`（生产默认，各进程用内存额度，但额度按 `API_WORKERS` 均分，合计不超过原额度）/ `open` / `closed`（直接拒绝）；
+- 重任务并发名额（`CONCURRENCY_REDIS_DOWN`）：`closed`（生产默认，停止接收新任务）/ `local`；
+- 每次降级都记 `agent_limiter_redis_degraded_total{limiter,mode}`，告警规则见 `deploy/prometheus-rules.yml`（`AgentRedisDown`、`AgentLimiterDegraded`）。
 
 数据库连接池、缓存/限流用的是不是 Redis、后台任务执行模式这些运行细节
 **不再从 `/health` 公开**——这些是内部架构信息，之前任何知道这个 URL 的匿名

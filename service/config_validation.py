@@ -155,6 +155,12 @@ def validate_runtime_config() -> Dict[str, object]:
                                "建议用 redis://:口令@主机:6379/0（跨主机连接用 rediss:// 加 TLS）",
                 })
 
+    if production and os.getenv("AUTH_TOKEN_ENDPOINT_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
+        checks.append({
+            "name": "AUTH_TOKEN_ENDPOINT_ENABLED", "ok": True, "level": "warn",
+            "message": "POST /auth/token（脚本 / 集成用的 Bearer 令牌接口）已开启：只有确实有脚本 / 集成在用才开，用完关掉；浏览器登录不需要它",
+        })
+
     session_secure = os.getenv("SESSION_COOKIE_SECURE", "").strip().lower()
     if production and session_secure in {"0", "false", "no"}:
         checks.append({

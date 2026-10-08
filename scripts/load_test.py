@@ -66,8 +66,9 @@ class LoadTester:
             return json.loads(resp.read().decode("utf-8"))
 
     def login(self, username: str, password: str, api_prefix: str = "/api") -> str:
-        data = self.post_json(f"{api_prefix}/user/login", {"name": username, "password": password})
-        token = data.get("access_token") or data.get("token")
+        # 压测脚本不是浏览器：走专用的令牌接口（生产默认关闭，压测前要设 AUTH_TOKEN_ENDPOINT_ENABLED=1）
+        data = self.post_json(f"{api_prefix}/auth/token", {"name": username, "password": password})
+        token = data.get("access_token")
         if not token:
             raise RuntimeError(data.get("message") or "登录响应中没有 access_token")
         return token

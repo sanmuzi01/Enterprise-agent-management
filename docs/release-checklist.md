@@ -25,7 +25,7 @@ npm run release:check
 必须确认：
 
 - 应用可导入。
-- `/health` 可用。
+- `/live` 返回 200，`/ready`（与 `/health` 相同）在数据库正常时返回 200；停掉数据库后 `/ready` 必须返回 503（Docker healthcheck 用它）。
 - 登录、聊天、知识库、任务、管理员路由仍存在。
 - 数据库幂等启动迁移仍可执行。
 - Alembic 迁移文件存在，已有环境发布前已完成备份和版本确认。
@@ -118,7 +118,7 @@ npm run load:test -- --base-url http://127.0.0.1 --scenario auth-read --username
 
 - 成功率接近 100%。
 - 没有持续 5xx。
-- `/health` 中数据库连接池没有长期打满。
+- `/system/diagnose` 中数据库连接池没有长期打满。
 - 生产环境缓存和限流后端为 Redis。
 
 ## 监控检查

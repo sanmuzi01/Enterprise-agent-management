@@ -48,7 +48,7 @@ class ApiClient:
         return {"Authorization": f"Bearer {self.token}"} if self.token else {}
 
     def login(self, name: str, password: str) -> str:
-        r = self.session.post(f"{self.base_url}/user/login", json={"name": name, "password": password})
+        r = self.session.post(f"{self.base_url}/auth/token", json={"name": name, "password": password})
         r.raise_for_status()
         self.token = r.json()["access_token"]
         return self.token

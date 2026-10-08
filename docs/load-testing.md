@@ -4,11 +4,13 @@
 
 ## 场景
 
-- `health`：只请求 `/health`，用于确认服务、数据库、Redis、连接池健康。
+- `health`：只请求 `/health`（与 `/ready` 相同：数据库不可用返回 503），用于确认服务和数据库就绪。
 - `auth-read`：请求 `/api/user/me`、`/api/agent/list`、`/api/task/?limit=10`，用于测试登录态读接口。
 - `mixed-read`：混合 `/health` 和登录态读接口。
 
 脚本不会默认压测聊天、RAG 上传、Embedding 或 LLM 调用，避免误消耗模型额度。
+
+脚本不是浏览器：它用 `POST /auth/token` 换 Bearer 令牌（浏览器登录接口 `/user/login` 响应体里没有 JWT）。生产环境这个接口默认关闭，压测前要设 `AUTH_TOKEN_ENDPOINT_ENABLED=1`，压完关掉；它有单独的限流（`TOKEN_IP_RATE_LIMIT`，默认每 5 分钟 10 次）。
 
 ## 本地基础压测
 
@@ -54,7 +56,7 @@ npm run load:test -- --base-url http://127.0.0.1 --scenario mixed-read --usernam
 - `latency_ms.p99`：尾部延迟，高并发下容易暴露数据库连接池、Redis 或慢查询问题。
 - `status`：状态码分布。大量 `429` 说明触发限流，大量 `5xx` 说明服务端异常。
 
-同时查看 `/health`：
+同时查看 `/system/diagnose`（需要登录；`/health` 只回布尔值，不再公开这些细节）：
 
 - `database.pool.checked_out` 不应长期接近 `DB_POOL_SIZE + DB_MAX_OVERFLOW`。
 - `cache.*.backend` 生产应为 `redis`。
@@ -67,7 +69,7 @@ npm run load:test -- --base-url http://127.0.0.1 --scenario mixed-read --usernam
 - API 日志是否出现 5xx。
 - MySQL CPU、慢 SQL 和连接数。
 - Redis 是否稳定。
-- `/health` 中连接池借出数量是否长期偏高。
+- `/system/diagnose` 中连接池借出数量是否长期偏高。
 - 前端 Nginx 是否出现超时。
 
 压测结论要结合真实服务器配置，不能只看本地电脑结果。

@@ -30,6 +30,11 @@ logger = logging.getLogger("otel_setup")
 NOISY_LOGGERS = ("opentelemetry.exporter.otlp.proto.grpc.exporter", "opentelemetry.sdk._shared_internal",
                  "opentelemetry.sdk.trace.export", "opentelemetry.sdk._logs._internal.export")
 
+# 已经 shutdown 的 provider 故意留着：OTel SDK 在 Linux 上给每个批处理器注册了“fork 之后在子进程里重新初始化”的回调，
+# 回调只持有批处理器的弱引用。批处理器被回收后，之后任何一次 fork（subprocess / multiprocessing）都会打印
+# “Exception ignored … TypeError: 'NoneType' object is not callable”。一个进程里 init / shutdown 很少超过一两次，留着无所谓。
+_RETIRED: list = []
+
 _state: Dict[str, Any] = {"tracer": None, "tracer_provider": None, "logger_provider": None, "handler": None}
 
 
@@ -138,6 +143,7 @@ def shutdown(timeout_seconds: float = 3.0) -> None:
     except Exception:  # noqa: BLE001
         pass
     finally:
+        _RETIRED.extend(p for p in (_state["tracer_provider"], _state["logger_provider"]) if p is not None)
         _state.update(tracer=None, tracer_provider=None, logger_provider=None, handler=None)
 
 

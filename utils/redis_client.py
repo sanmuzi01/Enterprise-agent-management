@@ -10,6 +10,11 @@ except ImportError:  # Redis 是可选依赖；未安装时调用方会回退到
     redis = None
 
 
+def configured() -> bool:
+    """部署里是否配置了 Redis。配置了却连不上才叫“降级”；没配置（单进程本地开发）本来就用内存，不是故障。"""
+    return bool(os.getenv("REDIS_URL")) and redis is not None
+
+
 class RedisClientManager:
     """带自动重连的 Redis 客户端管理器。
 

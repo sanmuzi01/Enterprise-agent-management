@@ -141,7 +141,7 @@ services:
       # 只绑本机回环：不直接对公网暴露，由宿主机 Nginx 反代并终结 HTTPS。
       - "127.0.0.1:8000:8000"
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/ready"]
       interval: 10s
       timeout: 5s
       retries: 12

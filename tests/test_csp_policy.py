@@ -4,7 +4,7 @@ import pathlib
 import re
 import unittest
 
-from tests import _route_client  # noqa: F401  先导入：里面过滤了第三方 TestClient 的升级提示
+from tests import _route_client  # noqa: F401  先导入：里面设置了测试用的非生产环境变量
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

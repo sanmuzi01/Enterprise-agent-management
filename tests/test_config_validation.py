@@ -61,6 +61,16 @@ class ConfigValidationTest(unittest.TestCase):
             with patch.dict(os.environ, env, clear=True):
                 self.assertTrue(validate_runtime_config()["ok"], value)
 
+    def test_production_warns_when_token_endpoint_is_enabled(self):
+        env = _valid_env()
+        env["AUTH_TOKEN_ENDPOINT_ENABLED"] = "1"
+        with patch.dict(os.environ, env, clear=True):
+            result = validate_runtime_config()
+            self.assertTrue(result["ok"], "只是提醒，不阻止启动")
+            self.assertIn("AUTH_TOKEN_ENDPOINT_ENABLED", [c["name"] for c in result["checks"] if c["level"] == "warn"])
+        with patch.dict(os.environ, _valid_env(), clear=True):
+            self.assertNotIn("AUTH_TOKEN_ENDPOINT_ENABLED", [c["name"] for c in validate_runtime_config()["checks"]])
+
     def test_production_warns_when_redis_has_no_password(self):
         with patch.dict(os.environ, _valid_env(), clear=True):
             result = validate_runtime_config()

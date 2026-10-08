@@ -144,6 +144,7 @@ def send_verification_code(phone: str, client_ip: str = "", scene: str = "regist
         # 全局上限放最后一道之前，最多把短信费用封顶（0 表示关闭）。
         if client_ip:
             require_limit(
+                critical=True,
                 key=f"sms:{scene}:ip:{client_ip}",
                 limit_env="SMS_CODE_IP_LIMIT",
                 default_limit=20,
@@ -152,6 +153,7 @@ def send_verification_code(phone: str, client_ip: str = "", scene: str = "regist
                 label="验证码发送",
             )
         require_limit(
+            critical=True,
             key=f"sms:{scene}:phone:{normalized}",
             limit_env="SMS_CODE_PHONE_LIMIT",
             default_limit=1,
@@ -160,6 +162,7 @@ def send_verification_code(phone: str, client_ip: str = "", scene: str = "regist
             label="验证码发送",
         )
         require_limit(
+            critical=True,
             key=f"sms:{scene}:daily:{normalized}",
             limit_env="SMS_CODE_DAILY_LIMIT",
             default_limit=10,
@@ -168,6 +171,7 @@ def send_verification_code(phone: str, client_ip: str = "", scene: str = "regist
             label="验证码发送",
         )
         require_limit(
+            critical=True,
             key="sms:global:hourly",
             limit_env="SMS_CODE_GLOBAL_HOURLY_LIMIT",
             default_limit=200,
@@ -176,6 +180,7 @@ def send_verification_code(phone: str, client_ip: str = "", scene: str = "regist
             label="验证码发送",
         )
         require_limit(
+            critical=True,
             key="sms:global:daily",
             limit_env="SMS_CODE_GLOBAL_DAILY_LIMIT",
             default_limit=1000,
@@ -224,6 +229,7 @@ def verify_verification_code(phone: str, code: str, scene: str = "register", con
     # 这里再按手机号做一层原子计数（Redis INCR），把窗口内的猜测总量封顶。
     try:
         require_limit(
+            critical=True,
             key=f"sms:verify:{scene}:{normalized}",
             limit_env="SMS_CODE_VERIFY_LIMIT",
             default_limit=10,

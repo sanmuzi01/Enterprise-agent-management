@@ -3,3 +3,5 @@
 coverage==7.16.1
 ruff==0.16.8
 pip-audit==2.10.1
+# Starlette 的 TestClient 改用 httpx2（只装 httpx 会在每次测试时发出弃用警告）；只有测试用，不进生产镜像
+httpx2==2.13.1

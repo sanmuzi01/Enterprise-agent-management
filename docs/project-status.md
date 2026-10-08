@@ -4,7 +4,7 @@
 
 ## 当前验证状态（2026-10-07，以此为准；下文的历史数字是当时的快照）
 
-- **Python 全量**：1777 项通过、15 项跳过（含 11 项需要真实 Redis 的并发 / 缓存安全测试，设置 `REDIS_URL` 才跑）（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
+- **Python 全量**：1825 项通过、14 项跳过（含 8 项需要真实 Redis 的并发 / 缓存安全测试，设置 `REDIS_URL` 才跑）（`python -m unittest discover -s tests -p "test_*.py"`），`-W default` 下没有警告；
   **Java**：143 项通过（`enterprise-business-hub` 里 `mvn test`，跑之前先停掉在 8090 的 Java 进程）；前端 Vitest 32 项、`vue-tsc` 与构建通过；CI（backend / frontend / java / e2e）全绿。
 - **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
   外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
