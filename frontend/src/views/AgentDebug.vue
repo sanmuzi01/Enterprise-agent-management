@@ -85,7 +85,7 @@
                     <PanelHeader title="模型消息" action="复制" @action="copyText(JSON.stringify(dryRun.messages, null, 2), '消息内容')" />
                     <div class="max-h-80 overflow-y-auto p-3">
                       <article v-for="(msg, idx) in dryRun.messages" :key="idx" class="mb-2 rounded border border-slate-100 bg-slate-50 p-3">
-                        <p class="mb-1 text-xs font-semibold text-slate-500">{{ msg.role }}</p>
+                        <p class="mb-1 text-xs font-semibold text-slate-500">{{ messageRoleLabel(msg.role) }}</p>
                         <p class="whitespace-pre-wrap text-xs leading-relaxed text-slate-700">{{ short(msg.content, 1200) }}</p>
                       </article>
                     </div>
@@ -242,7 +242,7 @@
                   <PanelHeader title="工具与能力" />
                   <div class="space-y-3 p-3">
                     <div class="flex flex-wrap gap-1.5">
-                      <span v-for="tool in debug.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ tool }}</span>
+                      <span v-for="tool in debug.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolDisplayName(tool) }}</span>
                       <span v-if="debug.tool_names.length === 0" class="text-xs text-slate-400">没有绑定工具</span>
                     </div>
                     <article v-for="skill in debug.skills" :key="skill.name" class="rounded border border-slate-100 bg-slate-50 p-3">
@@ -290,7 +290,7 @@
                         <p v-if="doc.error_msg" class="mt-1 line-clamp-2 text-xs text-red-600">{{ doc.error_msg }}</p>
                       </div>
                       <span :class="doc.status === 'done' ? 'bg-emerald-50 text-emerald-700' : doc.status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'" class="shrink-0 rounded px-2 py-1 text-xs">
-                        {{ doc.status }}
+                        {{ documentStatusLabel(doc.status) }}
                       </span>
                     </div>
                   </article>
@@ -330,6 +330,7 @@
 </template>
 
 <script setup lang="ts">
+import { documentStatusLabel, messageRoleLabel, toolDisplayName } from '../utils/displayNames'
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {

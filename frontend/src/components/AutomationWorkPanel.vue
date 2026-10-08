@@ -24,7 +24,7 @@
       <label class="text-sm">整理模型
         <select v-model="modelName" :disabled="busy" class="mt-1 w-full rounded border p-2">
           <option value="" disabled>选择已连接的模型</option>
-          <option v-for="m in models" :key="m.id" :value="m.model_name">{{ m.model_name }}</option>
+          <option v-for="m in models" :key="m.id" :value="m.model_name">{{ modelDisplayName(m.model_name) }}</option>
         </select>
       </label>
       <label class="text-sm">材料密级
@@ -147,6 +147,7 @@
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName } from '../utils/displayNames'
 import { computed, onMounted, provide, reactive, ref, watch } from 'vue'
 import * as api from '../api/automationWork'
 import { getCandidates } from '../api/responsibility'

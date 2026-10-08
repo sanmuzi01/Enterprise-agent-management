@@ -72,7 +72,7 @@
                   {{ template.editable ? '我的样板' : '内置' }}
                 </span>
               </div>
-              <p class="mt-3 truncate text-xs text-slate-400">{{ (template.tool_names || []).join(' / ') || '不需要额外工具' }}</p>
+              <p class="mt-3 truncate text-xs text-slate-400">{{ (template.tool_names || []).map(toolDisplayName).join(' / ') || '不需要额外工具' }}</p>
               <div class="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3">
                 <button
                   @click="createFromTemplate(template)"
@@ -186,7 +186,7 @@
                   :key="toolName"
                   class="rounded bg-white/70 px-1.5 py-0.5 text-[11px]"
                 >
-                  {{ toolName }}
+                  {{ toolDisplayName(toolName) }}
                 </span>
               </div>
               <div class="mt-2 flex flex-wrap gap-1">
@@ -480,7 +480,7 @@
             >
               <span class="block text-sm font-medium text-slate-900">{{ template.name }}</span>
               <span class="mt-1 line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ template.description || template.filename }}</span>
-              <span class="mt-2 block truncate text-xs text-slate-400">{{ (template.tool_names || []).join(' / ') || '不需要额外工具' }}</span>
+              <span class="mt-2 block truncate text-xs text-slate-400">{{ (template.tool_names || []).map(toolDisplayName).join(' / ') || '不需要额外工具' }}</span>
             </button>
           </div>
 
@@ -502,7 +502,7 @@
               >
                 <input v-model="form.tool_names" type="checkbox" :value="tool.name" class="mt-1 h-4 w-4" />
                 <span class="min-w-0">
-                  <span class="block text-sm font-medium text-slate-800">{{ tool.name }}</span>
+                  <span class="block text-sm font-medium text-slate-800">{{ toolDisplayName(tool.name) }}</span>
                   <span class="line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ tool.description }}</span>
                 </span>
               </label>
@@ -641,7 +641,7 @@
               <label v-for="tool in tools" :key="tool.name" class="flex items-start gap-2 rounded border border-slate-200 px-3 py-2">
                 <input v-model="templateForm.tool_names" type="checkbox" :value="tool.name" class="mt-1 h-4 w-4" />
                 <span class="min-w-0">
-                  <span class="block text-sm font-medium text-slate-800">{{ tool.name }}</span>
+                  <span class="block text-sm font-medium text-slate-800">{{ toolDisplayName(tool.name) }}</span>
                   <span class="line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ tool.description }}</span>
                 </span>
               </label>
@@ -733,7 +733,7 @@
           <div>
             <p class="mb-2 text-xs font-medium text-slate-500">可使用的工具</p>
             <div class="flex flex-wrap gap-1.5">
-              <span v-for="toolName in previewValidation.tool_names" :key="toolName" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolName }}</span>
+              <span v-for="toolName in previewValidation.tool_names" :key="toolName" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolDisplayName(toolName) }}</span>
               <span v-if="previewValidation.tool_names.length === 0" class="text-xs text-slate-400">不需要额外工具</span>
             </div>
           </div>
@@ -781,6 +781,7 @@
 </template>
 
 <script setup lang="ts">
+import { toolDisplayName } from '../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Download, History, Pencil, Plus, RefreshCw, Trash2, Upload, X, Zap } from 'lucide-vue-next'

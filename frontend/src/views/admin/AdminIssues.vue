@@ -71,7 +71,7 @@
       <p class="text-xs text-slate-500">事件重试用尽后停在这里，不会再自动处理。修复原因后“重新投递”，或写明原因后“丢弃”；两种操作都会留审计记录。</p>
       <ul class="divide-y divide-slate-100">
         <li v-for="d in dead" :key="d.id" class="flex flex-wrap items-center justify-between gap-2 py-2" :data-testid="`dead-${d.id}`">
-          <span class="min-w-0"><span class="block truncate">{{ d.consumer }} · {{ d.event_type }}</span>
+          <span class="min-w-0"><span class="block truncate">{{ eventConsumerLabel(d.consumer) }} · {{ eventTypeLabel(d.event_type) }}</span>
             <span class="block truncate text-xs text-slate-400">{{ d.error }}（已重试 {{ d.attempts }} 次 · {{ time(d.created_at) }}）</span></span>
           <span class="flex gap-2 text-xs">
             <button class="rounded border border-slate-200 px-2 py-1 hover:bg-slate-50" :disabled="busy" @click="redeliver(d.id)">重新投递</button>
@@ -91,7 +91,7 @@
         <div><dt class="text-slate-400">负责人</dt><dd>{{ detail.responsible_name || '未指派' }}</dd></div>
         <div><dt class="text-slate-400">首次 / 最近</dt><dd>{{ time(detail.first_seen_at) }} / {{ time(detail.last_seen_at) }}</dd></div>
         <div><dt class="text-slate-400">累计次数 / 复发</dt><dd>{{ detail.occurrence_count }} / {{ detail.regress_count }}</dd></div>
-        <div class="col-span-2"><dt class="text-slate-400">最近 trace_id</dt><dd class="break-all font-mono">{{ detail.last_trace_id || '—' }}</dd></div>
+        <div class="col-span-2"><dt class="text-slate-400">最近请求编号</dt><dd class="break-all font-mono">{{ detail.last_trace_id || '—' }}</dd></div>
         <div class="col-span-2"><dt class="text-slate-400">外部跳转</dt>
           <dd class="flex gap-3"><a v-if="detail.links?.trace" :href="detail.links.trace" target="_blank" rel="noopener noreferrer" class="text-indigo-600">链路追踪</a>
             <a v-if="detail.links?.sentry" :href="detail.links.sentry" target="_blank" rel="noopener noreferrer" class="text-indigo-600">Sentry</a>
@@ -131,6 +131,7 @@
 </template>
 
 <script setup lang="ts">
+import { eventConsumerLabel, eventTypeLabel } from '../../utils/displayNames'
 import { computed, onMounted, reactive, ref } from 'vue'
 import * as api from '../../api/issues'
 import type { AgentHealth, DeadLetter, EventStats, Issue, IssueDetail, IssueSummary } from '../../api/issues'

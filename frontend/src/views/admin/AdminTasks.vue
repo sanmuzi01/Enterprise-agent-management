@@ -49,7 +49,7 @@
           <span class="text-xs text-slate-500">类型</span>
           <select v-model="filterType" class="h-8 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-500">
             <option value="">全部</option>
-            <option v-for="type in typeOptions" :key="type" :value="type">{{ type }}</option>
+            <option v-for="type in typeOptions" :key="type" :value="type">{{ taskTypeLabel(type) }}</option>
           </select>
         </div>
         <span class="ml-auto text-xs text-slate-400">{{ filteredTasks.length }} / 共 {{ total }} 条</span>
@@ -73,10 +73,10 @@
               <span v-if="task.retry_count > 0" class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">重试 {{ task.retry_count }}</span>
             </div>
             <p class="mt-1 flex flex-wrap gap-2 text-xs text-slate-400">
-              <span>{{ task.task_type }}</span>
+              <span>{{ taskTypeLabel(task.task_type) }}</span>
               <span>用户 #{{ task.user_id }}</span>
               <span v-if="task.agent_id">助手 #{{ task.agent_id }}</span>
-              <span v-if="task.target_type">{{ task.target_type }} #{{ task.target_id }}</span>
+              <span v-if="task.target_type">{{ targetTypeLabel(task.target_type) }} #{{ task.target_id }}</span>
               <span>{{ task.created_at || '-' }}</span>
               <span v-if="task.next_run_at">下次重试 {{ task.next_run_at }}</span>
             </p>
@@ -138,6 +138,7 @@
 </template>
 
 <script setup lang="ts">
+import { taskTypeLabel, targetTypeLabel } from '../../utils/displayNames'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { RefreshCcw, RotateCcw, Search, X } from 'lucide-vue-next'
 import AdminPagination from '../../components/admin/AdminPagination.vue'

@@ -69,7 +69,7 @@
         <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label class="mb-1 block text-xs font-medium text-slate-600">工具名（给大模型看，英文标识符）</label>
-            <input v-model="form.name" placeholder="query_order_status"
+            <input v-model="form.name" placeholder="英文小写字母开头，只能含字母、数字和下划线"
                    class="h-9 w-full rounded border border-slate-300 px-2 text-sm outline-none focus:border-sky-400" />
           </div>
           <div>
@@ -105,7 +105,7 @@
             没有参数也可以——比如一个"获取当前库存总览"的接口
           </div>
           <div v-for="(p, i) in form.params" :key="i" class="mb-1.5 grid grid-cols-[1fr_90px_1fr_60px_28px] items-center gap-1.5">
-            <input v-model="p.name" placeholder="参数名，如 order_id"
+            <input v-model="p.name" placeholder="参数名（英文小写字母、数字或下划线）"
                    class="h-8 rounded border border-slate-300 px-2 text-xs outline-none focus:border-sky-400" />
             <select v-model="p.type" class="h-8 rounded border border-slate-300 px-1 text-xs outline-none focus:border-sky-400">
               <option value="string">string</option>

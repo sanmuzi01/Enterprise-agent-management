@@ -1,4 +1,6 @@
 <template>
+  <div class="h-screen overflow-y-auto">
+    <!-- 外壳不允许滚动，每个页面自己负责滚动。注意：根元素前面不能写注释，会让页面切换动画卡住（页面空白） -->
   <div class="mx-auto max-w-4xl space-y-5 p-6">
     <div class="flex flex-wrap items-center justify-between gap-3">
       <div>
@@ -92,6 +94,7 @@
         <span v-if="prefSaved" class="ml-2 text-xs text-emerald-700">已保存</span>
       </div>
     </details>
+  </div>
   </div>
 </template>
 

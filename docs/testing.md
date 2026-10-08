@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，1839 条（2026-10-08 更新）；前端 Vitest 32 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1839 条（2026-10-08 更新）；前端 Vitest 41 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -161,6 +161,18 @@ npm --prefix frontend test
 覆盖：登录会话（令牌在 HttpOnly Cookie 里，页面只看得到 `csrf_token`）、请求拦截器（带 Cookie、改数据的请求带 `X-CSRF-Token`、从不发 Authorization、401 回登录页）、
 user store（登录不保存令牌、`isLoggedIn()` 不被缓存、退出登录先让后端清 Cookie）、Markdown 安全渲染（脚本 / 事件处理器 / 钓鱼表单 / 外链图片等载荷）。
 更完整的浏览器级验证见 `scripts/check_session_browser.py`（登录 Cookie、CSRF、CSP 真的拦截）和 `scripts/check_xss_browser.py`。
+
+### 界面上不出现代码里的名字
+
+页面上不显示函数名、工具名、枚举值、模型标识、部门代码、事件名、配置项名字。所有“内部名字 → 中文”的转换都集中在 `frontend/src/utils/displayNames.ts`，
+不认识的值用通用说法兜底（“自定义工具”“后台任务”“配置检查”），绝不原样显示。两道守门：
+
+- `frontend/src/utils/displayNames.test.ts`（Vitest）：每个转换函数、兜底说法、中文名本身都不像代码。
+- `tests/test_frontend_display_names.py`（unittest）：后端每注册一个内置工具 / 内置模型 / 诊断检查项，前端名表里必须有对应的中文名；
+  页面模板不能把 `tool_name`、`task_type`、`department_code`、`event_type` 等内部字段直接打印出来；写死的 `placeholder` / `title` / `aria-label` 里不能带 snake_case。
+
+新增内置工具、模型或诊断检查项而忘了加中文名，后端单测会直接失败。
+另外，应用外壳是 `h-dvh` + `main overflow-hidden`，每个页面必须自带滚动容器；页面模板根节点前不能有 HTML 注释（会变成多根片段，路由过渡会卡住并留下空白的 `<main>`）。
 
 ## 后续应补充
 

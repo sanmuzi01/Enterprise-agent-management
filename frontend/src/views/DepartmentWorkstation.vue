@@ -1,4 +1,6 @@
 <template>
+  <div class="h-screen overflow-y-auto">
+    <!-- 外壳不允许滚动，每个页面自己负责滚动。注意：根元素前面不能写注释，会让页面切换动画卡住（页面空白） -->
   <div class="p-6 max-w-5xl mx-auto">
     <div class="flex items-center justify-between mb-5">
       <div>
@@ -90,7 +92,7 @@
             <h2 class="text-sm font-semibold text-slate-900">部门助手 · {{ deptAgent.name }}</h2>
             <p class="text-xs text-slate-400 mt-0.5">{{ deptAgent.description }}</p>
             <p v-if="!deptAgent.model_configured" class="mt-1 text-xs text-amber-700">
-              需要先在「设置 → 模型连接」连接 {{ deptAgent.model_name }} 模型，部门助手才能回答。
+              需要先在「设置 → 模型连接」连接 {{ modelDisplayName(deptAgent.model_name) }} 模型，部门助手才能回答。
             </p>
           </div>
           <EmbeddedAgentChatPanel :agent-id="deptAgent.id" />
@@ -106,9 +108,11 @@
       </RouterLink>
     </div>
   </div>
+  </div>
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName } from '../utils/displayNames'
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { RefreshCcw } from 'lucide-vue-next'

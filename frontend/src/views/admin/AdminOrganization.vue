@@ -94,7 +94,7 @@
             <span class="rounded px-2 py-0.5 text-xs" :class="agentStateClass(agentStatus.state)">{{ agentStatus.state_label }}</span>
           </div>
           <p v-if="agentStatus.agent" class="mt-2 text-sm text-slate-700">
-            {{ agentStatus.agent.name }}<span class="ml-1 text-xs text-slate-400">#{{ agentStatus.agent.id }} · {{ agentStatus.agent.model_name }}</span>
+            {{ agentStatus.agent.name }}<span class="ml-1 text-xs text-slate-400">#{{ agentStatus.agent.id }} · {{ modelDisplayName(agentStatus.agent.model_name) }}</span>
           </p>
           <ul v-if="agentStatus.issues.length" class="mt-2 list-inside list-disc text-xs text-amber-700">
             <li v-for="(issue, i) in agentStatus.issues" :key="i">{{ issue }}</li>
@@ -163,7 +163,7 @@
               <p class="mb-1.5 text-xs font-medium text-slate-500">绑定的部门 Agent</p>
               <ul v-if="permissions?.agents.length" class="space-y-1">
                 <li v-for="a in permissions.agents" :key="a.id" class="text-sm text-slate-700">
-                  {{ a.name }}<span class="text-xs text-slate-400"> ({{ a.department_code }})</span>
+                  {{ a.name }}<span class="text-xs text-slate-400">（{{ departmentCodeLabel(a.department_code) }}）</span>
                 </li>
               </ul>
               <p v-else class="text-sm text-slate-400">暂无</p>
@@ -265,7 +265,7 @@
               </span>
             </td>
             <td class="px-4 py-2.5 text-slate-600">
-              <span v-if="a.agent_type === 'department'">{{ a.team_name || '—' }}（{{ a.department_code }}）</span>
+              <span v-if="a.agent_type === 'department'">{{ a.team_name || '—' }}（{{ departmentCodeLabel(a.department_code) }}）</span>
               <span v-else class="text-slate-400">全企业</span>
             </td>
             <td class="px-4 py-2.5">
@@ -459,6 +459,7 @@
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName, departmentCodeLabel } from '../../utils/displayNames'
 import { onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'
 import * as orgApi from '../../api/organizationAdmin'

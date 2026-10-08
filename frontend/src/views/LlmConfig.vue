@@ -178,6 +178,7 @@
 </template>
 
 <script setup lang="ts">
+import { MODEL_NAMES, modelDisplayName } from '../utils/displayNames'
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { CheckCircle2, Clipboard, KeyRound, Trash2 } from 'lucide-vue-next'
 import SectionTabs from '../components/SectionTabs.vue'
@@ -253,36 +254,7 @@ const providerOptions = [
   },
 ]
 
-const modelNames: Record<string, string> = {
-  'glm-4': '中文通用助手',
-  'glm-4-flash': '轻量快速助手',
-  'glm-4-plus': '复杂任务助手',
-  'deepseek-chat': 'DeepSeek 问答',
-  'deepseek-reasoner': 'DeepSeek 推理',
-  'deepseek-coder': 'DeepSeek 编程',
-  'gpt-4o': 'OpenAI 高能力助手',
-  'gpt-4o-mini': 'OpenAI 轻量助手',
-  'o3-mini': 'OpenAI 推理助手',
-  'o4-mini': 'OpenAI 新一代轻量推理',
-  'kimi-k2-0711-preview': 'Kimi K2 预览',
-  'kimi-latest': 'Kimi 最新稳定入口',
-  'qwen-plus': '通义千问均衡助手',
-  'qwen-turbo': '通义千问快速助手',
-  'qwen-max': '通义千问高能力助手',
-  'qwen-long': '通义千问长文本助手',
-  'sonar': 'Perplexity 联网检索',
-  'sonar-pro': 'Perplexity 联网检索（增强）',
-  'gpt-4o-search-preview': 'OpenAI 联网检索',
-  'gpt-4o-mini-search-preview': 'OpenAI 轻量联网检索',
-  'embedding-3': '中文资料读取',
-  'embedding-2': '兼容资料读取',
-  'text-embedding-3-small': 'OpenAI 轻量资料读取',
-  'text-embedding-3-large': 'OpenAI 高精度资料读取',
-  'text-embedding-ada-002': 'OpenAI 旧版资料读取',
-  'BAAI/bge-small-zh-v1.5': '本地中文轻量资料读取',
-  'BAAI/bge-base-zh-v1.5': '本地中文标准资料读取',
-  'BAAI/bge-large-zh-v1.5': '本地中文高精度资料读取',
-}
+const modelNames: Record<string, string> = MODEL_NAMES
 
 const fallbackModels: SupportedModel[] = [
   { model_name: 'glm-4', provider: 'zhipu', kind: 'chat' },
@@ -336,7 +308,7 @@ function inferKind(modelName: string): CapabilityKey {
 }
 
 function modelLabel(modelName: string) {
-  return `${modelNames[modelName] || modelName} · ${modelName}`
+  return modelDisplayName(modelName)
 }
 
 function friendlyModelName(modelName: string) {

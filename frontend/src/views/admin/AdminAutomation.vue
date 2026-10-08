@@ -83,7 +83,7 @@
         </div>
       </section>
       <p class="mt-3 text-xs text-slate-400">
-        样本太少时比例仅供参考。模型成本：{{ data.token_price_configured ? '按 AUTOMATION_TOKEN_PRICE_PER_1K 折算为人民币' : '未配置 AUTOMATION_TOKEN_PRICE_PER_1K，仅显示 Token 数，不估算金额' }}。
+        样本太少时比例仅供参考。模型成本：{{ data.token_price_configured ? '按已配置的 Token 单价折算为人民币' : '还没有配置 Token 单价，仅显示 Token 数，不估算金额' }}。
       </p>
     </template>
   </div>

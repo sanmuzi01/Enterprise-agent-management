@@ -30,8 +30,8 @@
             :class="c.level === 'error' ? 'text-red-500' : c.level === 'warn' ? 'text-amber-500' : 'text-emerald-500'" />
           <div class="min-w-0 text-sm">
             <p class="font-medium text-slate-800">{{ c.label }}</p>
-            <p class="text-xs text-slate-500">{{ c.message }}</p>
-            <p v-if="c.fix" class="text-xs text-indigo-600">处理：{{ c.fix }}</p>
+            <p class="text-xs text-slate-500">{{ humanizeConfigText(c.message) }}</p>
+            <p v-if="c.fix" class="text-xs text-indigo-600">处理：{{ humanizeConfigText(c.fix) }}</p>
           </div>
         </li>
       </ul>
@@ -63,7 +63,7 @@
           <p class="text-xs text-slate-500">任务模式</p>
           <Workflow :size="17" class="text-indigo-500" />
         </div>
-        <p class="mt-2 text-xl font-semibold text-slate-900">{{ health?.tasks?.execution_mode || '-' }}</p>
+        <p class="mt-2 text-xl font-semibold text-slate-900">{{ taskModeLabel(health?.tasks?.execution_mode) }}</p>
         <p class="mt-1 text-xs text-slate-400">{{ health?.tasks?.worker_required ? '需要独立 Worker 处理队列' : 'API 响应后执行后台任务' }}</p>
       </article>
 
@@ -73,7 +73,7 @@
           <ShieldCheck :size="17" :class="health?.config?.ok ? 'text-emerald-500' : 'text-red-500'" />
         </div>
         <p class="mt-2 text-xl font-semibold" :class="health?.config?.ok ? 'text-emerald-700' : 'text-red-700'">
-          {{ health?.config?.environment || '-' }}
+          {{ environmentLabel(health?.config?.environment) }}
         </p>
         <p class="mt-1 text-xs text-slate-400">错误 {{ health?.config?.error_count ?? 0 }}，警告 {{ health?.config?.warning_count ?? 0 }}</p>
       </article>
@@ -89,8 +89,8 @@
             <CheckCircle2 v-if="item.ok" :size="16" class="mt-0.5 text-emerald-500" />
             <AlertTriangle v-else :size="16" class="mt-0.5 text-red-500" />
             <div class="min-w-0 flex-1">
-              <p class="truncate text-sm font-medium text-slate-800">{{ item.name }}</p>
-              <p class="mt-0.5 text-xs text-slate-500">{{ item.message || '-' }}</p>
+              <p class="truncate text-sm font-medium text-slate-800" :title="item.name">{{ diagnoseCheckLabel(item.name) }}</p>
+              <p class="mt-0.5 text-xs text-slate-500">{{ diagnoseMessage(item) || '-' }}</p>
             </div>
           </div>
           <div v-if="!health?.checks?.length && !loading" class="py-12 text-center text-sm text-slate-500">暂无诊断数据。</div>
@@ -155,6 +155,7 @@
 </template>
 
 <script setup lang="ts">
+import { diagnoseCheckLabel, diagnoseMessage, environmentLabel, humanizeConfigText, taskModeLabel } from '../../utils/displayNames'
 import { computed, onMounted, ref } from 'vue'
 import { AlertTriangle, CheckCircle2, Database, RefreshCcw, Server, ShieldCheck, Workflow } from 'lucide-vue-next'
 import { getDiagnose, getReadiness, type HealthStatus, type ReadinessItem } from '../../api/system'

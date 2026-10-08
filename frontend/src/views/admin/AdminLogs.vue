@@ -99,7 +99,7 @@
                 <p class="truncate font-medium text-slate-900">{{ log.path }}</p>
               </div>
               <p v-if="log.error_msg" class="mt-1 line-clamp-2 rounded border border-red-100 bg-red-50 px-2 py-1 text-xs text-red-700">
-                {{ log.error_msg }}
+                {{ humanizeLogMessage(log.error_msg) }}
               </p>
             </div>
             <div class="flex items-start">
@@ -121,6 +121,7 @@
 </template>
 
 <script setup lang="ts">
+import { humanizeLogMessage } from '../../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, RefreshCcw, Search } from 'lucide-vue-next'
 import AdminPagination from '../../components/admin/AdminPagination.vue'

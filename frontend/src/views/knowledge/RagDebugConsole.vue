@@ -47,7 +47,7 @@
             </label>
             <select v-if="withAnswer" v-model="modelName" class="w-full rounded border border-slate-200 px-2 py-1.5">
               <option value="">选择模型…</option>
-              <option v-for="c in configs" :key="c.model_name" :value="c.model_name">{{ c.model_name }}</option>
+              <option v-for="c in configs" :key="c.model_name" :value="c.model_name">{{ modelDisplayName(c.model_name) }}</option>
             </select>
           </div>
 
@@ -123,6 +123,7 @@
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName } from '../../utils/displayNames'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft } from 'lucide-vue-next'

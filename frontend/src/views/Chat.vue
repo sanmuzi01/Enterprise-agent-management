@@ -550,13 +550,13 @@
                     <!-- Tool 调用信息 -->
                     <div v-if="step.tool_name" class="space-y-1 text-xs">
                       <div class="flex items-start gap-2">
-                        <span class="shrink-0 text-purple-600 font-medium">🔧 {{ step.tool_name }}</span>
+                        <span class="shrink-0 text-purple-600 font-medium">🔧 {{ toolDisplayName(step.tool_name) }}</span>
                       </div>
                       <details class="group">
                         <summary class="text-gray-500 cursor-pointer select-none hover:text-gray-700 list-none">
                           <span class="inline-flex items-center gap-1">
                             <span class="group-open:rotate-90 transition-transform">▶</span>
-                            工具参数
+                            技术详情：调用内容
                           </span>
                         </summary>
                         <pre class="mt-1 p-2 rounded bg-gray-50 text-[11px] text-gray-700 overflow-x-auto">{{ prettyJson(step.tool_args) }}</pre>
@@ -565,7 +565,7 @@
                         <summary class="text-gray-500 cursor-pointer select-none hover:text-gray-700 list-none">
                           <span class="inline-flex items-center gap-1">
                             <span class="group-open:rotate-90 transition-transform">▶</span>
-                            返回结果
+                            技术详情：返回内容
                           </span>
                         </summary>
                         <pre class="mt-1 p-2 rounded bg-emerald-50 text-[11px] text-emerald-800 overflow-x-auto max-h-48 overflow-y-auto">{{ step.tool_result }}</pre>
@@ -584,6 +584,7 @@
 </template>
 
 <script setup lang="ts">
+import { toolDisplayName } from '../utils/displayNames'
 import { ref, onMounted, nextTick, watch, computed, onBeforeUnmount } from 'vue'
 import { useRoute ,useRouter } from 'vue-router'
 import { renderMarkdown } from '../utils/markdown'
@@ -699,7 +700,7 @@ const stepLabel = (s: any) => {
   if (t.includes('retrieve')) return '知识库检索'
   if (t.includes('permission')) return '权限拒绝'
   if (t.includes('tool')) return '工具执行'
-  if (s.tool_name) return '工具 ' + s.tool_name
+  if (s.tool_name) return '工具：' + toolDisplayName(s.tool_name)
   return 'LLM 推理'
 }
 const prettyJson = (v: any) => {
