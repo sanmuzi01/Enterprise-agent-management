@@ -49,6 +49,17 @@ class OrgMemberUpdate(BaseModel):
     status: Optional[str] = Field(default=None, description="active/disabled")
 
 
+class AgentConfig(BaseModel):
+    """运行参数（都可以不填，不填 = 沿用默认或不修改）。"""
+    temperature: Optional[int] = Field(default=None, ge=0, le=100)
+    memory_enabled: Optional[int] = Field(default=None, ge=0, le=1)
+    rag_enabled: Optional[int] = Field(default=None, ge=0, le=1)
+    kb_top_k: Optional[int] = Field(default=None, ge=1, le=20)
+    kb_rerank_enabled: Optional[int] = Field(default=None, ge=0, le=1)
+    kb_force_citation: Optional[int] = Field(default=None, ge=0, le=1)
+    kb_refuse_when_empty: Optional[int] = Field(default=None, ge=0, le=1)
+
+
 class ManagedAgentCreate(BaseModel):
     template_id: Optional[str] = None
     name: str = Field(min_length=1, max_length=255)
@@ -60,6 +71,9 @@ class ManagedAgentCreate(BaseModel):
     task: Optional[str] = None
     constraints: Optional[str] = None
     output: Optional[str] = None
+    config: Optional[AgentConfig] = None
+    space_ids: Optional[list[int]] = Field(default=None, description="绑定的知识库空间；不填 = 不绑定")
+    skill_ids: Optional[list[int]] = Field(default=None, description="添加的技能；不填 = 不添加")
 
 
 class AgentAssignment(BaseModel):
@@ -92,6 +106,9 @@ class ManagedAgentUpdate(BaseModel):
     task: Optional[str] = None
     constraints: Optional[str] = None
     output: Optional[str] = None
+    config: Optional[AgentConfig] = None
+    space_ids: Optional[list[int]] = Field(default=None, description="绑定的知识库空间（整体替换）；不填 = 不修改")
+    skill_ids: Optional[list[int]] = Field(default=None, description="添加的技能（整体替换）；不填 = 不修改")
 
 
 @router.get("/roles", summary="企业角色目录（组织/部门两个 scope，供角色选择器用）")
@@ -289,7 +306,27 @@ async def create_managed_agent(
         department_code=data.department_code, team_id=data.team_id, model_name=data.model_name,
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
         template_id=data.template_id,
+        config=data.config.model_dump(exclude_none=True) if data.config else None,
+        space_ids=data.space_ids, skill_ids=data.skill_ids,
     )
+
+
+@router.get("/agent-options", summary="创建 / 编辑智能体用的可选项：模型、技能、知识库、部门")
+async def get_agent_options(
+        agent_id: Optional[int] = None,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.agent_options(async_db, current_user.id, agent_id)
+
+
+@router.get("/agents/{agent_id}", summary="智能体的完整配置与发布前检查")
+async def get_managed_agent_detail(
+        agent_id: int,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await agent_admin_service.get_managed_agent_detail(async_db, agent_id)
 
 
 @router.put("/agents/{agent_id}/assignment", summary="划分智能体：部门 / 全企业 / 未划分（已发布的需先停用）")
@@ -351,4 +388,6 @@ async def update_managed_agent(
         team_id=data.team_id, model_name=data.model_name, lifecycle_status=data.lifecycle_status,
         expected_row_version=data.expected_row_version,
         role=data.role, task=data.task, constraints=data.constraints, output=data.output,
+        config=data.config.model_dump(exclude_none=True) if data.config else None,
+        space_ids=data.space_ids, skill_ids=data.skill_ids,
     )

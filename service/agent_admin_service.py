@@ -37,6 +37,78 @@ logger = get_logger("agent_admin_service")
 VALID_MANAGED_AGENT_TYPES = {"central", "department"}
 
 
+CONFIG_FLAGS = {"rag_enabled": "知识库检索", "memory_enabled": "长期记忆", "kb_rerank_enabled": "检索重排",
+                "kb_force_citation": "强制引用来源", "kb_refuse_when_empty": "无命中时拒答"}
+CONFIG_RANGES = {"temperature": ("温度", 0, 100), "kb_top_k": ("检索条数", 1, 20)}
+
+
+def clean_config(config: Optional[Dict[str, Any]]) -> Dict[str, int]:
+    """智能体的运行参数：只认这几项，值必须在范围内；None 表示不改。"""
+    cleaned: Dict[str, int] = {}
+    for key, value in (config or {}).items():
+        if value is None:
+            continue
+        if key in CONFIG_FLAGS:
+            if value not in (0, 1, True, False):
+                raise InvalidInput(f"「{CONFIG_FLAGS[key]}」只能是开或关")
+            cleaned[key] = int(bool(value))
+        elif key in CONFIG_RANGES:
+            label, low, high = CONFIG_RANGES[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not low <= value <= high:
+                raise InvalidInput(f"「{label}」需要在 {low} 到 {high} 之间")
+            cleaned[key] = value
+        else:
+            raise InvalidInput(f"不支持的配置项：{key}")
+    return cleaned
+
+
+def check_model(model_name: Optional[str]) -> None:
+    """平台自带运行方式用的模型必须是目录里的聊天模型（外部服务自己决定模型，不受此限）。"""
+    from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
+    if normalize_model_name(model_name or "") not in CHAT_MODELS:
+        raise InvalidInput(f"模型「{model_name}」不是可用的聊天模型，请从列表里选择")
+
+
+async def validated_space_ids(db, space_ids) -> List[int]:
+    """管理员可以给智能体绑定任何一个存在的知识库空间（不要求自己是空间成员）。"""
+    from models.init_db import KnowledgeSpace
+    ids = sorted({int(s) for s in (space_ids or [])})
+    if ids:
+        found = {r[0] for r in (await db.execute(select(KnowledgeSpace.id).where(KnowledgeSpace.id.in_(ids)))).all()}
+        if found != set(ids):
+            raise InvalidInput("包含不存在的知识库空间")
+    return ids
+
+
+async def validated_skill_ids(db, skill_ids, operator_id: int) -> List[int]:
+    from service.access_control import can_bind_skill
+    ids = sorted({int(s) for s in (skill_ids or [])})
+    if ids:
+        skills = (await db.execute(select(Skill).where(Skill.id.in_(ids)))).unique().scalars().all()
+        if len(skills) != len(ids):
+            raise InvalidInput("包含不存在的技能")
+        unpublished = [s.name for s in skills if not can_bind_skill(s, operator_id)]
+        if unpublished:
+            raise InvalidInput(f"这些技能还没有发布，不能绑定：{'、'.join(unpublished)}")
+    return ids
+
+
+async def apply_space_ids(db, agent_id: int, space_ids: List[int]) -> None:
+    from sqlalchemy import delete as sa_delete
+
+    from models.init_db import AgentKnowledgeSpace
+    await db.execute(sa_delete(AgentKnowledgeSpace).where(AgentKnowledgeSpace.agent_id == agent_id))
+    for space_id in space_ids:
+        db.add(AgentKnowledgeSpace(agent_id=agent_id, space_id=space_id))
+
+
+async def apply_skill_ids(db, agent_id: int, skill_ids: List[int]) -> None:
+    from sqlalchemy import delete as sa_delete
+    await db.execute(sa_delete(agent_skill).where(agent_skill.c.agent_id == agent_id))
+    for skill_id in skill_ids:
+        await db.execute(agent_skill.insert().values(agent_id=agent_id, skill_id=skill_id))
+
+
 def assignment_of(agent: Agent) -> str:
     """划分状态：enterprise = 全企业可用；department = 划分给了某个部门；unassigned = 已创建、还没划分。"""
     if agent.agent_type == "central":
@@ -44,10 +116,12 @@ def assignment_of(agent: Agent) -> str:
     return "department" if agent.team_id is not None else "unassigned"
 
 
-def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, Any]:
+def _agent_to_dict(agent: Agent, team_name: Optional[str] = None, organization_name: Optional[str] = None) -> Dict[str, Any]:
     from prompt.prompt_manager import read_prompt_file
     return {
         "id": agent.id,
+        "organization_id": agent.organization_id,
+        "organization_name": organization_name,
         "name": agent.name,
         "agent_type": agent.agent_type,
         "department_code": agent.department_code,
@@ -96,18 +170,22 @@ async def _check_publishable(db, team_id: Optional[int], department_code: Option
 
 async def list_managed_agents(db) -> List[Dict[str, Any]]:
     """列出所有中央/部门 Agent（不含普通用户自己的 personal Agent）。"""
+    from models.init_db import Organization
+
     result = await db.execute(
-        select(Agent, Team.name)
+        select(Agent, Team.name, Organization.name)
         .outerjoin(Team, Team.id == Agent.team_id)
+        .outerjoin(Organization, Organization.id == Agent.organization_id)
         .where(Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
-        .order_by(Agent.id)
+        .order_by(Agent.organization_id, Agent.id)
     )
     # Agent.skills 是 lazy=False（联表预加载），查完整 Agent 实体的结果集必须先
     # .unique() 去重（一个 Agent 绑了多个 Skill 会因为联表 JOIN 出现重复行），
     # 不然 SQLAlchemy 直接报错，不是可选的优化。
     rows = result.unique().all()
-    gaps = await knowledge_gaps(db, [agent for agent, _ in rows])
-    return [{**_agent_to_dict(agent, team_name), "knowledge_gaps": gaps.get(agent.id, [])} for agent, team_name in rows]
+    gaps = await knowledge_gaps(db, [row[0] for row in rows])
+    return [{**_agent_to_dict(agent, team_name, organization_name), "knowledge_gaps": gaps.get(agent.id, [])}
+            for agent, team_name, organization_name in rows]
 
 
 async def knowledge_gaps(db, agents: List[Agent]) -> Dict[int, List[Dict[str, Any]]]:
@@ -187,6 +265,8 @@ async def create_managed_agent(
         role: Optional[str] = None, task: Optional[str] = None,
         constraints: Optional[str] = None, output: Optional[str] = None,
         template_id: Optional[str] = None, organization_id: Optional[int] = None,
+        config: Optional[Dict[str, Any]] = None, space_ids: Optional[List[int]] = None,
+        skill_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     template = None
     if template_id:
@@ -203,6 +283,11 @@ async def create_managed_agent(
         raise InvalidInput("名称不能为空")
     if agent_type not in VALID_MANAGED_AGENT_TYPES:
         raise InvalidInput(f"agent_type 只能是 {sorted(VALID_MANAGED_AGENT_TYPES)} 之一")
+
+    check_model(model_name)
+    cleaned_config = clean_config(config)
+    bound_spaces = await validated_space_ids(db, space_ids) if space_ids is not None else None
+    bound_skills = await validated_skill_ids(db, skill_ids, creator_user_id) if skill_ids is not None else None
 
     org_id = organization_id or await _get_default_organization_id(db)
 
@@ -227,7 +312,7 @@ async def create_managed_agent(
         user_id=creator_user_id, name=name, model_name=model_name,
         organization_id=org_id, team_id=team_id, scope_type=scope_type,
         agent_type=agent_type, department_code=department_code,
-        lifecycle_status="draft",
+        lifecycle_status="draft", **cleaned_config,
     )
     db.add(agent)
     await db.flush()
@@ -237,6 +322,14 @@ async def create_managed_agent(
 
     if template:
         await bind_template_skill(db, agent, template, creator_user_id)
+    if bound_spaces is not None:
+        await apply_space_ids(db, agent.id, bound_spaces)
+    if bound_skills:
+        from sqlalchemy import select as _select
+        already = {r[0] for r in (await db.execute(_select(agent_skill.c.skill_id).where(agent_skill.c.agent_id == agent.id))).all()}
+        for skill_id in bound_skills:
+            if skill_id not in already:
+                await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill_id))
     await db.commit()
     await audit_service.record_async(
         creator_user_id, "org.managed_agent_created", resource_type="agent", resource_id=agent.id,
@@ -251,6 +344,8 @@ async def update_managed_agent(
         lifecycle_status: Optional[str] = None, expected_row_version: Optional[int] = None,
         role: Optional[str] = None, task: Optional[str] = None,
         constraints: Optional[str] = None, output: Optional[str] = None,
+        config: Optional[Dict[str, Any]] = None, space_ids: Optional[List[int]] = None,
+        skill_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     agent = (await db.execute(
         select(Agent).where(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
@@ -259,12 +354,18 @@ async def update_managed_agent(
         raise NotFound("Agent 不存在")
 
     values: Dict[str, Any] = {}
+    # 绑定先校验（只读），通过了再写，避免写了一半才发现某个技能不存在
+    bound_spaces = await validated_space_ids(db, space_ids) if space_ids is not None else None
+    bound_skills = await validated_skill_ids(db, skill_ids, operator_id) if skill_ids is not None else None
+    values.update(clean_config(config))
     if name is not None:
         name = name.strip()
         if not name:
             raise InvalidInput("名称不能为空")
         values["name"] = name
     if model_name is not None:
+        if (agent.runtime_type or "builtin") != "external":
+            check_model(model_name)
         values["model_name"] = model_name
     if lifecycle_status is not None:
         if lifecycle_status not in VALID_LIFECYCLE_STATUSES:
@@ -301,7 +402,8 @@ async def update_managed_agent(
         await require_ready_to_publish(db, agent)
 
     touching_prompt = any(v is not None for v in (role, task, constraints, output))
-    if values or touching_prompt:
+    touching_binding = bound_spaces is not None or bound_skills is not None
+    if values or touching_prompt or touching_binding:
         # 乐观锁必须覆盖"只改 Prompt（role/task/constraints/output）"这种情况——
         # 之前只有 values（name/model_name/lifecycle_status/department_code/
         # team_id 这些 DB 字段）非空才会走这段递增+比对，纯改 Prompt 完全不会碰
@@ -337,6 +439,11 @@ async def update_managed_agent(
             output=output if output is not None else existing.get("output"),
         )
 
+    if bound_spaces is not None:
+        await apply_space_ids(db, agent_id, bound_spaces)
+    if bound_skills is not None:
+        await apply_skill_ids(db, agent_id, bound_skills)
+
     # 第五轮审计 P1-7：Prompt 文件和 DB 是两个不同的存储，没法用一个事务同时
     # 保证两边都成功。file 先原子替换、DB 最后才 commit——这样如果 commit
     # 失败，文件已经是"新内容"但 DB 的 row_version 还是旧的，不一致但至少
@@ -361,12 +468,14 @@ async def update_managed_agent(
     if agent.team_id:
         team_name = (await db.execute(select(Team.name).where(Team.id == agent.team_id))).scalar_one_or_none()
 
-    if values or touching_prompt:
+    if values or touching_prompt or touching_binding:
         action = f"org.managed_agent_{lifecycle_status}" if lifecycle_status else "org.managed_agent_updated"
-        await audit_service.record_async(
-            operator_id, action, resource_type="agent", resource_id=agent.id,
-            detail={k: v for k, v in values.items() if k != "row_version"},
-        )
+        detail = {k: v for k, v in values.items() if k != "row_version"}
+        if bound_spaces is not None:
+            detail["space_ids"] = bound_spaces
+        if bound_skills is not None:
+            detail["skill_ids"] = bound_skills
+        await audit_service.record_async(operator_id, action, resource_type="agent", resource_id=agent.id, detail=detail)
     return _agent_to_dict(agent, team_name)
 
 
@@ -434,3 +543,120 @@ async def assign_managed_agent(
         detail={"target": target, "team_id": values.get("team_id"), "department_code": values.get("department_code")},
     )
     return {**_agent_to_dict(agent, team_name), "knowledge_gaps": (await knowledge_gaps(db, [agent])).get(agent_id, [])}
+
+
+async def get_managed_agent_detail(db, agent_id: int) -> Dict[str, Any]:
+    """编辑页要用的完整配置：设定、模型与参数、绑定的知识库和技能、划分状态、发布前检查。"""
+    from models.init_db import AgentKnowledgeSpace, Organization
+
+    row = (await db.execute(
+        select(Agent, Team.name, Organization.name)
+        .outerjoin(Team, Team.id == Agent.team_id)
+        .outerjoin(Organization, Organization.id == Agent.organization_id)
+        .where(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
+    )).unique().first()
+    if row is None:
+        raise NotFound("智能体不存在")
+    agent, team_name, organization_name = row
+    space_ids = [r[0] for r in (await db.execute(
+        select(AgentKnowledgeSpace.space_id).where(AgentKnowledgeSpace.agent_id == agent_id).order_by(AgentKnowledgeSpace.space_id))).all()]
+    skill_ids = [r[0] for r in (await db.execute(
+        select(agent_skill.c.skill_id).where(agent_skill.c.agent_id == agent_id).order_by(agent_skill.c.skill_id))).all()]
+    gaps = (await knowledge_gaps(db, [agent])).get(agent_id, [])
+    detail = {
+        **_agent_to_dict(agent, team_name, organization_name),
+        "config": {
+            "temperature": agent.temperature, "memory_enabled": agent.memory_enabled, "rag_enabled": agent.rag_enabled,
+            "kb_top_k": agent.kb_top_k, "kb_rerank_enabled": agent.kb_rerank_enabled,
+            "kb_force_citation": agent.kb_force_citation, "kb_refuse_when_empty": agent.kb_refuse_when_empty,
+        },
+        "space_ids": space_ids,
+        "skill_ids": skill_ids,
+        "knowledge_gaps": gaps,
+    }
+    detail["readiness"] = await readiness_of(db, agent, detail)
+    return detail
+
+
+async def readiness_of(db, agent: Agent, detail: Dict[str, Any]) -> Dict[str, Any]:
+    """发布前检查：error = 现在就不能发布；warn = 能发布但建议处理；ok = 没问题。"""
+    from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
+
+    items: List[Dict[str, str]] = []
+
+    def add(key: str, level: str, label: str, message: str) -> None:
+        items.append({"key": key, "level": level, "label": label, "message": message})
+
+    assignment = assignment_of(agent)
+    if assignment == "unassigned":
+        add("assignment", "error", "划分", "还没有划分给部门或全企业，先点「划分」")
+    elif assignment == "enterprise":
+        add("assignment", "ok", "划分", "全企业的成员都能使用")
+    else:
+        add("assignment", "ok", "划分", f"划分给了「{detail.get('team_name') or '部门'}」")
+
+    if (agent.runtime_type or "builtin") == "external":
+        from service.runtime.external_runtime import load_endpoint_async
+        endpoint = await load_endpoint_async(db, agent.id)
+        if endpoint is None:
+            add("runtime", "error", "外部服务", "还没有配置服务地址")
+        elif endpoint.last_test_ok:
+            add("runtime", "ok", "外部服务", "连接测试已通过")
+        else:
+            add("runtime", "warn", "外部服务", "还没有测试通过连接，建议先点「测试连接」")
+    else:
+        prompt = detail.get("prompt") or {}
+        if not (prompt.get("role") or prompt.get("task")):
+            add("prompt", "warn", "助手设定", "还没有写角色设定和任务说明，助手只会按默认方式回答")
+        else:
+            add("prompt", "ok", "助手设定", "已填写")
+        if normalize_model_name(agent.model_name or "") in CHAT_MODELS:
+            add("model", "ok", "模型", "可用")
+        else:
+            add("model", "error", "模型", f"「{agent.model_name}」不是可用的聊天模型")
+        if agent.rag_enabled and not detail["space_ids"]:
+            add("knowledge", "warn", "知识库", "开启了知识库检索，但还没有绑定任何知识库")
+        elif detail["knowledge_gaps"]:
+            names = "、".join(g["name"] for g in detail["knowledge_gaps"][:3])
+            add("knowledge", "warn", "知识库", f"有 {len(detail['knowledge_gaps'])} 份绑定的资料使用者读不到：{names}")
+        elif agent.rag_enabled and assignment == "unassigned":
+            add("knowledge", "ok", "知识库", f"已绑定 {len(detail['space_ids'])} 个知识库（划分之后会检查使用者能不能读到）")
+        elif agent.rag_enabled:
+            add("knowledge", "ok", "知识库", f"已绑定 {len(detail['space_ids'])} 个知识库，使用者都读得到")
+        if detail["skill_ids"]:
+            add("skills", "ok", "技能", f"已添加 {len(detail['skill_ids'])} 个技能")
+
+    return {"ready": not any(i["level"] == "error" for i in items), "items": items}
+
+
+async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) -> Dict[str, Any]:
+    """编辑页的下拉与多选需要的可选项：模型、技能、知识库、部门。"""
+    from models.enterprise_dao import get_space_departments_async
+    from models.init_db import KnowledgeSpace, Organization
+    from service.llm.model_catalog import CHAT_MODELS
+
+    skills = (await db.execute(select(Skill).order_by(Skill.id))).unique().scalars().all()
+    own_template_file = f"enterprise/agent_{agent_id}.yml" if agent_id else None
+    skill_items = []
+    for s in skills:
+        # 模板为某个智能体单独生成的“专业业务技能”只属于那个智能体，不出现在别的智能体的可选项里
+        if (s.config_file or "").startswith("enterprise/agent_") and s.config_file != own_template_file:
+            continue
+        if s.user_id != operator_id and s.lifecycle_status != "published":
+            continue
+        skill_items.append({"id": s.id, "name": s.name, "description": s.description or "", "lifecycle_status": s.lifecycle_status})
+
+    spaces = (await db.execute(
+        select(KnowledgeSpace).where(KnowledgeSpace.status == "active").order_by(KnowledgeSpace.id.desc()))).scalars().all()
+    departments = await get_space_departments_async(db, [s.id for s in spaces if s.scope_type == "department"])
+    teams = (await db.execute(
+        select(Team.id, Team.name, Team.organization_id, Team.department_code, Organization.name)
+        .join(Organization, Organization.id == Team.organization_id)
+        .where(Team.status == "active").order_by(Team.organization_id, Team.id))).all()
+    return {
+        "models": sorted(CHAT_MODELS.keys()),
+        "skills": skill_items,
+        "spaces": [{"id": s.id, "name": s.name, "scope_type": s.scope_type, "sensitivity": s.sensitivity,
+                    "doc_count": s.doc_count, "departments": departments.get(s.id, [])} for s in spaces],
+        "teams": [{"id": t[0], "name": t[1], "organization_id": t[2], "department_code": t[3], "organization_name": t[4]} for t in teams],
+    }

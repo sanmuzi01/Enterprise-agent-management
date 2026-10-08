@@ -377,13 +377,24 @@ class DepartmentPublishUniquenessTest(unittest.TestCase):
             self.db.execute(text("UPDATE teams SET department_code=NULL WHERE id=:t"), {"t": self.team_id})
             self.db.commit()
 
+    def test_non_chat_models_are_rejected_when_creating(self):
+        import service.agent_admin_service as svc
+
+        with self.assertRaises(InvalidInput):
+            self._run_with_org(lambda db: svc.create_managed_agent(
+                db, self.admin["id"], "aa-dp-badmodel-create", "department", department_code="hr", team_id=self.team2_id,
+                model_name="BAAI/bge-small-zh-v1.5",
+            ))
+
     def test_publish_rejects_non_chat_model(self):
+        """创建 / 编辑时已经拦了；这里是库里本来就留着旧的非聊天模型的情况（发布前再拦一次）。"""
         import service.agent_admin_service as svc
 
         agent = self._run_with_org(lambda db: svc.create_managed_agent(
             db, self.admin["id"], "aa-dp-badmodel", "department", department_code="hr", team_id=self.team2_id,
-            model_name="BAAI/bge-small-zh-v1.5",
         ))
+        self.db.execute(text("UPDATE agent SET model_name='BAAI/bge-small-zh-v1.5' WHERE id=:i"), {"i": agent["id"]})
+        self.db.commit()
         with self.assertRaises(InvalidInput):
             self._run_with_org(lambda db: svc.update_managed_agent(
                 db, agent["id"], self.admin["id"], lifecycle_status="published",

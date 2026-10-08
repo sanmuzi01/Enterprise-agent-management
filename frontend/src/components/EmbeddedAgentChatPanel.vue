@@ -15,7 +15,7 @@
         >
           <div class="flex items-center gap-1.5 font-semibold">
             <AlertTriangle :size="14" class="shrink-0" />
-            高风险操作待确认：{{ evt.name }}
+            高风险操作待确认：{{ toolDisplayName(evt.name) }}
           </div>
           <pre class="text-[11px] text-amber-800 whitespace-pre-wrap">{{ JSON.stringify(evt.args, null, 2) }}</pre>
           <div v-if="!evt.decision" class="flex gap-2">
@@ -36,8 +36,8 @@
           <div v-else class="text-gray-500">已取消，未执行</div>
         </div>
         <div v-else class="max-w-[85%] rounded-lg bg-slate-50 border border-slate-200 px-3 py-2 text-xs text-slate-500 font-mono">
-          <span v-if="evt.type === 'tool_call'"><span class="text-blue-500 font-semibold">调用工具</span> {{ evt.name }}</span>
-          <span v-else-if="evt.type === 'tool_result'"><span class="text-green-500 font-semibold">工具结果</span> {{ evt.name }}：{{ short(evt.result, 150) }}</span>
+          <span v-if="evt.type === 'tool_call'"><span class="text-blue-500 font-semibold">调用工具</span> {{ toolDisplayName(evt.name) }}</span>
+          <span v-else-if="evt.type === 'tool_result'"><span class="text-green-500 font-semibold">工具结果</span> {{ toolDisplayName(evt.name) }}：{{ short(evt.result, 150) }}</span>
         </div>
       </div>
     </div>
@@ -63,6 +63,7 @@
 import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'
+import { toolDisplayName } from '../utils/displayNames'
 
 const props = defineProps<{ agentId: number }>()
 

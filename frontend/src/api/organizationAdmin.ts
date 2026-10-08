@@ -166,6 +166,8 @@ export type LifecycleStatus = 'draft' | 'reviewing' | 'published' | 'retired'
 
 export interface ManagedAgent {
   id: number
+  organization_id: number | null
+  organization_name: string | null
   name: string
   agent_type: ManagedAgentType
   department_code: string | null
@@ -179,6 +181,56 @@ export interface ManagedAgent {
   knowledge_gaps?: { id: number; name: string; reason: string }[]
   lifecycle_status: LifecycleStatus
   row_version: number
+}
+
+export interface AgentConfig {
+  temperature?: number
+  memory_enabled?: number
+  rag_enabled?: number
+  kb_top_k?: number
+  kb_rerank_enabled?: number
+  kb_force_citation?: number
+  kb_refuse_when_empty?: number
+}
+
+export interface AgentReadinessItem {
+  key: string
+  level: 'ok' | 'warn' | 'error'
+  label: string
+  message: string
+}
+
+/** 编辑页要用的完整配置 + 发布前检查 */
+export interface ManagedAgentDetail extends ManagedAgent {
+  prompt: { role?: string; task?: string; constraints?: string; output?: string }
+  config: Required<AgentConfig>
+  space_ids: number[]
+  skill_ids: number[]
+  readiness: { ready: boolean; items: AgentReadinessItem[] }
+}
+
+export interface AgentOptions {
+  models: string[]
+  skills: { id: number; name: string; description: string; lifecycle_status: string }[]
+  spaces: {
+    id: number
+    name: string
+    scope_type: 'personal' | 'department' | 'enterprise' | string
+    sensitivity: string
+    doc_count: number
+    departments: { id: number; name: string }[]
+  }[]
+  teams: { id: number; name: string; organization_id: number; organization_name: string; department_code: string | null }[]
+}
+
+export async function getAgentOptions(agentId?: number): Promise<AgentOptions> {
+  const { data } = await request.get('/admin/org/agent-options', { params: agentId ? { agent_id: agentId } : {} })
+  return data as AgentOptions
+}
+
+export async function getManagedAgentDetail(agentId: number): Promise<ManagedAgentDetail> {
+  const { data } = await request.get(`/admin/org/agents/${agentId}`)
+  return data as ManagedAgentDetail
 }
 
 export async function assignManagedAgent(agentId: number, payload: {
@@ -262,6 +314,9 @@ export async function createManagedAgent(payload: {
   constraints?: string
   output?: string
   template_id?: string
+  config?: AgentConfig
+  space_ids?: number[]
+  skill_ids?: number[]
 }): Promise<ManagedAgent> {
   const { data } = await request.post('/admin/org/agents', payload)
   return data as ManagedAgent
@@ -278,6 +333,9 @@ export async function updateManagedAgent(agentId: number, patch: {
   task?: string
   constraints?: string
   output?: string
+  config?: AgentConfig
+  space_ids?: number[]
+  skill_ids?: number[]
 }): Promise<ManagedAgent> {
   const { data } = await request.patch(`/admin/org/agents/${agentId}`, patch)
   return data as ManagedAgent

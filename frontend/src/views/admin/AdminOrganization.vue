@@ -257,7 +257,11 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="a in managedAgents" :key="a.id" class="border-b border-slate-100">
+          <template v-for="group in agentGroups" :key="group.key">
+          <tr v-if="agentGroups.length > 1" class="bg-slate-50" data-testid="agent-org-row">
+            <td colspan="5" class="px-4 py-1.5 text-xs font-medium text-slate-500">{{ group.name }}</td>
+          </tr>
+          <tr v-for="a in group.items" :key="a.id" class="border-b border-slate-100">
             <td class="px-4 py-2.5 text-slate-900">
               {{ a.name }}
               <span v-if="a.runtime_type === 'external'" class="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">外部服务</span>
@@ -314,148 +318,15 @@
               </div>
             </td>
           </tr>
+          </template>
           <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央 / 部门智能体</td></tr>
         </tbody>
       </table>
     </div>
 
-    <!-- ============ 弹窗：新建/编辑 Agent ============ -->
-    <div v-if="agentDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="agentDialog.visible = false">
-      <div class="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-xl bg-white p-5 shadow-xl">
-        <h3 class="mb-4 text-base font-semibold text-slate-800">{{ agentDialog.editing ? '编辑智能体' : '新建智能体' }}</h3>
-
-        <!-- 签名密钥只显示这一次 -->
-        <div v-if="runtimeForm.secret" class="space-y-3" data-testid="runtime-secret-panel">
-          <p class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
-            签名密钥只显示这一次，关闭后无法再查看，只能重新生成。请现在复制，配置到你的智能体服务里。
-          </p>
-          <div class="flex items-center gap-2">
-            <code class="min-w-0 flex-1 break-all rounded bg-slate-100 px-3 py-2 text-xs text-slate-800">{{ runtimeForm.secret }}</code>
-            <button @click="copySecret" class="shrink-0 rounded border border-slate-200 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50">{{ runtimeForm.copied ? '已复制' : '复制' }}</button>
-          </div>
-          <p class="text-xs text-slate-500">你的服务用它校验平台请求的签名，写法见项目文档 docs/external-agent-protocol.md。</p>
-          <div class="flex justify-end">
-            <button @click="closeSecretPanel" class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700">我已保存密钥</button>
-          </div>
-        </div>
-
-        <div v-else class="space-y-3">
-          <div>
-            <label class="mb-1 block text-xs text-slate-500">名称</label>
-            <input v-model="agentDialog.form.name" type="text"
-              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-          </div>
-          <div v-if="!agentDialog.editing">
-            <label class="mb-1 block text-xs text-slate-500">类型</label>
-            <select v-model="agentDialog.form.agent_type" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-              <option value="central">中央智能体（全企业可用）</option>
-              <option value="department">业务智能体（创建后再划分给部门）</option>
-            </select>
-          </div>
-          <div>
-            <label class="mb-1 block text-xs text-slate-500">运行方式</label>
-            <select v-model="runtimeForm.type" data-testid="runtime-type-select"
-              class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-              <option value="builtin">平台自带（提示词 + 工具 + 知识库）</option>
-              <option value="external">接入我们自己部署的智能体服务</option>
-            </select>
-          </div>
-          <div v-if="runtimeForm.type === 'external'" class="space-y-3 rounded-lg border border-amber-200 bg-amber-50/40 p-3" data-testid="runtime-external-fields">
-            <p class="text-xs text-slate-600">
-              平台会把提问者的身份和对话转发到你的服务，由你的服务决定怎么思考、调用什么工具、使用什么模型；
-              平台继续负责权限、限流、审计和密级。请求带签名，协议见 docs/external-agent-protocol.md。
-            </p>
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">服务地址</label>
-              <input v-model="runtimeForm.url" type="text" placeholder="https://agent.example.com/chat" data-testid="runtime-url"
-                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-              <p class="mt-1 text-[11px] text-slate-400">企业内网里的服务需要先让运维把它的主机加入平台的允许名单。</p>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div>
-                <label class="mb-1 block text-xs text-slate-500">超时（秒）</label>
-                <input v-model.number="runtimeForm.timeout" type="number" min="1" max="300"
-                  class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-              </div>
-              <label class="flex items-end gap-2 pb-2 text-xs text-slate-600">
-                <input v-model="runtimeForm.sendKnowledge" type="checkbox" class="h-4 w-4" />
-                同时发送检索到的资料片段
-              </label>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">附加请求头（每行一个，格式：名称: 值；留空表示不修改）</label>
-              <textarea v-model="runtimeForm.headersText" rows="2" placeholder="Authorization: Bearer xxxx"
-                class="w-full rounded border border-slate-300 px-3 py-1.5 font-mono text-xs outline-none focus:border-indigo-500"></textarea>
-              <p v-if="runtimeForm.info?.endpoint?.header_names?.length" class="mt-1 text-[11px] text-slate-400">
-                已保存的请求头：{{ runtimeForm.info.endpoint.header_names.join('、') }}（出于安全不显示内容）
-              </p>
-            </div>
-            <div v-if="agentDialog.editing && runtimeForm.info?.endpoint" class="flex flex-wrap items-center gap-2 text-xs">
-              <button @click="runConnectionTest" :disabled="runtimeForm.testing" data-testid="runtime-test"
-                class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                {{ runtimeForm.testing ? '测试中…' : '测试连接' }}
-              </button>
-              <button @click="rotateSecret" :disabled="runtimeForm.testing"
-                class="rounded border border-slate-300 bg-white px-2.5 py-1 text-slate-700 hover:bg-slate-50 disabled:opacity-50">重新生成签名密钥</button>
-              <span v-if="runtimeForm.info.endpoint.last_test_at" :class="runtimeForm.info.endpoint.last_test_ok ? 'text-emerald-700' : 'text-red-600'">
-                {{ runtimeForm.info.endpoint.last_test_ok ? '上次测试通过' : '上次测试失败' }}：{{ runtimeForm.info.endpoint.last_test_message }}
-              </span>
-              <span v-else class="text-slate-400">还没有测试过连接</span>
-            </div>
-            <p v-if="runtimeForm.error" class="text-xs text-red-600">{{ runtimeForm.error }}</p>
-          </div>
-          <template v-if="agentDialog.form.agent_type === 'department'">
-            <div v-if="!agentDialog.editing && templatesForType('department').length">
-              <label class="mb-1 block text-xs text-slate-500">使用预置模板（可选）</label>
-              <select :value="agentDialog.form.template_id" @change="onApplyTemplate(($event.target as HTMLSelectElement).value)"
-                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option value="">不使用模板，手动填写</option>
-                <option v-for="tpl in templatesForType('department')" :key="tpl.id" :value="tpl.id">{{ tpl.name }}</option>
-              </select>
-            </div>
-            <div v-if="!agentDialog.editing">
-              <label class="mb-1 block text-xs text-slate-500">业务方向</label>
-              <select v-model="agentDialog.form.department_code" class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
-                <option value="">通用办公</option>
-                <option value="hr">人事</option>
-                <option value="procurement">采购</option>
-                <option value="sales">销售</option>
-                <option value="finance">财务</option>
-                <option value="it">IT</option>
-              </select>
-              <p class="mt-1 text-[11px] text-slate-400">先创建，之后在列表里点「划分」，把它分给具体部门。</p>
-            </div>
-          </template>
-          <template v-if="runtimeForm.type === 'builtin'">
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">模型</label>
-              <input v-model="agentDialog.form.model_name" type="text"
-                class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500" />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">角色设定</label>
-              <textarea v-model="agentDialog.form.role" rows="2"
-                class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-slate-500">任务说明</label>
-              <textarea v-model="agentDialog.form.task" rows="2"
-                class="w-full rounded border border-slate-300 px-3 py-1.5 text-sm outline-none focus:border-indigo-500"></textarea>
-            </div>
-          </template>
-        </div>
-        <div v-if="!runtimeForm.secret" class="mt-5 flex justify-end gap-2">
-          <button @click="agentDialog.visible = false" class="rounded px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100">取消</button>
-          <button
-            @click="submitAgentDialog"
-            :disabled="acting || !agentDialog.form.name.trim()"
-            class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
-          >
-            保存
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- ============ 智能体编辑器：新建 / 编辑（设定、模型、知识库、技能、发布前检查、试运行） ============ -->
+    <ManagedAgentEditor v-if="editor.visible" :key="editor.agentId ?? 'new'" :agent-id="editor.agentId"
+      @close="closeEditor" @saved="loadManagedAgents" />
 
     <!-- ============ 弹窗：划分智能体 ============ -->
     <div v-if="assignDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4" @click.self="assignDialog.visible = false">
@@ -472,7 +343,9 @@
                 <select v-model.number="assignDialog.teamId" data-testid="agent-assign-team"
                   class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
                   <option :value="null" disabled>选择部门</option>
-                  <option v-for="t in teams" :key="t.id" :value="t.id">{{ t.name }}</option>
+                  <optgroup v-for="group in teamGroups" :key="group.name" :label="group.name">
+                    <option v-for="t in group.items" :key="t.id" :value="t.id">{{ t.name }}</option>
+                  </optgroup>
                 </select>
                 <select v-model="assignDialog.departmentCode"
                   class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
@@ -599,12 +472,13 @@
 
 <script setup lang="ts">
 import { modelDisplayName, departmentCodeLabel } from '../../utils/displayNames'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'
 import * as orgApi from '../../api/organizationAdmin'
+import ManagedAgentEditor from '../../components/admin/ManagedAgentEditor.vue'
 import type {
   OrgTeam, OrgTeamMember, OrgMember, EnterpriseRoleCatalog, TeamPermissions,
-  ManagedAgent, ManagedAgentType, LifecycleStatus,
+  ManagedAgent, LifecycleStatus,
 } from '../../api/organizationAdmin'
 import { listAdminUsers, type AdminUser } from '../../api/admin'
 import { getErrorMessage } from '../../utils/request'
@@ -646,7 +520,7 @@ const reloadAll = async () => {
   errorMsg.value = ''
   try {
     roleCatalog.value = await orgApi.getEnterpriseRoles()
-    await Promise.all([loadTeams(), loadOrgMembers(), loadManagedAgents(), loadAgentTemplates()])
+    await Promise.all([loadTeams(), loadOrgMembers(), loadManagedAgents(), loadAgentOptions()])
     if (selectedTeam.value) {
       const stillThere = teams.value.find(t => t.id === selectedTeam.value!.id)
       if (stillThere) await selectTeam(stillThere)
@@ -881,28 +755,36 @@ const lifecycleBadgeClass = (status: LifecycleStatus) => ({
   retired: 'bg-red-50 text-red-700',
 }[status])
 
-const agentTemplates = ref<orgApi.AgentTemplate[]>([])
-const loadAgentTemplates = async () => {
-  agentTemplates.value = await orgApi.getAgentTemplates()
-}
-const templatesForType = (type: ManagedAgentType) => agentTemplates.value.filter(t => t.agent_type === type)
+// ---- 智能体编辑器（设定、模型、知识库、技能、发布与试运行都在编辑器组件里）----
+const editor = ref<{ visible: boolean; agentId: number | null }>({ visible: false, agentId: null })
+const openCreateAgent = () => { editor.value = { visible: true, agentId: null } }
+const openEditAgent = (a: ManagedAgent) => { editor.value = { visible: true, agentId: a.id } }
+const closeEditor = () => { editor.value.visible = false; void loadManagedAgents() }
 
-const agentDialog = ref<{
-  visible: boolean
-  editing: ManagedAgent | null
-  form: {
-    name: string
-    agent_type: ManagedAgentType
-    department_code: string
-    model_name: string
-    role: string
-    task: string
-    template_id: string
+// 创建 / 编辑 / 划分共用的可选项（划分要列出所有企业的部门）
+const agentOptions = ref<orgApi.AgentOptions | null>(null)
+const loadAgentOptions = async () => { agentOptions.value = await orgApi.getAgentOptions() }
+
+const teamGroups = computed(() => {
+  const groups = new Map<string, orgApi.AgentOptions['teams']>()
+  for (const t of agentOptions.value?.teams || []) {
+    const list = groups.get(t.organization_name) || []
+    list.push(t)
+    groups.set(t.organization_name, list)
   }
-}>({
-  visible: false,
-  editing: null,
-  form: { name: '', agent_type: 'central', department_code: '', model_name: 'glm-4', role: '', task: '', template_id: '' },
+  return [...groups].map(([name, items]) => ({ name, items }))
+})
+
+// 不同企业各有自己的“人事部”：列表按企业分组，不然看起来像重复
+const agentGroups = computed(() => {
+  const groups = new Map<string, { key: string; name: string; items: ManagedAgent[] }>()
+  for (const a of managedAgents.value) {
+    const key = String(a.organization_id ?? 0)
+    const group = groups.get(key) || { key, name: a.organization_name || '未归属企业', items: [] }
+    group.items.push(a)
+    groups.set(key, group)
+  }
+  return [...groups.values()]
 })
 
 // ---- 划分：部门 / 全企业 / 暂不划分（智能体先统一创建，再由管理员划分）----
@@ -941,211 +823,6 @@ const submitAssign = async () => {
     d.error = getErrorMessage(e, '划分失败')
   } finally {
     d.saving = false
-  }
-}
-
-// 运行方式：平台自带 / 接入外部智能体服务。外部服务的配置单独保存（有自己的接口），
-// 签名密钥只在生成那一刻返回一次，所以保存后要先让管理员复制，再关闭弹窗。
-const emptyRuntimeForm = () => ({
-  type: 'builtin' as 'builtin' | 'external',
-  url: '',
-  timeout: 60,
-  sendKnowledge: false,
-  headersText: '',
-  info: null as orgApi.AgentRuntimeInfo | null,
-  secret: null as string | null,
-  copied: false,
-  testing: false,
-  error: '',
-})
-const runtimeForm = ref(emptyRuntimeForm())
-
-const parseHeaders = (text: string): Record<string, string> | undefined => {
-  const lines = text.split('\n').map(line => line.trim()).filter(Boolean)
-  if (!lines.length) return undefined
-  const headers: Record<string, string> = {}
-  for (const line of lines) {
-    const index = line.indexOf(':')
-    if (index <= 0) throw new Error(`请求头格式不对：${line.slice(0, 30)}（应为 名称: 值）`)
-    headers[line.slice(0, index).trim()] = line.slice(index + 1).trim()
-  }
-  return headers
-}
-
-const openCreateAgent = () => {
-  runtimeForm.value = emptyRuntimeForm()
-  agentDialog.value = {
-    visible: true,
-    editing: null,
-    form: { name: '', agent_type: 'central', department_code: '', model_name: 'glm-4', role: '', task: '', template_id: '' },
-  }
-}
-
-const loadRuntimeInto = async (a: ManagedAgent) => {
-  try {
-    const info = await orgApi.getAgentRuntime(a.id)
-    runtimeForm.value.info = info
-    runtimeForm.value.type = info.runtime_type
-    if (info.endpoint) {
-      runtimeForm.value.url = info.endpoint.url
-      runtimeForm.value.timeout = info.endpoint.timeout_seconds
-      runtimeForm.value.sendKnowledge = info.endpoint.send_knowledge
-    }
-  } catch (e: any) {
-    runtimeForm.value.error = getErrorMessage(e, '读取运行方式失败')
-  }
-}
-
-const syncEditingVersion = async () => {
-  const editing = agentDialog.value.editing
-  if (!editing) return
-  await loadManagedAgents()
-  const fresh = managedAgents.value.find(x => x.id === editing.id)
-  if (fresh) agentDialog.value.editing = fresh
-}
-
-const saveRuntime = async (agentId: number, rotate = false): Promise<string | null> => {
-  const form = runtimeForm.value
-  const info = await orgApi.setAgentRuntime(agentId, form.type === 'external'
-    ? {
-      runtime_type: 'external', url: form.url.trim(), timeout_seconds: form.timeout,
-      send_knowledge: form.sendKnowledge, headers: parseHeaders(form.headersText), rotate_secret: rotate,
-    }
-    : { runtime_type: 'builtin' })
-  form.info = info
-  form.headersText = ''
-  await syncEditingVersion()
-  return info.secret || null
-}
-
-const runConnectionTest = async () => {
-  const editing = agentDialog.value.editing
-  if (!editing) return
-  runtimeForm.value.testing = true
-  runtimeForm.value.error = ''
-  try {
-    await saveRuntime(editing.id)            // 先保存当前填写的地址，再测
-    const result = await orgApi.testAgentRuntime(editing.id)
-    runtimeForm.value.info = result
-    await syncEditingVersion()
-  } catch (e: any) {
-    runtimeForm.value.error = e?.message && !e?.response ? e.message : getErrorMessage(e, '测试失败')
-  } finally {
-    runtimeForm.value.testing = false
-  }
-}
-
-const rotateSecret = async () => {
-  const editing = agentDialog.value.editing
-  if (!editing || !confirm('重新生成后，旧密钥立即失效，你的服务需要换成新密钥。继续吗？')) return
-  runtimeForm.value.error = ''
-  try {
-    runtimeForm.value.secret = await saveRuntime(editing.id, true)
-  } catch (e: any) {
-    runtimeForm.value.error = e?.message && !e?.response ? e.message : getErrorMessage(e, '重新生成失败')
-  }
-}
-
-const copySecret = async () => {
-  try {
-    await navigator.clipboard.writeText(runtimeForm.value.secret || '')
-    runtimeForm.value.copied = true
-  } catch {
-    runtimeForm.value.copied = false
-  }
-}
-
-const closeSecretPanel = async () => {
-  runtimeForm.value.secret = null
-  runtimeForm.value.copied = false
-  agentDialog.value.visible = false
-  await loadManagedAgents()
-}
-
-// 选模板只负责"帮用户填一遍初始值"，不是锁定不让改——选完之后 role/task/
-// department_code 都还是普通的受控输入，用户可以接着手动调整。department_code
-// 必须跟着模板一起改：Java 那边 create_managed_agent 会校验"模板跟 department_code
-// 必须一致"，不同步会导致提交时后端报错。
-const onApplyTemplate = (templateId: string) => {
-  agentDialog.value.form.template_id = templateId
-  if (!templateId) return
-  const tpl = agentTemplates.value.find(t => t.id === templateId)
-  if (!tpl) return
-  if (tpl.department_code) agentDialog.value.form.department_code = tpl.department_code
-  agentDialog.value.form.role = tpl.role
-  agentDialog.value.form.task = tpl.task
-}
-
-const openEditAgent = (a: ManagedAgent) => {
-  runtimeForm.value = emptyRuntimeForm()
-  void loadRuntimeInto(a)
-  agentDialog.value = {
-    visible: true,
-    editing: a,
-    form: {
-      name: a.name, agent_type: a.agent_type, department_code: a.department_code || '',
-      model_name: a.model_name, role: '', task: '', template_id: '',
-    },
-  }
-}
-
-const submitAgentDialog = async () => {
-  acting.value = true
-  runtimeForm.value.error = ''
-  try {
-    if (runtimeForm.value.type === 'external' && !runtimeForm.value.url.trim()) {
-      runtimeForm.value.error = '请填写外部服务地址'
-      return
-    }
-    let newSecret: string | null = null
-    if (agentDialog.value.editing) {
-      const updated = await orgApi.updateManagedAgent(agentDialog.value.editing.id, {
-        name: agentDialog.value.form.name.trim(),
-        model_name: agentDialog.value.form.model_name || undefined,
-        role: agentDialog.value.form.role || undefined,
-        task: agentDialog.value.form.task || undefined,
-        expected_row_version: agentDialog.value.editing.row_version,
-      })
-      const editingId = agentDialog.value.editing.id
-      const wasExternal = agentDialog.value.editing.runtime_type === 'external'
-      agentDialog.value.editing = updated          // 版本号已经 +1，后面重试保存要用新的
-      if (runtimeForm.value.type === 'external' || wasExternal) {
-        newSecret = await saveRuntime(editingId)
-      }
-    } else {
-      const created = await orgApi.createManagedAgent({
-        name: agentDialog.value.form.name.trim(),
-        agent_type: agentDialog.value.form.agent_type,
-        department_code: agentDialog.value.form.agent_type === 'department' && agentDialog.value.form.department_code
-          ? agentDialog.value.form.department_code : undefined,
-        model_name: agentDialog.value.form.model_name || undefined,
-        role: agentDialog.value.form.role || undefined,
-        task: agentDialog.value.form.task || undefined,
-        template_id: agentDialog.value.form.template_id || undefined,
-      })
-      if (runtimeForm.value.type === 'external') {
-        try {
-          newSecret = await saveRuntime(created.id)
-        } catch (e) {
-          // 智能体已经建好，只是外部服务没配成功：把弹窗切到“编辑”，避免再点保存时重复创建
-          agentDialog.value.editing = created
-          await loadManagedAgents()
-          throw e
-        }
-      }
-    }
-    if (newSecret) {
-      runtimeForm.value.secret = newSecret       // 保持弹窗打开，先让管理员复制密钥
-      await loadManagedAgents()
-      return
-    }
-    agentDialog.value.visible = false
-    await loadManagedAgents()
-  } catch (e: any) {
-    if (e?.message && !e?.response) runtimeForm.value.error = e.message
-    else alert(getErrorMessage(e, '保存失败'))
-  } finally {
-    acting.value = false
   }
 }
 
