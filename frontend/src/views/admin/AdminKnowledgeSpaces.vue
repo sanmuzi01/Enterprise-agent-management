@@ -146,14 +146,11 @@
                 <span class="min-w-0 flex-1"><span class="block font-medium text-slate-800">指定部门（可多选）</span>
                   <span class="block text-xs text-slate-500">这些部门的成员自动可读，部门负责人还能维护文档。</span>
                   <div v-if="dialog.scope === 'departments'" class="mt-2 max-h-48 space-y-2 overflow-y-auto rounded border border-slate-200 bg-white p-2" data-testid="space-team-list">
-                    <div v-for="group in departmentGroups" :key="group.name">
-                      <p v-if="multipleOrganizations" class="px-1 pb-1 text-[11px] font-medium text-slate-400">{{ group.name }}</p>
-                      <label v-for="d in group.items" :key="d.id" class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-slate-50">
-                        <input type="checkbox" :value="d.id" v-model="dialog.teamIds" />
-                        <span class="truncate">{{ d.name }}</span>
-                      </label>
-                    </div>
-                    <p v-if="!departmentGroups.length" class="px-1 text-xs text-slate-400">还没有可选的部门。</p>
+                    <label v-for="d in departments" :key="d.id" class="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-sm hover:bg-slate-50">
+                      <input type="checkbox" :value="d.id" v-model="dialog.teamIds" />
+                      <span class="truncate">{{ d.name }}</span>
+                    </label>
+                    <p v-if="!departments.length" class="px-1 text-xs text-slate-400">还没有可选的部门，先到「组织架构」里建部门。</p>
                   </div>
                 </span>
               </label>
@@ -221,32 +218,16 @@ const enterpriseCount = ref(0)
 const unassignedCount = ref(0)
 const allCount = ref(0)
 
-const multipleOrganizations = computed(() => new Set(departments.value.map((d) => d.organization_id)).size > 1)
-
 const scopeEntries = computed(() => {
   const entries: { key: string; label: string; count: number; group?: string }[] = [
     { key: 'all', label: '全部知识库', count: allCount.value },
   ]
-  let lastOrganization: number | null = null
-  for (const d of departments.value) {
-    const startsGroup = multipleOrganizations.value && d.organization_id !== lastOrganization
-    lastOrganization = d.organization_id
-    entries.push({ key: `team:${d.id}`, label: d.name, count: d.space_count, group: startsGroup ? d.organization_name : undefined })
-  }
+  departments.value.forEach((d, index) => entries.push({
+    key: `team:${d.id}`, label: d.name, count: d.space_count, group: index === 0 ? '按部门' : undefined,
+  }))
   entries.push({ key: 'enterprise', label: '全企业', count: enterpriseCount.value, group: '按范围' })
   entries.push({ key: 'unassigned', label: '未划分', count: unassignedCount.value })
   return entries
-})
-
-// 对话框里的部门多选，按企业分组
-const departmentGroups = computed(() => {
-  const groups = new Map<string, AdminSpaceDepartment[]>()
-  for (const d of departments.value) {
-    const list = groups.get(d.organization_name) || []
-    list.push(d)
-    groups.set(d.organization_name, list)
-  }
-  return [...groups].map(([name, list]) => ({ name, items: list }))
 })
 
 const selectedTeamId = computed(() => (scope.value.startsWith('team:') ? Number(scope.value.slice(5)) : null))

@@ -4,6 +4,7 @@ service 层的测试覆盖不到“路由的请求模型有没有这个字段、
 曾经编辑接口的请求模型漏了 config / space_ids / skill_ids，服务层测试全绿、浏览器里点保存却是 500。
 这里走真实的 HTTP 路由，专门防这类接线错误。"""
 import unittest
+from unittest import mock
 
 from sqlalchemy import text
 
@@ -38,9 +39,13 @@ class AgentRoutesTest(unittest.TestCase):
         cls.client = rc.make_client()
         cls.env = rc.admin_env(cls.admin["name"])
         cls.env.start()
+        # 平台只服务一个企业（id 最小的那个）；这里把本测试建的企业当作“这个企业”
+        cls.enterprise = mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=org))
+        cls.enterprise.start()
 
     @classmethod
     def tearDownClass(cls):
+        cls.enterprise.stop()
         cls.env.stop()
         db = cls.db
         db.execute(text("DELETE FROM agent_knowledge_space WHERE agent_id IN (SELECT id FROM agent WHERE name LIKE 'arr-%')"))

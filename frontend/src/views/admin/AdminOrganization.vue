@@ -257,11 +257,7 @@
           </tr>
         </thead>
         <tbody>
-          <template v-for="group in agentGroups" :key="group.key">
-          <tr v-if="agentGroups.length > 1" class="bg-slate-50" data-testid="agent-org-row">
-            <td colspan="5" class="px-4 py-1.5 text-xs font-medium text-slate-500">{{ group.name }}</td>
-          </tr>
-          <tr v-for="a in group.items" :key="a.id" class="border-b border-slate-100">
+          <tr v-for="a in managedAgents" :key="a.id" class="border-b border-slate-100">
             <td class="px-4 py-2.5 text-slate-900">
               {{ a.name }}
               <span v-if="a.runtime_type === 'external'" class="ml-1.5 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">外部服务</span>
@@ -318,7 +314,6 @@
               </div>
             </td>
           </tr>
-          </template>
           <tr v-if="!managedAgents.length"><td colspan="5" class="px-4 py-8 text-center text-slate-400">还没有中央 / 部门智能体</td></tr>
         </tbody>
       </table>
@@ -343,9 +338,7 @@
                 <select v-model.number="assignDialog.teamId" data-testid="agent-assign-team"
                   class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
                   <option :value="null" disabled>选择部门</option>
-                  <optgroup v-for="group in teamGroups" :key="group.name" :label="group.name">
-                    <option v-for="t in group.items" :key="t.id" :value="t.id">{{ t.name }}</option>
-                  </optgroup>
+                  <option v-for="t in agentOptions?.teams || []" :key="t.id" :value="t.id">{{ t.name }}</option>
                 </select>
                 <select v-model="assignDialog.departmentCode"
                   class="mt-2 h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500">
@@ -472,7 +465,7 @@
 
 <script setup lang="ts">
 import { modelDisplayName, departmentCodeLabel } from '../../utils/displayNames'
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'
 import * as orgApi from '../../api/organizationAdmin'
 import ManagedAgentEditor from '../../components/admin/ManagedAgentEditor.vue'
@@ -761,31 +754,9 @@ const openCreateAgent = () => { editor.value = { visible: true, agentId: null } 
 const openEditAgent = (a: ManagedAgent) => { editor.value = { visible: true, agentId: a.id } }
 const closeEditor = () => { editor.value.visible = false; void loadManagedAgents() }
 
-// 创建 / 编辑 / 划分共用的可选项（划分要列出所有企业的部门）
+// 划分用的可选项（本企业的部门）
 const agentOptions = ref<orgApi.AgentOptions | null>(null)
 const loadAgentOptions = async () => { agentOptions.value = await orgApi.getAgentOptions() }
-
-const teamGroups = computed(() => {
-  const groups = new Map<string, orgApi.AgentOptions['teams']>()
-  for (const t of agentOptions.value?.teams || []) {
-    const list = groups.get(t.organization_name) || []
-    list.push(t)
-    groups.set(t.organization_name, list)
-  }
-  return [...groups].map(([name, items]) => ({ name, items }))
-})
-
-// 不同企业各有自己的“人事部”：列表按企业分组，不然看起来像重复
-const agentGroups = computed(() => {
-  const groups = new Map<string, { key: string; name: string; items: ManagedAgent[] }>()
-  for (const a of managedAgents.value) {
-    const key = String(a.organization_id ?? 0)
-    const group = groups.get(key) || { key, name: a.organization_name || '未归属企业', items: [] }
-    group.items.push(a)
-    groups.set(key, group)
-  }
-  return [...groups.values()]
-})
 
 // ---- 划分：部门 / 全企业 / 暂不划分（智能体先统一创建，再由管理员划分）----
 const assignDialog = ref({

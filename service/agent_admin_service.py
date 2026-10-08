@@ -116,12 +116,10 @@ def assignment_of(agent: Agent) -> str:
     return "department" if agent.team_id is not None else "unassigned"
 
 
-def _agent_to_dict(agent: Agent, team_name: Optional[str] = None, organization_name: Optional[str] = None) -> Dict[str, Any]:
+def _agent_to_dict(agent: Agent, team_name: Optional[str] = None) -> Dict[str, Any]:
     from prompt.prompt_manager import read_prompt_file
     return {
         "id": agent.id,
-        "organization_id": agent.organization_id,
-        "organization_name": organization_name,
         "name": agent.name,
         "agent_type": agent.agent_type,
         "department_code": agent.department_code,
@@ -170,22 +168,21 @@ async def _check_publishable(db, team_id: Optional[int], department_code: Option
 
 async def list_managed_agents(db) -> List[Dict[str, Any]]:
     """列出所有中央/部门 Agent（不含普通用户自己的 personal Agent）。"""
-    from models.init_db import Organization
+    from service.organization_admin_service import _get_default_organization
 
+    org = await _get_default_organization(db)       # 平台只服务一个企业
     result = await db.execute(
-        select(Agent, Team.name, Organization.name)
+        select(Agent, Team.name)
         .outerjoin(Team, Team.id == Agent.team_id)
-        .outerjoin(Organization, Organization.id == Agent.organization_id)
-        .where(Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
-        .order_by(Agent.organization_id, Agent.id)
+        .where(Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES), Agent.organization_id == org.id)
+        .order_by(Agent.id)
     )
     # Agent.skills 是 lazy=False（联表预加载），查完整 Agent 实体的结果集必须先
     # .unique() 去重（一个 Agent 绑了多个 Skill 会因为联表 JOIN 出现重复行），
     # 不然 SQLAlchemy 直接报错，不是可选的优化。
     rows = result.unique().all()
     gaps = await knowledge_gaps(db, [row[0] for row in rows])
-    return [{**_agent_to_dict(agent, team_name, organization_name), "knowledge_gaps": gaps.get(agent.id, [])}
-            for agent, team_name, organization_name in rows]
+    return [{**_agent_to_dict(agent, team_name), "knowledge_gaps": gaps.get(agent.id, [])} for agent, team_name in rows]
 
 
 async def knowledge_gaps(db, agents: List[Agent]) -> Dict[int, List[Dict[str, Any]]]:
@@ -506,7 +503,8 @@ async def assign_managed_agent(
     if target == "department":
         if team_id is None:
             raise InvalidInput("请选择要划分给的部门")
-        team = (await db.execute(select(Team).where(Team.id == team_id))).scalar_one_or_none()
+        enterprise_id = await _get_default_organization_id(db)
+        team = (await db.execute(select(Team).where(Team.id == team_id, Team.organization_id == enterprise_id))).scalar_one_or_none()
         if team is None or team.status != "active":
             raise InvalidInput("部门不存在或已停用")
         code = department_code if department_code is not None else (agent.department_code or team.department_code)
@@ -547,24 +545,23 @@ async def assign_managed_agent(
 
 async def get_managed_agent_detail(db, agent_id: int) -> Dict[str, Any]:
     """编辑页要用的完整配置：设定、模型与参数、绑定的知识库和技能、划分状态、发布前检查。"""
-    from models.init_db import AgentKnowledgeSpace, Organization
+    from models.init_db import AgentKnowledgeSpace
 
     row = (await db.execute(
-        select(Agent, Team.name, Organization.name)
+        select(Agent, Team.name)
         .outerjoin(Team, Team.id == Agent.team_id)
-        .outerjoin(Organization, Organization.id == Agent.organization_id)
         .where(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES))
     )).unique().first()
     if row is None:
         raise NotFound("智能体不存在")
-    agent, team_name, organization_name = row
+    agent, team_name = row
     space_ids = [r[0] for r in (await db.execute(
         select(AgentKnowledgeSpace.space_id).where(AgentKnowledgeSpace.agent_id == agent_id).order_by(AgentKnowledgeSpace.space_id))).all()]
     skill_ids = [r[0] for r in (await db.execute(
         select(agent_skill.c.skill_id).where(agent_skill.c.agent_id == agent_id).order_by(agent_skill.c.skill_id))).all()]
     gaps = (await knowledge_gaps(db, [agent])).get(agent_id, [])
     detail = {
-        **_agent_to_dict(agent, team_name, organization_name),
+        **_agent_to_dict(agent, team_name),
         "config": {
             "temperature": agent.temperature, "memory_enabled": agent.memory_enabled, "rag_enabled": agent.rag_enabled,
             "kb_top_k": agent.kb_top_k, "kb_rerank_enabled": agent.kb_rerank_enabled,
@@ -632,7 +629,7 @@ async def readiness_of(db, agent: Agent, detail: Dict[str, Any]) -> Dict[str, An
 async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) -> Dict[str, Any]:
     """编辑页的下拉与多选需要的可选项：模型、技能、知识库、部门。"""
     from models.enterprise_dao import get_space_departments_async
-    from models.init_db import KnowledgeSpace, Organization
+    from models.init_db import KnowledgeSpace
     from service.llm.model_catalog import CHAT_MODELS
 
     skills = (await db.execute(select(Skill).order_by(Skill.id))).unique().scalars().all()
@@ -649,14 +646,14 @@ async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) ->
     spaces = (await db.execute(
         select(KnowledgeSpace).where(KnowledgeSpace.status == "active").order_by(KnowledgeSpace.id.desc()))).scalars().all()
     departments = await get_space_departments_async(db, [s.id for s in spaces if s.scope_type == "department"])
+    enterprise_id = await _get_default_organization_id(db)
     teams = (await db.execute(
-        select(Team.id, Team.name, Team.organization_id, Team.department_code, Organization.name)
-        .join(Organization, Organization.id == Team.organization_id)
-        .where(Team.status == "active").order_by(Team.organization_id, Team.id))).all()
+        select(Team.id, Team.name, Team.department_code)
+        .where(Team.status == "active", Team.organization_id == enterprise_id).order_by(Team.id))).all()
     return {
         "models": sorted(CHAT_MODELS.keys()),
         "skills": skill_items,
         "spaces": [{"id": s.id, "name": s.name, "scope_type": s.scope_type, "sensitivity": s.sensitivity,
                     "doc_count": s.doc_count, "departments": departments.get(s.id, [])} for s in spaces],
-        "teams": [{"id": t[0], "name": t[1], "organization_id": t[2], "department_code": t[3], "organization_name": t[4]} for t in teams],
+        "teams": [{"id": t[0], "name": t[1], "department_code": t[2]} for t in teams],
     }

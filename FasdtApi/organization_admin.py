@@ -119,6 +119,21 @@ async def get_enterprise_roles(
     return await svc.list_enterprise_roles(async_db)
 
 
+class EnterpriseUpdate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+
+
+@router.get("/enterprise", summary="本企业的基本信息")
+async def get_enterprise(async_db=Depends(get_async_db), current_user: User = Depends(get_current_admin_user_async)):
+    return await svc.get_enterprise(async_db)
+
+
+@router.patch("/enterprise", summary="修改企业名称（平台只服务一个企业）")
+async def update_enterprise(data: EnterpriseUpdate, async_db=Depends(get_async_db),
+                            current_user: User = Depends(get_current_admin_user_async)):
+    return await svc.rename_enterprise(async_db, current_user.id, data.name)
+
+
 @router.get("/teams", summary="部门列表")
 async def get_teams(
         async_db=Depends(get_async_db),

@@ -372,23 +372,21 @@ def _space_scope_filter(scope: str | None):
 
 
 async def _space_department_overview(db) -> Dict:
-    """每个部门下有多少知识库空间（含 0 个的部门）、全企业有多少、还没划分的有多少、一共多少。"""
-    from models.init_db import KnowledgeSpace, KnowledgeSpaceDepartment, Organization, Team
+    """本企业每个部门下有多少知识库空间（含 0 个的部门）、全企业有多少、还没划分的有多少、一共多少。
+    平台只服务一个企业，部门清单不分企业。"""
+    from models.init_db import KnowledgeSpace, KnowledgeSpaceDepartment, Team
+    from service.organization_admin_service import _get_default_organization
 
+    org = await _get_default_organization(db)
     teams = (await db.execute(
-        select(Team.id, Team.name, Team.organization_id, Organization.name)
-        .join(Organization, Organization.id == Team.organization_id)
-        .where(Team.status == "active").order_by(Team.organization_id, Team.id))).all()
+        select(Team.id, Team.name).where(Team.status == "active", Team.organization_id == org.id).order_by(Team.id))).all()
     counts = {row[0]: int(row[1]) for row in (await db.execute(
         select(KnowledgeSpaceDepartment.team_id, func.count(func.distinct(KnowledgeSpaceDepartment.space_id)))
         .group_by(KnowledgeSpaceDepartment.team_id))).all()}
     by_scope = {row[0]: int(row[1]) for row in (await db.execute(
         select(KnowledgeSpace.scope_type, func.count(KnowledgeSpace.id)).group_by(KnowledgeSpace.scope_type))).all()}
     return {
-        "departments": [
-            {"id": t[0], "name": t[1], "organization_id": t[2], "organization_name": t[3], "space_count": counts.get(t[0], 0)}
-            for t in teams
-        ],
+        "departments": [{"id": t[0], "name": t[1], "space_count": counts.get(t[0], 0)} for t in teams],
         "enterprise_count": by_scope.get("enterprise", 0),
         "unassigned_count": by_scope.get("personal", 0),
         "all_count": sum(by_scope.values()),
@@ -464,8 +462,7 @@ async def _scope_fields(db, scope: str, team_ids) -> tuple[Dict, List[int]]:
     """把「划分」翻译成要写入的字段和部门清单。
 
     unassigned = 还没划分（只有所有者和被加入的成员能看到）；
-    departments = 划分给指定的一个或多个部门（所属企业必须一致）；
-    enterprise = 划分给全企业。平台管理员可以划分给任何启用中的部门。"""
+    departments = 划分给指定的一个或多个部门；enterprise = 划分给全企业。平台只服务一个企业，部门必须是这个企业里启用中的部门。"""
     from models.init_db import Team
 
     if scope not in SCOPES:
@@ -479,13 +476,12 @@ async def _scope_fields(db, scope: str, team_ids) -> tuple[Dict, List[int]]:
     ids = sorted({int(t) for t in (team_ids or [])})
     if not ids:
         raise InvalidInput("请至少选择一个部门")
-    teams = (await db.execute(select(Team).where(Team.id.in_(ids)))).scalars().all()
+    from service.organization_admin_service import _get_default_organization
+    org = await _get_default_organization(db)
+    teams = (await db.execute(select(Team).where(Team.id.in_(ids), Team.organization_id == org.id))).scalars().all()
     if len(teams) != len(ids) or any(t.status != "active" for t in teams):
         raise InvalidInput("部门不存在或已停用")
-    orgs = {t.organization_id for t in teams}
-    if len(orgs) != 1:
-        raise InvalidInput("一个知识库只能划分给同一个企业里的部门")
-    return {"scope_type": "department", "organization_id": orgs.pop()}, ids
+    return {"scope_type": "department", "organization_id": org.id}, ids
 
 
 async def _replace_grants(db, space_id: int, team_ids: List[int]) -> None:

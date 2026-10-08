@@ -47,7 +47,7 @@ class _DefaultOrg:
         self.owner = None
         db = SessionLocal()
         try:
-            if db.execute(text("SELECT id FROM organizations WHERE name=:n LIMIT 1"), {"n": DEFAULT_ORG_NAME}).scalar() is None:
+            if db.execute(text("SELECT id FROM organizations ORDER BY id LIMIT 1")).scalar() is None:
                 self.owner = rc.create_user("enroll-owner")
                 db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
                            {"n": DEFAULT_ORG_NAME, "o": self.owner["id"]})
@@ -157,7 +157,7 @@ class EnrollInDefaultOrganizationDirectTest(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            with patch("models.enterprise_dao.DEFAULT_ORG_NAME", "这个名字的企业不会存在-探测用"):
+            with patch("models.enterprise_dao._ENTERPRISE_ID_SQL", "SELECT id FROM organizations WHERE 1 = 0"):
                 enroll_in_default_organization(db, self.user["id"])  # 不应该抛异常
             row = db.execute(
                 text("SELECT 1 FROM organization_members WHERE user_id=:u"), {"u": self.user["id"]}

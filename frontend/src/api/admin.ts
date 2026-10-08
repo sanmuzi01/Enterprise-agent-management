@@ -186,8 +186,6 @@ export interface AdminKnowledgeSpace {
 export interface AdminSpaceDepartment {
   id: number
   name: string
-  organization_id: number
-  organization_name: string
   space_count: number
 }
 

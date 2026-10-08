@@ -12,7 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 # 跟 scripts/backfill_default_organization.py 用的是同一个名字——那个脚本从这里导入，
 # 不要在两处各写一份，写歪了两边就对不上默认企业到底是哪一行。
-DEFAULT_ORG_NAME = "默认企业"
+DEFAULT_ORG_NAME = "默认企业"        # 只用于第一次初始化时给企业起个名字；之后管理员可以改成真实的公司名
+
+# 平台只服务一个企业：id 最小的那条记录就是它。不能按名字找——名字会被改。
+_ENTERPRISE_ID_SQL = "SELECT id FROM organizations ORDER BY id LIMIT 1"
 
 # 部门成员/部门负责人的有效性 = 部门成员记录有效 + 部门有效 + 所在企业有效 + 本人的企业成员身份有效。
 # 企业成员被停用、被移出企业或企业被停用后，残留的部门成员记录不能继续给出任何部门权限。
@@ -89,10 +92,7 @@ def enroll_in_default_organization(db, user_id: int) -> None:
     的事务不该被这一步拖累，独立 commit/rollback。
     """
     try:
-        org_id = db.execute(
-            text("SELECT id FROM organizations WHERE name=:n ORDER BY id LIMIT 1"),
-            {"n": DEFAULT_ORG_NAME},
-        ).scalar()
+        org_id = db.execute(text(_ENTERPRISE_ID_SQL)).scalar()
         if org_id is None:
             return
         member_role_id = db.execute(
@@ -142,12 +142,7 @@ async def list_space_ids_where_team_admin_async(db: AsyncSession, user_id: int) 
 async def enroll_in_default_organization_async(db: AsyncSession, user_id: int) -> None:
     """同 enroll_in_default_organization，异步注册流程用。"""
     try:
-        org_id = (
-            await db.execute(
-                text("SELECT id FROM organizations WHERE name=:n ORDER BY id LIMIT 1"),
-                {"n": DEFAULT_ORG_NAME},
-            )
-        ).scalar()
+        org_id = (await db.execute(text(_ENTERPRISE_ID_SQL))).scalar()
         if org_id is None:
             return
         member_role_id = (

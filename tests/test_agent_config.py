@@ -248,8 +248,9 @@ class AgentConfigTest(unittest.TestCase):
         self.assertNotIn("prompt", levels, "外部服务自己决定怎么回答，不检查平台里的设定")
 
     # ---------- 可选项 ----------
-    def test_options_cover_models_skills_spaces_and_teams_across_organizations(self):
-        options = _run_db(lambda db: self.svc().agent_options(db, self.admin["id"]))
+    def test_options_cover_models_skills_spaces_and_this_enterprises_teams(self):
+        with self._org():
+            options = _run_db(lambda db: self.svc().agent_options(db, self.admin["id"]))
         self.assertIn("glm-4", options["models"])
         self.assertNotIn("BAAI/bge-small-zh-v1.5", options["models"], "向量模型不是聊天模型")
         skill_names = {s["name"] for s in options["skills"]}
@@ -262,13 +263,19 @@ class AgentConfigTest(unittest.TestCase):
         self.assertEqual(spaces["acf-space-company"]["scope_type"], "enterprise")
         self.assertEqual(spaces["acf-space-loose"]["scope_type"], "personal")
         teams = {t["name"]: t for t in options["teams"]}
-        self.assertEqual({teams["acf-team-a"]["organization_name"], teams["acf-team-x"]["organization_name"]}, {"acf-org", "acf-org2"})
+        self.assertIn("acf-team-a", teams)
+        self.assertNotIn("acf-team-x", teams, "平台只服务一个企业：别的企业的部门不给选")
+        self.assertEqual(set(teams["acf-team-a"]), {"id", "name", "department_code"})
 
-    def test_listing_carries_the_organization(self):
-        agent = self.create("acf-listed")
+    def test_listing_only_shows_this_enterprises_agents(self):
+        mine = self.create("acf-listed")
         with self._org():
-            listed = next(a for a in _run_db(lambda db: self.svc().list_managed_agents(db)) if a["id"] == agent["id"])
-        self.assertEqual((listed["organization_id"], listed["organization_name"]), (self.org_id, "acf-org"))
+            foreign = _run_db(lambda db: self.svc().create_managed_agent(
+                db, self.admin["id"], "acf-foreign", "central", organization_id=self.org2_id))
+            listed = {a["id"]: a for a in _run_db(lambda db: self.svc().list_managed_agents(db))}
+        self.assertIn(mine["id"], listed)
+        self.assertNotIn(foreign["id"], listed, "别的企业的智能体不出现在列表里")
+        self.assertNotIn("organization_name", listed[mine["id"]], "列表里不带企业信息")
 
 
 if __name__ == "__main__":

@@ -161,13 +161,28 @@ export async function removeOrgMember(userId: number) {
   return data
 }
 
+export interface Enterprise {
+  id: number
+  name: string
+  team_count: number
+  member_count: number
+}
+
+export async function getEnterprise(): Promise<Enterprise> {
+  const { data } = await request.get('/admin/org/enterprise')
+  return data as Enterprise
+}
+
+export async function renameEnterprise(name: string): Promise<Enterprise> {
+  const { data } = await request.patch('/admin/org/enterprise', { name })
+  return data as Enterprise
+}
+
 export type ManagedAgentType = 'central' | 'department'
 export type LifecycleStatus = 'draft' | 'reviewing' | 'published' | 'retired'
 
 export interface ManagedAgent {
   id: number
-  organization_id: number | null
-  organization_name: string | null
   name: string
   agent_type: ManagedAgentType
   department_code: string | null
@@ -220,7 +235,7 @@ export interface AgentOptions {
     doc_count: number
     departments: { id: number; name: string }[]
   }[]
-  teams: { id: number; name: string; organization_id: number; organization_name: string; department_code: string | null }[]
+  teams: { id: number; name: string; department_code: string | null }[]
 }
 
 export async function getAgentOptions(agentId?: number): Promise<AgentOptions> {

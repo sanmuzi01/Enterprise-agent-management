@@ -17,7 +17,7 @@ TeamMember（Phase 3B/3D，见 docs/enterprise-rbac-plan.md），但一直没有
 """
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from models.init_db import (
     Agent,
@@ -39,6 +39,28 @@ async def _get_default_organization(db) -> Organization:
     if org is None:
         raise NotFound("企业尚未初始化（没有 Organization 记录），先跑 scripts/backfill_default_organization.py")
     return org
+
+
+async def get_enterprise(db) -> Dict:
+    """本企业的基本信息。平台只服务一个企业：id 最小的那条企业记录就是它。"""
+    org = await _get_default_organization(db)
+    teams = (await db.execute(select(func.count(Team.id)).where(Team.organization_id == org.id, Team.status == "active"))).scalar() or 0
+    members = (await db.execute(select(func.count(OrganizationMember.id)).where(
+        OrganizationMember.organization_id == org.id, OrganizationMember.status == "active"))).scalar() or 0
+    return {"id": org.id, "name": org.name, "team_count": int(teams), "member_count": int(members)}
+
+
+async def rename_enterprise(db, operator_id: int, name: str) -> Dict:
+    name = (name or "").strip()
+    if not name:
+        raise InvalidInput("企业名称不能为空")
+    org = await _get_default_organization(db)
+    org_id, before, after = org.id, org.name, name[:100]
+    await db.execute(update(Organization).where(Organization.id == org_id).values(name=after))
+    await db.commit()
+    await audit_service.record_async(operator_id, "org.enterprise_renamed", resource_type="organization", resource_id=org_id,
+                                     detail={"before": before, "after": after})
+    return {**(await get_enterprise(db)), "name": after}
 
 
 async def _role_id(db, scope: str, code: str) -> int:

@@ -78,7 +78,8 @@ class AdminSpaceDepartmentsTest(unittest.TestCase):
             return _run_db(lambda db: svc.admin_update_space(db, self.admin["id"], space_id, patch))
 
     def _list(self, scope=None, limit=500):
-        return _run_db(lambda db: svc.list_knowledge_spaces(db, limit=limit, scope=scope))
+        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+            return _run_db(lambda db: svc.list_knowledge_spaces(db, limit=limit, scope=scope))
 
     @staticmethod
     def _names(page):
@@ -154,7 +155,7 @@ class AdminSpaceDepartmentsTest(unittest.TestCase):
             {"scope": "departments", "team_ids": []},                      # 没选部门
             {"scope": "departments", "team_ids": [987654321]},             # 不存在
             {"scope": "departments", "team_ids": [self.off]},              # 已停用
-            {"scope": "departments", "team_ids": [self.a, self.x]},        # 跨企业
+            {"scope": "departments", "team_ids": [self.x]},                # 别的企业的部门
             {"scope": "everyone"},                                         # 不认识的划分方式
             {"sensitivity": "top-secret"},
         ):
@@ -195,8 +196,8 @@ class AdminSpaceDepartmentsTest(unittest.TestCase):
         self.assertGreaterEqual(counts["asd-team-a"], 1)
         self.assertEqual(counts["asd-team-b"], len(self._list(f"team:{self.b}")["items"]))
         self.assertNotIn("asd-team-off", counts, "已停用的部门不出现在清单里")
-        organizations = {d["organization_name"] for d in page["departments"]}
-        self.assertTrue({"asd-org", "asd-other-org"} <= organizations)
+        self.assertNotIn("asd-team-x", counts, "平台只服务一个企业：别的企业的部门不出现")
+        self.assertTrue(all(set(d) == {"id", "name", "space_count"} for d in page["departments"]), "清单里不带企业信息")
 
     def test_overview_counts_add_up(self):
         self._create("asd-sum-dept", scope="departments", team_ids=[self.a])
