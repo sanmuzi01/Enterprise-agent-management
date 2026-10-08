@@ -41,21 +41,6 @@ class BatchRequest(BaseModel):
     items: list[BatchItem] = Field(min_length=1, max_length=10)
 
 
-class TimeSampleRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    team_id: int = Field(gt=0)
-    kind: str = Field(min_length=1, max_length=30)
-    minutes: float = Field(ge=0.5, le=600)
-    note: str = Field(default="", max_length=200)
-
-
-class FeedbackRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    rating: int = Field(ge=1, le=5)
-    comment: str = Field(default="", max_length=300)
-    manual_minutes: float | None = Field(default=None, ge=0.5, le=600)
-
-
 class ApplyRequest(BaseModel):
     proposal: dict
 
@@ -87,19 +72,6 @@ async def import_file(team_id: int = Form(gt=0), sensitivity: Literal["internal"
         raise RateLimited("文件导入过于频繁，请稍后重试") from None
     content = await file.read(document_intake.MAX_BYTES + 1)
     return await document_intake.extract_text(db, user.id, team_id, file.filename or "", content, sensitivity)
-
-
-@router.post("/time-samples")
-async def add_time_sample(data: TimeSampleRequest, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
-    """记录“这类工作手工做一次实际花了多少分钟”（试点计时），用来算真实的节省工时。"""
-    from service import pilot_service
-    return await pilot_service.add_time_sample(db, user.id, data.team_id, data.kind, data.minutes, data.note)
-
-
-@router.get("/time-samples/mine")
-async def my_time_samples(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
-    from service import pilot_service
-    return await pilot_service.my_time_samples(db, user.id, team_id)
 
 
 @router.post("/batches")
@@ -168,16 +140,3 @@ async def recheck(work_id: UUID, data: ApplyRequest, db=Depends(get_async_db),
 async def task(work_id: UUID, index: int, data: TaskRequest, db=Depends(get_async_db),
                user: User = Depends(get_current_user_async)):
     return await svc.complete_task(db, user.id, str(work_id), index, data.done)
-
-
-@router.get("/{work_id}/feedback")
-async def get_feedback(work_id: UUID, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
-    from service import pilot_service
-    await svc.get_work(db, user.id, str(work_id))
-    return await pilot_service.feedback_for(db, user.id, str(work_id))
-
-
-@router.put("/{work_id}/feedback")
-async def put_feedback(work_id: UUID, data: FeedbackRequest, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
-    from service import pilot_service
-    return await pilot_service.give_feedback(db, user.id, str(work_id), data.rating, data.comment, data.manual_minutes)

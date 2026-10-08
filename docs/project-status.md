@@ -9,7 +9,7 @@
 - **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
   外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
 - **本阶段新增能力**：部门责任执行、文件导入与批量整理、事务性发件箱/收件箱/死信、trace_id 与统一错误、问题中心、
-  页面脚本错误上报、Agent 运行失败追踪、试点数据与预检、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
+  页面脚本错误上报、Agent 运行失败追踪、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
 - **安全专项**（`docs/security-testing.md`）：SSRF、恶意文件、SQL 注入、XSS、提示注入与工具越权、跨部门 / 跨企业越权、重复与并发都有会失败的测试；
   过程中发现并修复了跨企业提权（企业 B 的管理员能审批企业 A 的请假、批准企业 A 的空间删除）、请假 / 采购 / 报销的并发重复处理与预算 / 余额覆盖、SSRF 的 5 类绕过、压缩炸弹等。
 - **代码审查后的收口**（2026-10-07，见 `docs/security-testing.md`）：Redis 并发配额改成原子操作（并修了 Redis 客户端并发首次连接时各线程退回内存限流的竞态）、缓存不再用 pickle 且 Redis 里只存模型密钥的密文、登录令牌改放 HttpOnly Cookie + 签名 CSRF 并上线内容安全策略、知识库上传加单文件 / 累计 / 个数上限。同时加了前端 Vitest、漏洞豁免登记表（负责人 / 到期日）、Dependabot、Docker 与直接部署两份生产环境模板、测试用 MySQL / Redis 一条命令。
@@ -18,7 +18,7 @@
   OpenTelemetry Collector → Tempo / Loki、Prometheus、Grafana（`scripts/e2e_observability.py` 40 项，含 Collector / Loki / Tempo 中断后恢复、Sentry 未配置与不可达）。
   联调中发现并修复了 span 全被丢弃、成功请求没有日志、`/metrics` 被 Host 白名单拒绝等问题。
   **仍未验证**：真实的云日志账号和 Sentry 项目（没有账号 / DSN，只验证了“未配置或不可达不影响业务”）。
-- **没有真实用户数据**：试点工具齐全（`scripts/pilot_preflight.py`、`scripts/pilot_report.py`），但还没有真实试点样本。
+- **没有真实用户数据**：功能都在，但还没有真实企业的使用数据。
 
 ## 已完成能力
 

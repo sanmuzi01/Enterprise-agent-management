@@ -412,34 +412,6 @@ class AttendanceAnomaly(Base):
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 
-class PilotTimeSample(Base):
-    """试点“手工办理计时”样本：员工自己记录这类工作手工做一次实际花了多少分钟，用来取代拍脑袋的基准时间。"""
-    __tablename__ = "pilot_time_sample"
-    __table_args__ = (Index("idx_pilot_sample_kind", "kind", "created_at"), Index("idx_pilot_sample_user", "user_id", "created_at"))
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    user_id = Column(Integer, nullable=False)
-    team_id = Column(Integer, nullable=False)
-    kind = Column(String(30), nullable=False)
-    minutes = Column(Float, nullable=False)
-    note = Column(String(200), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=utcnow)
-
-
-class WorkFeedback(Base):
-    """员工对一份 AI 工作成果的评价（1–5 分 + 一句话）；每人每份只有一条，可以修改。"""
-    __tablename__ = "work_feedback"
-    __table_args__ = (UniqueConstraint("work_id", "user_id", name="uq_work_feedback"),)
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    work_id = Column(String(36), nullable=False)
-    user_id = Column(Integer, nullable=False)
-    team_id = Column(Integer, nullable=False)
-    kind = Column(String(30), nullable=False)
-    rating = Column(Integer, nullable=False)
-    comment = Column(String(300), nullable=True)
-    created_at = Column(DateTime, nullable=False, default=utcnow)
-    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
-
-
 class OutboxEvent(Base):
     """事务性发件箱：业务数据和事件在同一个数据库事务里写入，之后由发布器可靠地送出（至少一次）。payload 已脱敏，不含正文。"""
     __tablename__ = "outbox_event"
@@ -537,15 +509,6 @@ class OrchestrationStep(Base):
     state = Column(String(20), nullable=False, default="pending")  # pending / handoff / skipped / linked
     automation_work_id = Column(String(36), nullable=True)
     created_at = Column(DateTime, nullable=False, default=utcnow)
-
-
-class WorkflowBaseline(Base):
-    """管理员设定的各工作流"手工办理一次需要多少分钟"，用于和 AI 辅助后的实际耗时对比。"""
-    __tablename__ = "workflow_baseline"
-    kind = Column(String(30), primary_key=True)
-    minutes = Column(Float, nullable=False)
-    updated_by = Column(Integer, nullable=True)
-    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 
 class LLMConfig(Base):

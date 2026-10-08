@@ -104,21 +104,6 @@
           <button v-if="selected.business_result?.id && selected.kind === 'responsibility'" type="button" data-testid="open-plan-result"
             class="ml-2 rounded bg-emerald-600 px-2.5 py-1 text-xs text-white hover:bg-emerald-700" @click="emit('open-result', selected.business_result!.id!)">去补全并发布 →</button>
         </div>
-        <form v-if="selected.status === 'applied'" class="space-y-2 rounded border border-slate-200 bg-slate-50 p-3 text-sm" data-testid="feedback-form" @submit.prevent="sendFeedback">
-          <p class="font-medium">这次整理好用吗？<span class="font-normal text-xs text-slate-500">（试点期间的反馈，只汇总统计，不展示你的名字）</span></p>
-          <div class="flex flex-wrap items-center gap-3">
-            <label>评分
-              <select v-model.number="fbRating" class="ml-1 rounded border p-1" data-testid="feedback-rating"><option :value="0" disabled>请选择</option>
-                <option v-for="n in 5" :key="n" :value="n">{{ n }} 分{{ n === 5 ? '（很好）' : n === 1 ? '（很差）' : '' }}</option></select></label>
-            <label>这件事手工做大约要
-              <input v-model.number="fbMinutes" type="number" min="0.5" max="600" step="0.5" placeholder="可不填" class="mx-1 w-20 rounded border p-1" data-testid="feedback-minutes" />分钟</label>
-          </div>
-          <input v-model="fbComment" maxlength="300" placeholder="一句话说说哪里好用或不好用（可不填）" class="w-full rounded border p-2" data-testid="feedback-comment" />
-          <div class="flex items-center gap-3">
-            <button type="submit" :disabled="!fbRating || fbBusy" class="rounded bg-blue-600 px-3 py-1.5 text-white disabled:opacity-40" data-testid="feedback-submit">{{ fbSent ? '更新评价' : '提交评价' }}</button>
-            <span v-if="fbDone" class="text-xs text-emerald-700" data-testid="feedback-done">{{ fbDone }}</span>
-          </div>
-        </form>
         <div v-if="selected.status === 'applied' && followupItems.length" class="space-y-2">
           <h4 class="text-sm font-medium">我的后续待办（保存在本工作成果中）</h4>
           <label v-for="(task, i) in followupItems" :key="i" class="flex items-center gap-2 text-sm">
@@ -227,22 +212,7 @@ async function recheck() {
   finally { loading.value = false }
 }
 const statusName = (s: string) => ({ processing: '整理中', ready: '待核对', failed: '整理失败', applying: '保存中', retry: '保存待重试', applied: '已保存草稿' }[s] || s)
-const fbRating = ref(0), fbComment = ref(''), fbMinutes = ref<number | null>(null), fbBusy = ref(false), fbDone = ref(''), fbSent = ref(false)
-async function loadFeedback(work: api.Work) {
-  fbRating.value = 0; fbComment.value = ''; fbMinutes.value = null; fbDone.value = ''; fbSent.value = false
-  if (work.status !== 'applied') return
-  try { const f = await api.getFeedback(work.id); if (f) { fbRating.value = f.rating; fbComment.value = f.comment || ''; fbSent.value = true } } catch { /* 读不到不影响使用 */ }
-}
-async function sendFeedback() {
-  if (!selected.value || !fbRating.value) return
-  fbBusy.value = true; fbDone.value = ''
-  try {
-    await api.putFeedback(selected.value.id, { rating: fbRating.value, comment: fbComment.value, manual_minutes: fbMinutes.value || null })
-    fbSent.value = true; fbDone.value = '已记录，谢谢'
-  } catch (e) { error.value = getErrorMessage(e, '提交评价失败') } finally { fbBusy.value = false }
-}
 function select(work: api.Work) {
-  void loadFeedback(work)
   selected.value = work; draft.value = work.proposal ? JSON.parse(JSON.stringify(work.proposal)) : null; reviewed.value = false
   checkedSnapshot.value = draft.value ? JSON.stringify(draft.value) : ''
 }

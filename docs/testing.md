@@ -155,7 +155,7 @@ npm run test:coverage
 ## 本机跑全量测试前：先停掉 Worker
 
 需要数据库的测试和本机开发共用同一个库。本机的后台 Worker 在跑时，会抢走测试里刚写入的事件和批量任务（`test_outbox`、`test_automation_batch`），
-开发库里手工设置过的试点基线也会让 `test_pilot` 的“默认基线”断言不成立——这 7 条在没有任何改动的基础提交上也会失败。
+这几条在没有任何改动的基础提交上也会失败。
 CI 用全新数据库，不受影响；本机想看到全绿，先停掉 `npm run backend:worker`，并用测试专用库（`deploy/test-services/docker-compose.yml`）。
 
 ## 前端单元测试（Vitest）

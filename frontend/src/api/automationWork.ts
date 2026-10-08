@@ -155,10 +155,3 @@ export function normalizeDraft(form: FormField[], draft: Record<string, any>): P
   fix(form, copy)
   return copy
 }
-
-export interface WorkFeedback { rating: number; comment: string | null }
-export async function getFeedback(id: string) { return (await request.get<WorkFeedback | null>(`/enterprise/automation/${id}/feedback`, { skipErrorToast: true })).data }
-/** 试点：对已保存的成果打分，并可顺手记录“这件事手工做要多久”（用来算真实的节省工时）。 */
-export async function putFeedback(id: string, body: { rating: number; comment?: string; manual_minutes?: number | null }) {
-  return (await request.put<WorkFeedback>(`/enterprise/automation/${id}/feedback`, body)).data
-}

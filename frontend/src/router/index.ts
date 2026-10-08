@@ -42,7 +42,6 @@ const router = createRouter({
         { path: 'users', name: 'AdminUsers', component: () => import('../views/admin/AdminUsers.vue') },
         { path: 'tasks', name: 'AdminTasks', component: () => import('../views/admin/AdminTasks.vue') },
         { path: 'usage', name: 'AdminUsage', component: () => import('../views/admin/AdminUsage.vue') },
-        { path: 'automation', name: 'AdminAutomation', component: () => import('../views/admin/AdminAutomation.vue') },
         { path: 'logs', name: 'AdminLogs', component: () => import('../views/admin/AdminLogs.vue') },
         { path: 'knowledge-spaces', name: 'AdminKnowledgeSpaces', component: () => import('../views/admin/AdminKnowledgeSpaces.vue') },
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
