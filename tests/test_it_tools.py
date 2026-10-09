@@ -1,4 +1,4 @@
-"""IT 服务台 Agent 工具：员工侧权限与参数映射、IT 台只读且仅限 IT 部门、没有能做决定的工具。"""
+"""IT 服务台 Agent 工具：员工侧权限与参数映射、IT 台工具仅限 IT 部门；能执行的动作都要用户确认，批准 / 改分类 / 发放设备没有工具。"""
 import json
 import unittest
 from unittest.mock import patch
@@ -6,9 +6,10 @@ from unittest.mock import patch
 from service import enterprise_agent_templates as templates
 from service.exceptions import PermissionDenied
 from service.tools.base import ToolContext, ToolRegistry
-from service.tools.it_service import (AddItTicketCommentTool, CreateItTicketTool, GetItDeskSummaryTool, GetItTicketDetailTool,
-                                      GetItTicketStatusTool, GetMyDevicesTool, GetMyItTicketsTool, ListItDevicesTool,
-                                      ListItQueueTool, SearchItSolutionsTool)
+from service.tools.it_service import (AddItTicketCommentTool, CancelItTicketTool, ConfirmItTicketResolvedTool, CreateItTicketTool,
+                                      GetItDeskSummaryTool, GetItTicketDetailTool, GetItTicketStatusTool, GetMyDevicesTool,
+                                      GetMyItTicketsTool, ListItDevicesTool, ListItQueueTool, ReopenItTicketTool,
+                                      ResolveItTicketTool, SearchItSolutionsTool, TakeItTicketTool)
 
 AUTH = {"team_id": 6, "is_org_admin": False, "is_team_admin": False}
 
@@ -99,23 +100,68 @@ class DeskToolsTest(unittest.TestCase):
         call.assert_not_called()
 
 
-class ToolSurfaceTest(unittest.TestCase):
-    DECISIONS = ("assign", "resolve", "approve_it", "reject_it", "reclassify", "retire", "assign_device", "close_it")
+@patch("service.tools.it_service.hub.resolve_caller_context", return_value=AUTH)
+class ActionToolsTest(unittest.TestCase):
+    def test_employee_actions_post_to_own_ticket_with_write_scope(self, _auth):
+        for cls, kwargs, action, body in ((ConfirmItTicketResolvedTool, {"ticket_id": 9}, "confirm", None),
+                                          (ReopenItTicketTool, {"ticket_id": 9, "reason": "还是脱机"}, "reopen", {"reason": "还是脱机"}),
+                                          (CancelItTicketTool, {"ticket_id": 9}, "cancel", None)):
+            with patch("service.tools.it_service.hub.call", return_value={"id": 9, "status": "CLOSED"}) as call:
+                tool(cls).execute(**kwargs)
+            args, kw = call.call_args
+            self.assertEqual(args[:5], ("POST", f"/it/tickets/9/{action}", 4201, 6, ["it.ticket.read", "it.ticket.write"]))
+            self.assertEqual(kw["json_body"], body)
+            self.assertTrue(kw["idempotency_key"])
 
-    def test_no_tool_can_make_desk_decisions(self):
+    def test_take_assigns_to_myself_only_for_it_staff(self, _auth):
+        scope = {"organization_id": 1, "scope": [6, 7]}
+        with patch("service.tools.it_service.department_staff_scope", return_value=scope), \
+                patch("service.tools.it_service._is_it_staff_sync", return_value=True), \
+                patch("service.tools.it_service.hub.call", return_value={"id": 3}) as call:
+            tool(TakeItTicketTool).execute(ticket_id=3)
+        args, kw = call.call_args
+        self.assertEqual((args[0], args[1], args[4]), ("POST", "/it/desk/tickets/3/assign?scopeTeamIds=6,7", ["it.desk.read", "it.desk.write"]))
+        self.assertEqual(kw["json_body"], {"assigneeUserId": 4201})
+        with patch("service.tools.it_service.department_staff_scope", return_value=scope), \
+                patch("service.tools.it_service._is_it_staff_sync", return_value=False), \
+                patch("service.tools.it_service.hub.call") as call:
+            self.assertIn("IT 部门", json.loads(tool(TakeItTicketTool).execute(ticket_id=3))["error"])
+        call.assert_not_called()
+
+    def test_resolve_sends_resolution_and_non_it_user_is_rejected(self, _auth):
+        with patch("service.tools.it_service.department_staff_scope", return_value={"organization_id": 1, "scope": [6]}), \
+                patch("service.tools.it_service.hub.call", return_value={"id": 3}) as call:
+            tool(ResolveItTicketTool).execute(ticket_id=3, resolution="更换硒鼓")
+        self.assertEqual(call.call_args.kwargs["json_body"], {"resolution": "更换硒鼓"})
+        with patch("service.tools.it_service.department_staff_scope", side_effect=PermissionDenied("IT 服务台仅对IT部门开放")), \
+                patch("service.tools.it_service.hub.call") as call:
+            self.assertIn("仅对IT部门开放", json.loads(tool(ResolveItTicketTool).execute(ticket_id=3, resolution="x"))["error"])
+        call.assert_not_called()
+
+
+class ToolSurfaceTest(unittest.TestCase):
+    # 只能在工作台里由人操作，没有任何工具
+    FORBIDDEN = ("approve_it", "reject_it", "reclassify", "retire", "assign_device", "close_it")
+    # 可以由助手提出、但必须用户在对话里点确认才执行
+    CONFIRMED = ("take_it_ticket", "resolve_it_ticket", "confirm_it_ticket_resolved", "reopen_it_ticket", "cancel_it_ticket")
+
+    def test_desk_decisions_have_no_tool_and_actions_need_confirmation(self):
         names = set(ToolRegistry.list_all())
         self.assertIn("list_it_queue", names)
         for name in names:
             if "it_" in name or "device" in name or "ticket" in name:
-                for word in self.DECISIONS:
+                for word in self.FORBIDDEN:
                     self.assertNotIn(word, name, name)
+        for name in self.CONFIRMED:
+            self.assertEqual(ToolRegistry.get(name).risk_level, "high_risk", name)
 
     def test_templates_expose_the_right_tools(self):
         it_tools = set(templates.get_template("it")["tools"])
-        self.assertTrue({"search_it_solutions", "create_it_ticket", "list_it_queue", "list_it_devices"} <= it_tools)
+        self.assertTrue({"search_it_solutions", "create_it_ticket", "list_it_queue", "list_it_devices", "take_it_ticket", "resolve_it_ticket"} <= it_tools)
         office = set(templates.get_template("office")["tools"])
         self.assertTrue({"create_it_ticket", "get_my_it_tickets", "search_it_solutions"} <= office)
-        self.assertFalse({"list_it_queue", "get_it_desk_summary"} & office)     # IT 台工具只给 IT 部门模板
+        self.assertFalse({"list_it_queue", "get_it_desk_summary", "take_it_ticket", "resolve_it_ticket"} & office)     # IT 台工具只给 IT 部门模板
+        self.assertTrue({"confirm_it_ticket_resolved", "reopen_it_ticket", "cancel_it_ticket"} <= office)
         for name in it_tools:
             self.assertIsNotNone(ToolRegistry.get(name), name)
         self.assertIn("故障", templates.get_template("it")["routing_keywords"])

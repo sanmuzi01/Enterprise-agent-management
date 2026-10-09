@@ -18,9 +18,11 @@ _GENERAL_TOOLS = ["get_leave_balance", "create_leave_draft", "submit_leave_reque
                   "approve_expense_claim", "reject_expense_claim", "get_team_pending_expense_claims"]
 # 所有部门员工都能用的 IT 服务（自助排查、提工单、跟进、查名下设备）；IT 台工具只在 IT 模板里
 _TICKET_TOOLS = ["search_it_solutions", "create_it_ticket", "get_my_it_tickets", "get_it_ticket_status",
-                 "add_it_ticket_comment", "get_my_devices"]
+                 "add_it_ticket_comment", "get_my_devices",
+                 # 可执行动作：都是 high_risk，用户在对话里点确认后才执行
+                 "confirm_it_ticket_resolved", "reopen_it_ticket", "cancel_it_ticket"]
 # 入转调离的办理任务会分到各部门（IT、财务、负责人、员工本人），所以查任务/事项是通用能力；预检与汇总只在人事模板里
-_HR_CASE_TOOLS = ["get_my_hr_tasks", "get_hr_case", "list_hr_cases"]
+_HR_CASE_TOOLS = ["get_my_hr_tasks", "get_hr_case", "list_hr_cases", "complete_hr_task"]
 # 责任协同：每个人都可能被指派责任、也可能被指定为验收人，所以员工侧和验收侧工具是通用能力；
 # 接受、提交、验收、退回是高风险工具（需用户点确认），正式指派/改责任人/改期限/取消没有任何工具，只能在工作台里由负责人操作。
 _RESPONSIBILITY_TOOLS = ["list_my_responsibilities", "get_responsibility_detail", "accept_responsibility", "raise_responsibility_objection",
@@ -52,10 +54,13 @@ TEMPLATES = {
         "role": "你是专业 OA 人事助手，按企业制度协助员工办理请假，协助负责人审批，并协助人事人员办理入转调离。",
         "task": ("请假：先查假期余额，收集假期类型、起止日期和原因，再创建草稿，用户确认后提交；审批必须明确单号和决定。"
                  "入转调离：发起前用 precheck_hr_case 检查重复事项、名下设备、未结报销、待批请假、未休年假等并逐条说明；"
-                 "用 get_hr_case / get_my_hr_tasks / get_hr_summary 汇报进度和逾期任务。发起、批准、完成任务、办结都必须由人在工作台里操作，你不能代办。"),
+                 "人事人员确认要发起时，复述员工、类型、生效日期后用 create_hr_case 提出（用户在界面上点确认才会发起）；"
+                 "分给用户的办理任务做完了，用 complete_hr_task 提出标记完成。用 get_hr_case / get_my_hr_tasks / get_hr_summary 汇报进度和逾期任务。"
+                 "批准、办结、落实系统变更必须由人在工作台里操作，你不能代办。"),
         "tools": ["get_leave_balance", "create_leave_draft", "submit_leave_request", "approve_leave_request", "reject_leave_request",
                   "get_leave_status", "get_my_leave_requests", "get_team_pending_leave_requests",
-                  "get_my_hr_tasks", "get_hr_case", "list_hr_cases", "precheck_hr_case", "get_hr_summary"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
+                  "get_my_hr_tasks", "get_hr_case", "list_hr_cases", "precheck_hr_case", "get_hr_summary",
+                  "create_hr_case", "complete_hr_task"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
         "examples": ["查询我今年的年假余额", "帮我起草一份请假申请", "张三下月离职，先帮我检查一下", "有哪些入职任务逾期了"],
     },
     "procurement": {
@@ -89,7 +94,8 @@ TEMPLATES = {
                  "记账：报销批准后系统会自动生成凭证草稿——用工具查看待核对凭证、风险项和科目依据，向财务人员说明哪里需要核对；"
                  "你不能确认入账、作废或修改科目，这些必须由财务人员在工作台里核对后操作。"),
         "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims",
-                  "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
+                  "list_pending_vouchers", "get_voucher_detail", "generate_voucher_draft", "get_voucher_monthly_summary",
+                  "get_my_hr_tasks", "complete_hr_task"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
         "examples": ["查询本部门今年的报销预算", "帮我起草一份报销申请", "有哪些记账凭证待我核对", "汇总本月已入账的费用科目"],
     },
     "it": {
@@ -99,8 +105,11 @@ TEMPLATES = {
         "role": "你是 IT 服务助手，协助员工先自助排查、再提交和跟进 IT 工单；协助 IT 人员了解工单队列、超时风险和设备台账；也可办理请假和报销。",
         "task": ("员工遇到问题：先用 search_it_solutions 给自助排查步骤；仍要提交时复述类型、优先级、标题和描述，等用户确认后再 create_it_ticket。"
                  "账号、权限、设备申请必须先由本部门负责人批准，如实告知。IT 人员询问队列时用 list_it_queue、get_it_ticket_detail、get_it_desk_summary、list_it_devices，"
-                 "指出超时和未指派的工单；接单、解决、批准、发放设备等决定你不能代办，必须由人在工作台里操作。"),
-        "tools": _GENERAL_TOOLS + ["list_it_queue", "get_it_ticket_detail", "get_it_desk_summary", "list_it_devices"],
+                 "指出超时和未指派的工单；IT 人员要接单或已经处理完时，复述工单号、标题和处理结果后用 take_it_ticket / resolve_it_ticket 提出"
+                 "（用户在界面上点确认才会执行，处理结果必须是实际做过的事）。员工确认已解决、问题还在要重开、想撤销工单时，"
+                 "分别用 confirm_it_ticket_resolved / reopen_it_ticket / cancel_it_ticket 提出。批准、改分类、发放设备必须由人在工作台里操作。"),
+        "tools": _GENERAL_TOOLS + ["list_it_queue", "get_it_ticket_detail", "get_it_desk_summary", "list_it_devices",
+                                   "take_it_ticket", "resolve_it_ticket"],
         "examples": ["打印机一直脱机怎么办", "帮我提交一个设备申请工单", "查看我的工单进度", "现在有哪些工单快超时了"],
     },
     # 没有配置专属业务类型的部门（Team.department_code 为空，如综合办公室、运营部、项目管理部）使用的通用助手：

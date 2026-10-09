@@ -9,17 +9,36 @@
         <div v-else class="w-full max-w-[92%] space-y-2">
           <!-- 执行过程：让用户看到助手在“办事”，而不只是在回答 -->
           <ol v-if="m.steps.length" class="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs" data-testid="agent-steps">
-            <li v-for="(s, j) in m.steps" :key="j" class="flex items-center gap-1.5">
+            <li v-for="(s, j) in m.steps" :key="j" class="flex items-center gap-1.5" :data-state="s.state">
               <span v-if="j" class="text-slate-300">→</span>
-              <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5" :class="stepClass(s.state)">
+              <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5" :class="stepClass(s.state)" :title="s.error || ''">
                 <Loader2 v-if="s.state === 'running'" :size="11" class="animate-spin" />
                 <Check v-else-if="s.state === 'done'" :size="11" />
                 <X v-else-if="s.state === 'error'" :size="11" />
                 <Hand v-else-if="s.state === 'confirm'" :size="11" />
+                <Minus v-else-if="s.state === 'skipped'" :size="11" />
                 {{ s.label }}
               </span>
             </li>
           </ol>
+
+          <!-- 结果小结：办成了什么、做了几步、还要你处理什么、哪一步没成功 -->
+          <div v-if="m.finished && hasSummary(m)" class="space-y-1 rounded-lg border px-3 py-2 text-xs" data-testid="agent-summary"
+            :class="summaryOf(m).failed.length ? 'border-red-200 bg-red-50/50' : 'border-emerald-200 bg-emerald-50/50'">
+            <p v-if="summaryOf(m).done.length" class="text-emerald-800" data-testid="agent-summary-done">
+              <span class="font-medium">已办成：</span>{{ summaryOf(m).done.join('；') }}
+            </p>
+            <p v-if="summaryOf(m).stepCount" class="text-slate-500">替你完成了 {{ summaryOf(m).stepCount }} 步（{{ doneStepLabels(m) }}）</p>
+            <p v-if="summaryOf(m).failed.length" class="text-red-700" data-testid="agent-summary-failed">
+              <span class="font-medium">没有办成：</span>{{ summaryOf(m).failed.join('；') }}
+            </p>
+            <div v-if="summaryOf(m).attention.length" class="text-amber-800" data-testid="agent-summary-attention">
+              <span class="font-medium">需要你处理：</span>
+              <ul class="ml-4 list-disc">
+                <li v-for="a in summaryOf(m).attention" :key="a">{{ a }}</li>
+              </ul>
+            </div>
+          </div>
 
           <!-- 业务结果卡片：报销草稿、请假单、工单…… -->
           <div v-if="cardsOf(m).cards.length" class="grid gap-2 sm:grid-cols-2">
@@ -29,26 +48,34 @@
           <p v-if="cardsOf(m).hidden" class="text-xs text-slate-400">还有 {{ cardsOf(m).hidden }} 条记录没有展开，可以到工作台里查看全部。</p>
 
           <!-- 高风险操作：必须由人确认才执行 -->
-          <div v-for="(c, k) in m.confirmations" :key="'c-' + k"
-            class="space-y-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+          <div v-for="(c, k) in m.confirmations" :key="'c-' + k" data-testid="agent-confirmation"
+            class="space-y-2 rounded-lg border px-3 py-2.5 text-xs"
+            :class="c.decision === 'confirmed' ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : c.decision === 'failed' ? 'border-red-200 bg-red-50 text-red-900'
+              : c.decision === 'rejected' ? 'border-slate-200 bg-slate-50 text-slate-600'
+              : 'border-amber-300 bg-amber-50 text-amber-900'">
             <div class="flex items-center gap-1.5 font-semibold">
-              <AlertTriangle :size="14" class="shrink-0" />
-              需要你确认：{{ toolDisplayName(c.name) }}
+              <AlertTriangle v-if="!c.decision" :size="14" class="shrink-0" />
+              {{ c.decision ? toolDisplayName(c.name) : `需要你确认：${toolDisplayName(c.name)}` }}
             </div>
-            <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-amber-800">
+            <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 opacity-90">
               <template v-for="(v, key) in c.args" :key="key">
-                <dt class="text-amber-600">{{ argLabel(String(key)) }}</dt>
-                <dd>{{ typeof v === 'object' ? JSON.stringify(v) : v }}</dd>
+                <dt class="opacity-70">{{ argLabel(String(key)) }}</dt>
+                <dd>{{ argValue(String(key), v) }}</dd>
               </template>
             </dl>
             <div v-if="!c.decision" class="flex gap-2">
-              <button :disabled="c.deciding" @click="decide(c, true)"
-                class="rounded-full bg-amber-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50">确认执行</button>
-              <button :disabled="c.deciding" @click="decide(c, false)"
+              <button :disabled="c.deciding" @click="decide(m, c, true)" data-testid="agent-confirm"
+                class="rounded-full bg-amber-600 px-3 py-1 text-xs font-medium text-white disabled:opacity-50">
+                {{ c.deciding ? '执行中…' : '确认执行' }}</button>
+              <button :disabled="c.deciding" @click="decide(m, c, false)"
                 class="rounded-full border border-amber-300 bg-white px-3 py-1 text-xs font-medium text-amber-800 disabled:opacity-50">取消</button>
             </div>
-            <div v-else-if="c.decision === 'confirmed'" class="text-emerald-700">已确认执行<span v-if="c.resultText">：{{ short(c.resultText, 200) }}</span></div>
-            <div v-else class="text-slate-500">已取消，未执行</div>
+            <p v-else-if="c.decision === 'confirmed'" class="flex items-center gap-1 font-medium" data-testid="agent-confirm-done">
+              <Check :size="12" /> 已执行成功<span v-if="c.resultRef">：{{ c.resultRef }}</span>
+            </p>
+            <p v-else-if="c.decision === 'failed'" class="font-medium" data-testid="agent-confirm-failed">没有执行成功：{{ c.resultText }}</p>
+            <p v-else>已取消，没有执行</p>
           </div>
 
           <div v-if="m.content || (loading && i === messages.length - 1)"
@@ -87,10 +114,11 @@
 
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { AlertTriangle, Check, Hand, Loader2, X } from 'lucide-vue-next'
+import { AlertTriangle, Check, Hand, Loader2, Minus, X } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'
 import AgentResultCard from './department/AgentResultCard.vue'
-import { buildMessageCards, toolError, type CardTarget, type MessageCards, type ToolResultInput } from '../utils/agentCards'
+import { buildMessageCards, cardFromRecord, parseJson, toolError, type CardTarget, type MessageCards, type ToolResultInput } from '../utils/agentCards'
+import { isWriteTool, summarizeReply, type ReplySummary, type SummaryStep } from '../utils/agentSummary'
 import { toolDisplayName } from '../utils/displayNames'
 import { renderMarkdown } from '../utils/markdown'
 
@@ -115,11 +143,16 @@ const emit = defineEmits<{
   (e: 'open', target: CardTarget): void
 }>()
 
-type StepState = 'running' | 'done' | 'error' | 'confirm'
-interface Step { name: string; label: string; state: StepState }
+type Step = SummaryStep
 interface Confirmation {
   name: string; token: string; args: Record<string, unknown>
-  decision: 'confirmed' | 'rejected' | null; resultText: string; deciding: boolean
+  decision: 'confirmed' | 'rejected' | 'failed' | null
+  resultText: string
+  /** 执行成功后的单号，例如“报销单 #18” */
+  resultRef: string
+  deciding: boolean
+  /** 对应执行过程里的哪一步 */
+  step: Step | null
 }
 interface Message {
   role: 'user' | 'assistant'
@@ -127,6 +160,8 @@ interface Message {
   steps: Step[]
   results: ToolResultInput[]
   confirmations: Confirmation[]
+  /** 这次回复跑完了（成功或失败），才显示结果小结 */
+  finished: boolean
 }
 
 const messages = ref<Message[]>([])
@@ -144,15 +179,20 @@ watch(() => props.agentId, () => {
   inputText.value = ''
 })
 
-// 会改业务数据的工具：成功后通知页面刷新（只读查询不触发）
-const WRITE_PREFIXES = ['create_', 'submit_', 'approve_', 'reject_', 'update_', 'confirm_', 'accept_', 'cancel_', 'generate_', 'record_', 'report_']
-const isWriteTool = (name: string) => WRITE_PREFIXES.some((p) => name.startsWith(p))
-
 const ARG_LABELS: Record<string, string> = {
   request_id: '单号', ticket_id: '工单号', note: '备注', reason: '原因', decision: '决定', amount: '金额',
   days: '天数', start_date: '开始日期', end_date: '结束日期', customer_id: '客户', content: '内容',
+  resolution: '处理结果', case_type: '事项类型', employee_user_id: '员工', employee_team_id: '所在部门',
+  target_team_id: '目标部门', effective_date: '生效日期', position: '岗位', case_id: '事项号', task_id: '任务号',
+  claim_id: '报销单号', voucher_id: '凭证号', summary: '说明', link: '链接', stage: '阶段',
 }
 const argLabel = (key: string) => ARG_LABELS[key] || '参数'
+const CASE_TYPES: Record<string, string> = { ONBOARDING: '入职', PROBATION: '转正', TRANSFER: '调岗', OFFBOARDING: '离职' }
+function argValue(key: string, v: unknown): string {
+  if (key === 'case_type' && typeof v === 'string') return CASE_TYPES[v.toUpperCase()] || v
+  if (key.endsWith('_id') && (typeof v === 'number' || typeof v === 'string')) return `#${v}`
+  return typeof v === 'object' ? JSON.stringify(v) : String(v ?? '')
+}
 
 const short = (s: string, n: number) => {
   const s2 = s || ''
@@ -169,12 +209,28 @@ function cardsOf(m: Message): MessageCards {
   return value
 }
 
-function stepClass(state: StepState) {
+function summaryOf(m: Message): ReplySummary {
+  return summarizeReply({
+    steps: m.steps,
+    results: m.results,
+    pendingConfirmations: m.confirmations.filter((c) => !c.decision).map((c) => c.name),
+    cards: cardsOf(m).cards,
+  })
+}
+const hasSummary = (m: Message) => {
+  const s = summaryOf(m)
+  return s.done.length || s.stepCount || s.failed.length || s.attention.length
+}
+const doneStepLabels = (m: Message) =>
+  m.steps.filter((s) => s.state === 'done' && s.name !== 'understand' && s.name !== 'wait').map((s) => s.label).join('、')
+
+function stepClass(state: Step['state']) {
   return {
     running: 'bg-indigo-50 text-indigo-700',
     done: 'bg-emerald-50 text-emerald-700',
     error: 'bg-red-50 text-red-700',
     confirm: 'bg-amber-50 text-amber-800',
+    skipped: 'bg-slate-100 text-slate-500',
   }[state]
 }
 
@@ -183,23 +239,50 @@ const scrollToBottom = async () => {
   if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight
 }
 
-async function decide(c: Confirmation, approve: boolean) {
+/** 所有待确认的操作都有了结果，就把“等待你确认”这一步收起来 */
+function settleWaitStep(m: Message) {
+  if (m.confirmations.some((c) => !c.decision)) return
+  const wait = m.steps.find((s) => s.name === 'wait')
+  if (wait) {
+    const ok = m.confirmations.some((c) => c.decision === 'confirmed')
+    wait.label = ok ? '已确认执行' : m.confirmations.some((c) => c.decision === 'failed') ? '确认后执行失败' : '已取消'
+    wait.state = ok ? 'done' : m.confirmations.some((c) => c.decision === 'failed') ? 'error' : 'skipped'
+  }
+}
+
+/** 用户点确认 / 取消。确认成功后把执行结果放进这条回复：卡片立刻变成最新状态（比如草稿 → 待审批），步骤打勾。 */
+async function decide(m: Message, c: Confirmation, approve: boolean) {
   if (c.deciding || c.decision) return
   c.deciding = true
   try {
     if (approve) {
       const res = await chatApi.confirmToolCall(c.token)
-      c.decision = 'confirmed'
-      c.resultText = res.result || ''
-      emit('changed')
+      const failure = toolError(res.result)
+      if (failure) {
+        c.decision = 'failed'
+        c.resultText = failure
+        if (c.step) Object.assign(c.step, { state: 'error', error: failure })
+      } else {
+        c.decision = 'confirmed'
+        c.resultText = res.result || ''
+        const card = cardFromRecord(parseJson(res.result))
+        c.resultRef = card ? card.title : ''
+        if (c.step) c.step.state = 'done'
+        m.results.push({ name: c.name, result: res.result || '' })
+        emit('changed')
+      }
     } else {
       await chatApi.rejectToolCall(c.token)
       c.decision = 'rejected'
+      if (c.step) Object.assign(c.step, { state: 'skipped', label: `${c.step.label}（已取消）` })
     }
-  } catch {
-    c.resultText = '处理失败，请重试'
+  } catch (e: any) {
+    c.decision = 'failed'
+    c.resultText = e?.response?.data?.detail || '网络或服务异常，请稍后重试'
+    if (c.step) Object.assign(c.step, { state: 'error', error: c.resultText })
   } finally {
     c.deciding = false
+    settleWaitStep(m)
   }
 }
 
@@ -208,12 +291,16 @@ async function send(text?: string) {
   const msg = (text ?? inputText.value).trim()
   if (!msg || loading.value) return
   loading.value = true
-  messages.value.push({ role: 'user', content: msg, steps: [], results: [], confirmations: [] })
+  messages.value.push({ role: 'user', content: msg, steps: [], results: [], confirmations: [], finished: true })
   inputText.value = ''
-  messages.value.push({ role: 'assistant', content: '', steps: [{ name: 'understand', label: '理解需求', state: 'running' }], results: [], confirmations: [] })
+  messages.value.push({
+    role: 'assistant', content: '', steps: [{ name: 'understand', label: '理解需求', state: 'running' }],
+    results: [], confirmations: [], finished: false,
+  })
   // 必须从响应式数组里取回来再改，直接改上面那个字面量对象不会触发界面更新
   const reply = messages.value[messages.value.length - 1]
   let wrote = false
+  let failed = false
   const finishUnderstanding = () => {
     const first = reply.steps[0]
     if (first?.name === 'understand' && first.state === 'running') first.state = 'done'
@@ -235,19 +322,19 @@ async function send(text?: string) {
         } else if (evt.type === 'tool_result') {
           finishUnderstanding()
           const name = evt.name || ''
-          const step = [...reply.steps].reverse().find((s) => s.name === name && s.state === 'running')
+          const step = [...reply.steps].reverse().find((s) => s.name === name && s.state === 'running') || null
           const pending = chatApi.parseConfirmationRequired(evt.result)
           if (pending) {
             if (step) step.state = 'confirm'
             reply.confirmations.push({
               name, token: pending.confirmation_token, args: pending.tool_args || {},
-              decision: null, resultText: '', deciding: false,
+              decision: null, resultText: '', resultRef: '', deciding: false, step,
             })
           } else {
-            const failed = toolError(evt.result)
-            if (step) step.state = failed ? 'error' : 'done'
+            const failure = toolError(evt.result)
+            if (step) Object.assign(step, failure ? { state: 'error', error: failure } : { state: 'done' })
             reply.results.push({ name, result: evt.result || '' })
-            if (!failed && isWriteTool(name)) wrote = true
+            if (!failure && isWriteTool(name)) wrote = true
           }
         } else if (evt.type === 'answer_delta') {
           finishUnderstanding()
@@ -258,19 +345,28 @@ async function send(text?: string) {
         } else if (evt.type === 'done') {
           if (evt.conversation_id) conversationId.value = evt.conversation_id
         } else if (evt.type === 'error') {
+          failed = true
           reply.content = '出错了：' + (evt.message || evt.detail || '请稍后重试')
         }
         scrollToBottom()
       },
     })
   } catch {
+    failed = true
     if (!reply.content) reply.content = '发送失败，请稍后重试'
   } finally {
     finishUnderstanding()
-    for (const s of reply.steps) if (s.state === 'running') s.state = 'done'
+    // 没跑完的步骤：整次回复失败了就标成“没完成”，不能显示成打勾
+    for (const s of reply.steps) {
+      if (s.state === 'running') Object.assign(s, failed ? { state: 'error', error: '这一步没有完成' } : { state: 'done' })
+    }
+    if (failed && !reply.steps.some((s) => s.state === 'error')) {
+      reply.steps.push({ name: 'failed', label: '没有完成', state: 'error', error: reply.content.replace(/^出错了：/, '') })
+    }
     if (reply.confirmations.some((c) => !c.decision)) {
       reply.steps.push({ name: 'wait', label: '等待你确认', state: 'confirm' })
     }
+    reply.finished = true
     loading.value = false
     if (wrote) emit('changed')
     scrollToBottom()

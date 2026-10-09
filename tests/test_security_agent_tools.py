@@ -45,6 +45,12 @@ RISK_SNAPSHOT = {
     "report_responsibility_blocker": "write", "report_responsibility_progress": "write", "request_rework": "high_risk", "run_skill_script": "read",
     "search_it_solutions": "read", "submit_customer_followup": "high_risk", "submit_deliverable": "high_risk", "submit_expense_claim": "high_risk",
     "submit_leave_request": "high_risk", "submit_purchase_request": "high_risk", "unit_converter": "read", "verify_deliverable": "high_risk", "word_count": "read",
+    # 2026-10 新增的可执行动作，都是 high_risk（被诱导调用时最坏只是生成一张待确认单，用户不点确认就不执行）：
+    # 员工侧——只能动自己的工单（服务端按提交人校验）：确认已解决会关单、重开 / 撤销改变处理流程；
+    # IT 台侧——只对 IT 部门有效成员开放：接单只能指派给自己，标记已解决会通知提交人确认（提交人仍可重开）；
+    # 人事——发起事项只给人事部门成员，发起后还要部门负责人批准；完成办理任务只能完成分给自己的任务。
+    "cancel_it_ticket": "high_risk", "complete_hr_task": "high_risk", "confirm_it_ticket_resolved": "high_risk",
+    "create_hr_case": "high_risk", "reopen_it_ticket": "high_risk", "resolve_it_ticket": "high_risk", "take_it_ticket": "high_risk",
 }
 WRITE_VERBS = ('"POST"', '"PUT"', '"PATCH"', '"DELETE"', "'POST'", "'PUT'", "'PATCH'", "'DELETE'")
 # 声明为 read 但用 POST 发请求的工具：必须写明为什么没有副作用

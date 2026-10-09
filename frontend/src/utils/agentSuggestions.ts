@@ -14,6 +14,16 @@ export interface Suggestion {
   /** 点“让助手处理”时交给助手的话 */
   prompt: string
   card: HomeCard
+  /** 可以直接一键处理（不经过助手，调用工作台里同样的接口） */
+  quickAction?: QuickAction
+}
+
+/** generate_vouchers：给已批准、还没有凭证的报销逐笔生成凭证草稿；take_ticket：接下最急的一张未指派工单 */
+export type QuickAction = 'generate_vouchers' | 'take_ticket'
+
+export const QUICK_ACTION_LABELS: Record<QuickAction, string> = {
+  generate_vouchers: '一键生成凭证草稿',
+  take_ticket: '接最急的一张',
 }
 
 interface Rule {
@@ -21,6 +31,7 @@ interface Rule {
   prompt: string
   /** 数字大于 0 就提醒；否则只在首页卡片标了警示色时提醒 */
   always?: boolean
+  quickAction?: QuickAction
 }
 
 /** 首页提示常写成“其中逾期 1 项”，拼成一句短话：“执行中的责任逾期 1 项” */
@@ -41,8 +52,8 @@ const RULES: Record<string, Rule> = {
   att_explain: { always: true, text: (n) => `${n} 条考勤异常等你说明`, prompt: '我有哪些考勤异常需要说明？' },
   att_decide: { always: true, text: (n) => `${n} 条考勤异常等你认定`, prompt: '列出等我认定的考勤异常和员工的说明' },
   vouchers: { text: (_n, c) => withHint('待核对凭证', c.hint), prompt: '有哪些记账凭证待我核对？先列有风险的，并说明风险点' },
-  unbooked: { always: true, text: (n) => `${n} 笔已批准报销还没有凭证`, prompt: '哪些已批准的报销还没有生成记账凭证？' },
-  it_unassigned: { always: true, text: (n) => `${n} 张工单等待接单`, prompt: '现在有哪些未接单的工单？按处理时限排序' },
+  unbooked: { always: true, quickAction: 'generate_vouchers', text: (n) => `${n} 笔已批准报销还没有凭证`, prompt: '哪些已批准的报销还没有生成记账凭证？' },
+  it_unassigned: { always: true, quickAction: 'take_ticket', text: (n) => `${n} 张工单等待接单`, prompt: '现在有哪些未接单的工单？按处理时限排序' },
   it_overdue: { always: true, text: (n) => `${n} 张工单已超过处理时限`, prompt: '列出已超时的 IT 工单，并给出处理建议' },
   hr_overdue: { always: true, text: (n) => `${n} 项人事办理任务逾期`, prompt: '列出逾期的人事办理任务和负责人' },
   hr_tasks: { text: (_n, c) => withHint('人事办理任务', c.hint), prompt: '列出分给我的人事办理任务，先列逾期的' },
@@ -53,16 +64,22 @@ const TONE_ORDER: Record<HomeCard['tone'], number> = { danger: 0, warn: 1, norma
 
 export const MAX_SUGGESTIONS = 4
 
-export function suggestionsFromCards(cards: HomeCard[] | undefined | null): Suggestion[] {
+/** 今天发现的全部事项（不截断），用来写“今天发现 N 件事，其中 M 件有风险” */
+export function allSuggestions(cards: HomeCard[] | undefined | null): Suggestion[] {
+  return suggestionsFromCards(cards, Infinity)
+}
+
+export function suggestionsFromCards(cards: HomeCard[] | undefined | null, limit = MAX_SUGGESTIONS): Suggestion[] {
   const list: Suggestion[] = []
   for (const card of cards || []) {
     const rule = RULES[card.key]
     const value = typeof card.value === 'number' ? card.value : Number(card.value)
     if (!rule || !Number.isFinite(value) || value <= 0) continue
     if (!rule.always && card.tone === 'normal') continue
-    list.push({ key: card.key, text: rule.text(value, card), hint: card.hint, tone: card.tone, prompt: rule.prompt, card })
+    list.push({ key: card.key, text: rule.text(value, card), hint: card.hint, tone: card.tone, prompt: rule.prompt, card,
+      quickAction: rule.quickAction })
   }
   return list
     .sort((a, b) => TONE_ORDER[a.tone] - TONE_ORDER[b.tone])
-    .slice(0, MAX_SUGGESTIONS)
+    .slice(0, limit)
 }

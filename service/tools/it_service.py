@@ -2,7 +2,8 @@
 
 员工侧：查自助解决方案、提交工单、查我的工单、补充信息、查我名下的设备。
 IT 台侧（仅 IT 部门）：看队列、工单详情、服务台汇总、设备台账——只读，方便 IT 人员快速了解情况。
-刻意没有接单/解决/批准/改分类/发放设备的工具：这些都是需要人负责的决定，必须在工作台里由人操作。
+可执行动作（确认已解决、撤销、重开、接单、标记已解决）都是 high_risk：模型只能提出，用户在对话里点确认后才执行。
+批准、改分类、发放设备仍只在工作台里由人操作。
 """
 import json
 import uuid
@@ -277,3 +278,142 @@ class ListItDevicesTool(BaseTool):
 
     def execute(self, **kwargs) -> str:
         return _desk_call(self, "GET", "/it/desk/devices", "list_it_devices", status=kwargs.get("status"))
+
+
+# ---------------------------------------------------------------- 可执行动作（都要用户在对话里点确认才真正执行）
+# 员工：确认已解决 / 撤销 / 重新打开自己的工单；IT 人员：接单、标记已解决。
+# 这些都是要人负责的决定，所以统一是 high_risk：模型只能提出，确认卡片上写清工单号和内容，用户点“确认执行”后
+# 才以用户本人的身份调用业务服务（和在工作台里点按钮走同一条服务端校验）。批准、改分类、发放设备仍只在工作台里做。
+
+def _own_ticket_action(tool, ticket_id, action: str, body=None) -> str:
+    return _employee_call(tool, "POST", f"/it/tickets/{int(ticket_id)}/{action}", it.TICKET_WRITE,
+                          f"{action}_it_ticket", body, write=True)
+
+
+def _is_it_staff_sync(organization_id: int, user_id: int) -> bool:
+    from sqlalchemy import text
+    from service.enterprise_access import is_org_admin
+    from models.init_db import SessionLocal
+    db = SessionLocal()
+    try:
+        row = db.execute(text(
+            "SELECT 1 FROM team_members tm JOIN teams t ON t.id = tm.team_id AND t.status = 'active' "
+            "AND t.department_code = 'it' AND t.organization_id = :o "
+            "JOIN organization_members om ON om.organization_id = t.organization_id AND om.user_id = tm.user_id "
+            "AND om.status = 'active' WHERE tm.user_id = :u AND tm.status = 'active' LIMIT 1"),
+            {"o": organization_id, "u": user_id}).first()
+        return row is not None or bool(is_org_admin(db, user_id))
+    finally:
+        db.close()
+
+
+def _desk_write(tool, ticket_id, action: str, operation: str, body: dict, require_staff: bool = False) -> str:
+    try:
+        user_id, auth = _auth(tool._ctx)
+        ctx = department_staff_scope(user_id, auth["team_id"], "it", "IT 服务台")
+    except (ValueError, AppError) as e:
+        return json.dumps({"error": getattr(e, "message", None) or str(e)}, ensure_ascii=False)
+    if require_staff and not _is_it_staff_sync(ctx["organization_id"], user_id):
+        return json.dumps({"error": "只有 IT 部门的有效成员能接单"}, ensure_ascii=False)
+    try:
+        result = hub.call("POST", scoped_path(f"/it/desk/tickets/{int(ticket_id)}/{action}", ctx["scope"]), user_id,
+                          auth["team_id"], it.DESK_WRITE, operation, json_body=body, idempotency_key=str(uuid.uuid4()))
+    except hub.EnterpriseHubError as exc:
+        return _error_json(exc)
+    return json.dumps(result, ensure_ascii=False)
+
+
+_TICKET_ID = {"ticket_id": {"type": "integer", "description": "工单号"}}
+
+
+@ToolRegistry.register
+class ConfirmItTicketResolvedTool(BaseTool):
+    requires_context = True
+    risk_level = "high_risk"
+
+    def get_name(self) -> str:
+        return "confirm_it_ticket_resolved"
+
+    def get_description(self) -> str:
+        return "确认 IT 已经解决了我的工单（工单状态为“已解决”时），确认后工单关闭。问题其实没解决时不要用，改用 reopen_it_ticket。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": dict(_TICKET_ID), "required": ["ticket_id"]}
+
+    def execute(self, **kwargs) -> str:
+        return _own_ticket_action(self, kwargs["ticket_id"], "confirm")
+
+
+@ToolRegistry.register
+class ReopenItTicketTool(BaseTool):
+    requires_context = True
+    risk_level = "high_risk"
+
+    def get_name(self) -> str:
+        return "reopen_it_ticket"
+
+    def get_description(self) -> str:
+        return "IT 标记已解决、但问题其实还在时，重新打开我的工单，并写明原因。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {**_TICKET_ID, "reason": {"type": "string", "description": "为什么还没解决"}},
+                "required": ["ticket_id", "reason"]}
+
+    def execute(self, **kwargs) -> str:
+        return _own_ticket_action(self, kwargs["ticket_id"], "reopen", {"reason": kwargs.get("reason") or ""})
+
+
+@ToolRegistry.register
+class CancelItTicketTool(BaseTool):
+    requires_context = True
+    risk_level = "high_risk"
+
+    def get_name(self) -> str:
+        return "cancel_it_ticket"
+
+    def get_description(self) -> str:
+        return "撤销我提交的、还没有处理完的工单（问题自己解决了或提错了）。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": dict(_TICKET_ID), "required": ["ticket_id"]}
+
+    def execute(self, **kwargs) -> str:
+        return _own_ticket_action(self, kwargs["ticket_id"], "cancel")
+
+
+@ToolRegistry.register
+class TakeItTicketTool(BaseTool):
+    requires_context = True
+    risk_level = "high_risk"
+
+    def get_name(self) -> str:
+        return "take_it_ticket"
+
+    def get_description(self) -> str:
+        return "IT 部门专用：把一张工单指派给我自己（接单）。先用 list_it_queue 找最急、未指派的那张，复述工单号和标题再提出。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": dict(_TICKET_ID), "required": ["ticket_id"]}
+
+    def execute(self, **kwargs) -> str:
+        user_id = self._ctx.user_id if self._ctx else None
+        return _desk_write(self, kwargs["ticket_id"], "assign", "it_desk_assign", {"assigneeUserId": user_id}, require_staff=True)
+
+
+@ToolRegistry.register
+class ResolveItTicketTool(BaseTool):
+    requires_context = True
+    risk_level = "high_risk"
+
+    def get_name(self) -> str:
+        return "resolve_it_ticket"
+
+    def get_description(self) -> str:
+        return "IT 部门专用：把工单标记为已解决，并写明处理结果（提交人会收到通知并确认）。处理结果必须是实际做过的事，不能编造。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {**_TICKET_ID, "resolution": {"type": "string", "description": "实际的处理结果"}},
+                "required": ["ticket_id", "resolution"]}
+
+    def execute(self, **kwargs) -> str:
+        return _desk_write(self, kwargs["ticket_id"], "resolve", "it_desk_resolve", {"resolution": kwargs.get("resolution") or ""})

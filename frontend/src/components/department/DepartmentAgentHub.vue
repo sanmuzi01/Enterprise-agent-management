@@ -28,15 +28,24 @@
           class="rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700 disabled:opacity-50">生成今日摘要</button>
       </div>
 
-      <!-- 今日建议：来自首页已经算好的数字，点了才交给助手 -->
-      <ul v-if="suggestions.length" class="mt-3 grid gap-2 sm:grid-cols-2" data-testid="agent-suggestions">
+      <!-- 今日发现：来自首页已经算好的数字（不调模型）；点了才交给助手，部分可以直接一键处理 -->
+      <p v-if="found.total" class="mt-3 text-xs text-slate-600" data-testid="agent-found">
+        今天发现 <strong class="text-slate-900">{{ found.total }}</strong> 件需要处理的事<span v-if="found.risky">，其中
+        <strong class="text-red-600">{{ found.risky }}</strong> 件已逾期或有风险</span><span v-if="found.total > suggestions.length">，先列最急的 {{ suggestions.length }} 件</span>。
+      </p>
+      <p v-if="quickResult" class="mt-2 rounded px-3 py-1.5 text-xs" data-testid="agent-quick-result"
+        :class="quickResult.ok ? 'bg-emerald-50 text-emerald-800' : 'bg-red-50 text-red-700'">{{ quickResult.text }}</p>
+      <ul v-if="suggestions.length" class="mt-2 grid gap-2 sm:grid-cols-2" data-testid="agent-suggestions">
         <li v-for="s in suggestions" :key="s.key"
           class="flex items-center justify-between gap-2 rounded-lg border px-3 py-2"
           :class="s.tone === 'danger' ? 'border-red-200 bg-red-50/40' : s.tone === 'warn' ? 'border-amber-200 bg-amber-50/40' : 'border-slate-200'">
           <span class="min-w-0 truncate text-sm" :class="s.tone === 'danger' ? 'text-red-700' : s.tone === 'warn' ? 'text-amber-800' : 'text-slate-700'"
             :title="s.hint">{{ s.text }}</span>
           <span class="flex shrink-0 gap-1.5">
-            <button v-if="agent" @click="ask(s.prompt)" :disabled="!canAsk" :data-testid="`suggestion-ask-${s.key}`"
+            <button v-if="s.quickAction" @click="runQuick(s.quickAction)" :disabled="quickBusy" :data-testid="`suggestion-quick-${s.key}`"
+              class="rounded bg-emerald-600 px-2 py-0.5 text-xs text-white hover:bg-emerald-700 disabled:opacity-50">
+              {{ quickBusy ? '处理中…' : QUICK_ACTION_LABELS[s.quickAction] }}</button>
+            <button v-else-if="agent" @click="ask(s.prompt)" :disabled="!canAsk" :data-testid="`suggestion-ask-${s.key}`"
               class="rounded bg-indigo-600 px-2 py-0.5 text-xs text-white hover:bg-indigo-700 disabled:opacity-50">让助手整理</button>
             <button @click="emit('openCard', s.card)" :data-testid="`suggestion-open-${s.key}`"
               class="rounded border border-slate-200 bg-white px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50">去处理</button>
@@ -84,7 +93,10 @@ import { RouterLink } from 'vue-router'
 import { Sparkles } from 'lucide-vue-next'
 import EmbeddedAgentChatPanel from '../EmbeddedAgentChatPanel.vue'
 import type { HomeCard, WorkspaceAgent } from '../../api/enterpriseWorkspace'
-import { suggestionsFromCards } from '../../utils/agentSuggestions'
+import { QUICK_ACTION_LABELS, allSuggestions, suggestionsFromCards, type QuickAction } from '../../utils/agentSuggestions'
+import { generateFromClaim, listUnbooked } from '../../api/financeVouchers'
+import { deskAssign, deskTickets } from '../../api/itService'
+import { getErrorMessage } from '../../utils/request'
 import type { CardTarget } from '../../utils/agentCards'
 import { modelDisplayName } from '../../utils/displayNames'
 import { dailyBriefPrompt, scenarioFor } from '../../utils/flagshipScenarios'
@@ -98,6 +110,7 @@ const props = defineProps<{
   departmentName: string
   /** 部门负责人或企业管理员：显示“生成今日摘要” */
   isHead: boolean
+  teamId: number
 }>()
 
 const emit = defineEmits<{
@@ -108,6 +121,57 @@ const emit = defineEmits<{
 
 const panel = ref<InstanceType<typeof EmbeddedAgentChatPanel> | null>(null)
 const suggestions = computed(() => suggestionsFromCards(props.cards))
+const found = computed(() => {
+  const all = allSuggestions(props.cards)
+  return { total: all.length, risky: all.filter((s) => s.tone === 'danger').length }
+})
+
+// ---- 一键处理：不经过助手，调用工作台里同样的接口；点按钮本身就是人的决定 ----
+const quickBusy = ref(false)
+const quickResult = ref<{ ok: boolean; text: string } | null>(null)
+
+async function runQuick(action: QuickAction) {
+  if (quickBusy.value) return
+  quickBusy.value = true
+  quickResult.value = null
+  try {
+    if (action === 'generate_vouchers') {
+      const claims = await listUnbooked(props.teamId)
+      let ok = 0
+      const failed: string[] = []
+      for (const c of claims) {
+        try {
+          await generateFromClaim(props.teamId, c.id)
+          ok += 1
+        } catch (e) {
+          failed.push(`报销单 #${c.id}：${getErrorMessage(e, '生成失败')}`)
+        }
+      }
+      quickResult.value = failed.length
+        ? { ok: ok > 0, text: `已为 ${ok} 笔报销生成凭证草稿；${failed.length} 笔没有成功（${failed.join('；')}）` }
+        : { ok: true, text: ok ? `已为 ${ok} 笔报销生成凭证草稿，请到「财务记账」逐张核对后入账` : '没有需要生成凭证的报销了' }
+      if (ok) {
+        emit('changed')
+        emit('open', { section: 'business' })
+      }
+    } else {
+      const queue = await deskTickets(props.teamId, { assignee: 'unassigned' })
+      const ticket = queue[0]   // 服务台队列按处理时限排序，最急的在前
+      if (!ticket) {
+        quickResult.value = { ok: true, text: '现在没有待接单的工单了' }
+      } else {
+        await deskAssign(props.teamId, ticket.id, { take: true })
+        quickResult.value = { ok: true, text: `已接单：工单 #${ticket.id}「${ticket.title}」，已为你打开` }
+        emit('changed')
+        emit('open', { section: 'business', record: { kind: 'ticket', id: ticket.id } })
+      }
+    }
+  } catch (e) {
+    quickResult.value = { ok: false, text: getErrorMessage(e, '处理失败，请到对应分区里手动处理') }
+  } finally {
+    quickBusy.value = false
+  }
+}
 const canAsk = computed(() => !!props.agent?.model_configured)
 const placeholder = computed(() => (props.agent?.examples?.[0] ? `例如：${props.agent.examples[0]}` : '说说你要办的事…'))
 

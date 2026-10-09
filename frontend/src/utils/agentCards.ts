@@ -378,8 +378,10 @@ export function parseJson(raw: string | undefined): unknown {
   }
 }
 
-/** 工具返回了错误（权限不够、预算不足、业务服务不可用……） */
+/** 工具返回了错误（权限不够、预算不足、业务服务不可用……）。
+ * 两种形式：业务工具返回 {"error": "..."}；工具本身抛异常时，推理引擎返回以 “Error:” 开头的一段文字。 */
 export function toolError(raw: string | undefined): string | null {
+  if (typeof raw === 'string' && /^\s*Error\b/.test(raw)) return '执行出错，请稍后重试'
   const data = parseJson(raw)
   return isObj(data) && typeof data.error === 'string' && data.error ? data.error : null
 }

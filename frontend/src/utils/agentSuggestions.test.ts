@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { HomeCard } from '../api/enterpriseWorkspace'
-import { MAX_SUGGESTIONS, suggestionsFromCards } from './agentSuggestions'
+import { MAX_SUGGESTIONS, allSuggestions, suggestionsFromCards } from './agentSuggestions'
 
 const card = (key: string, value: number | string, tone: HomeCard['tone'] = 'normal', hint = ''): HomeCard =>
   ({ key, label: key, value, hint, section: 'office', tone })
@@ -31,5 +31,13 @@ describe('agentSuggestions', () => {
     expect(list.slice(0, 2).every((s) => s.tone === 'danger')).toBe(true)
     expect(list[0].text).toBe('执行中的责任逾期 1 项')
     expect(suggestionsFromCards([card('vouchers', 4, 'warn', '其中 2 张有风险需核对')])[0].text).toBe('待核对凭证 2 张有风险需核对')
+  })
+
+  it('全部事项不截断，可以直接一键处理的带上处理方式', () => {
+    const cards = Array.from({ length: 6 }, (_, i) => card(i % 2 ? 'approvals' : 'it_unassigned', i + 1, 'warn'))
+    expect(allSuggestions(cards)).toHaveLength(6)
+    expect(suggestionsFromCards([card('unbooked', 2, 'warn')])[0].quickAction).toBe('generate_vouchers')
+    expect(suggestionsFromCards([card('it_unassigned', 2, 'warn')])[0].quickAction).toBe('take_ticket')
+    expect(suggestionsFromCards([card('approvals', 2, 'warn')])[0].quickAction).toBeUndefined()
   })
 })

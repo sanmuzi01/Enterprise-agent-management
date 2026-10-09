@@ -44,7 +44,7 @@
       <!-- 部门助手是工作台的入口：常驻顶部，主动给出今天该处理的事；下面的业务模块是它的执行与核对界面 -->
       <DepartmentAgentHub ref="agentHub" :agent="deptAgent" :central-agent="centralAgent" :cards="home?.cards || []"
         :department-code="moduleCode" :department-name="currentDept.name"
-        :is-head="!!(home?.identity.is_head || home?.identity.org_admin)"
+        :is-head="!!(home?.identity.is_head || home?.identity.org_admin)" :team-id="deptStore.currentTeamId!"
         @changed="onAgentChanged" @open="openSection" @open-card="openCard" />
 
       <!-- 概览：按部门业务和我的身份汇总，点卡片直达对应工作区 -->
