@@ -186,7 +186,7 @@
           type="text"
           placeholder="部门名称"
           class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
-          @keyup.enter="submitTeamDialog"
+          @keydown.enter="!isImeEnter($event) && submitTeamDialog()"
         />
         <label class="mt-3 block text-xs font-medium text-slate-600">业务类型</label>
         <p class="mb-1 text-[11px] text-slate-400">决定部门工作台的业务模块；保存后会按业务类型自动配置部门专业 Agent（草稿，发布后员工可用）</p>
@@ -218,7 +218,7 @@
           type="text"
           placeholder="企业名称"
           class="h-9 w-full rounded border border-slate-300 px-3 text-sm outline-none focus:border-indigo-500"
-          @keyup.enter="submitEnterpriseName"
+          @keydown.enter="!isImeEnter($event) && submitEnterpriseName()"
         />
         <p v-if="enterpriseDialog.error" class="mt-2 text-xs text-red-600">{{ enterpriseDialog.error }}</p>
         <div class="mt-5 flex justify-end gap-2">
@@ -283,6 +283,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../../utils/ime'
 import { modelDisplayName, departmentCodeLabel } from '../../utils/displayNames'
 import { onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'

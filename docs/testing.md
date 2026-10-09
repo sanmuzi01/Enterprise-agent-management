@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，1898 条（2026-10-08 更新）；前端 Vitest 41 条；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1898 条（2026-10-08 更新）；前端 Vitest 87 条（含部门助手组件交互测试）；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -167,6 +167,18 @@ npm --prefix frontend test
 覆盖：登录会话（令牌在 HttpOnly Cookie 里，页面只看得到 `csrf_token`）、请求拦截器（带 Cookie、改数据的请求带 `X-CSRF-Token`、从不发 Authorization、401 回登录页）、
 user store（登录不保存令牌、`isLoggedIn()` 不被缓存、退出登录先让后端清 Cookie）、Markdown 安全渲染（脚本 / 事件处理器 / 钓鱼表单 / 外链图片等载荷）。
 更完整的浏览器级验证见 `scripts/check_session_browser.py`（登录 Cookie、CSRF、CSP 真的拦截）和 `scripts/check_xss_browser.py`。
+
+### 部门助手的组件交互测试
+
+用 `@vue/test-utils` 挂载真实组件，接口用替身按真实事件顺序推送（不需要模型和业务服务）：
+
+- `frontend/src/components/EmbeddedAgentChatPanel.test.ts`：确认高风险操作后卡片立刻从草稿变为待审批、步骤打勾、小结写“已办成”；
+  确认后执行失败 / 取消的显示；流里返回错误、连接中断、工具返回错误时步骤标红而不是“完成”；切换部门清空对话并开新会话；中文输入法选词的回车不发送。
+- `frontend/src/components/department/DepartmentAgentHub.test.ts`：今日发现的数量与风险；一键生成凭证草稿全部成功 / 部分失败（逐笔写原因）/ 全部失败（标红、不刷新不跳转）、
+  处理期间不能重复点；接最急的一张工单（接队列第一张并打开）、没有可接的、服务端拒绝；切换部门后招牌场景和输入框换新。
+- `frontend/src/utils/ime.test.ts`：守卫——所有回车提交的输入框都必须先判断输入法（`isImeEnter`），不能用 `keyup.enter`；新加输入框忘了判断会失败并指出文件。
+
+这几组测试加的时候都做过反向验证：把对应的修复去掉，测试会失败。
 
 ### 界面上不出现代码里的名字
 

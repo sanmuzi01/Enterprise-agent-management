@@ -362,7 +362,7 @@
                 id="github-url"
                 v-model="githubUrl"
                 :disabled="importing"
-                @keydown.enter="handleGithubImport"
+                @keydown.enter="!isImeEnter($event) && handleGithubImport()"
                 class="h-10 min-w-0 flex-1 rounded border border-slate-300 px-3 text-sm outline-none focus:border-sky-500"
                 placeholder="https://github.com/anthropics/skills"
               />
@@ -781,6 +781,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { toolDisplayName } from '../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'

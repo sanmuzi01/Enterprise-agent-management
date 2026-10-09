@@ -99,7 +99,7 @@
 
       <div v-if="!['CLOSED', 'CANCELLED', 'REJECTED'].includes(open.status)" class="space-y-2">
         <div class="flex gap-2">
-          <input v-model="reply" placeholder="补充信息…" class="flex-1 rounded border border-slate-200 px-2 py-1.5 text-xs" data-testid="ticket-reply" @keyup.enter="sendReply" />
+          <input v-model="reply" placeholder="补充信息…" class="flex-1 rounded border border-slate-200 px-2 py-1.5 text-xs" data-testid="ticket-reply" @keydown.enter="!isImeEnter($event) && sendReply()" />
           <button @click="sendReply" :disabled="busy || !reply.trim()" class="rounded border border-indigo-200 px-3 py-1.5 text-xs text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">发送</button>
         </div>
         <div class="flex flex-wrap items-center gap-2 text-xs">
@@ -146,6 +146,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import * as api from '../api/itService'

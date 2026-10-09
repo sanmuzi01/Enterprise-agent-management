@@ -100,7 +100,7 @@
       <input
         ref="inputRef"
         v-model="inputText"
-        @keydown.enter="send()"
+        @keydown.enter="!isImeEnter($event) && send()"
         :disabled="loading"
         :placeholder="placeholder"
         data-testid="agent-input"
@@ -113,6 +113,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle, Check, Hand, Loader2, Minus, X } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'

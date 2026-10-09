@@ -107,7 +107,7 @@
         <h3 class="mb-1 text-base font-semibold text-slate-800">跑一次：{{ runDialog.pipeline?.name }}</h3>
         <p class="mb-3 text-xs text-slate-500">第一步的问题从这里发，之后每一步自动用上一步的回答作为输入。</p>
         <div class="flex gap-2">
-          <input v-model="runDialog.message" :disabled="runDialog.running" class="h-9 flex-1 rounded border border-slate-300 px-3 text-sm outline-none focus:border-sky-500" placeholder="输入给第一步助手的问题" @keyup.enter="submitRun" />
+          <input v-model="runDialog.message" :disabled="runDialog.running" class="h-9 flex-1 rounded border border-slate-300 px-3 text-sm outline-none focus:border-sky-500" placeholder="输入给第一步助手的问题" @keydown.enter="!isImeEnter($event) && submitRun()" />
           <button @click="submitRun" :disabled="runDialog.running || !runDialog.message.trim()" class="shrink-0 rounded bg-sky-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-sky-700 disabled:opacity-50">
             {{ runDialog.running ? '跑一次…' : '开始' }}
           </button>
@@ -132,6 +132,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, ChevronRight, Plus, RefreshCcw } from 'lucide-vue-next'

@@ -34,7 +34,7 @@
             type="search"
             placeholder="搜索路径、用户、IP 或错误"
             class="h-8 w-full rounded border border-slate-200 bg-white pl-8 pr-2 text-xs outline-none focus:border-blue-500"
-            @keyup.enter="loadLogs"
+            @keydown.enter="!isImeEnter($event) && loadLogs()"
           />
         </div>
         <select v-model.number="days" class="h-8 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-500">
@@ -121,6 +121,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../../utils/ime'
 import { humanizeLogMessage } from '../../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { Download, RefreshCcw, Search } from 'lucide-vue-next'

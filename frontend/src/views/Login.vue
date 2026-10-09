@@ -56,7 +56,7 @@
               class="row-input"
               placeholder="注册时使用的手机号"
               @input="normalizePhoneInput"
-              @keyup.enter="submit"
+              @keydown.enter="!isImeEnter($event) && submit()"
             />
           </label>
           <label class="row row-border">
@@ -70,7 +70,7 @@
                 autocomplete="one-time-code"
                 class="row-input"
                 placeholder="6 位数字"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -91,7 +91,7 @@
                 autocomplete="new-password"
                 class="row-input"
                 placeholder="至少 6 位"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -126,7 +126,7 @@
               autocomplete="username"
               class="row-input"
               placeholder="3–20 个字符"
-              @keyup.enter="submit"
+              @keydown.enter="!isImeEnter($event) && submit()"
             />
           </label>
           <label class="row row-border">
@@ -138,7 +138,7 @@
                 :autocomplete="isRegisterMode ? 'new-password' : 'current-password'"
                 class="row-input"
                 placeholder="至少 6 位"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -167,7 +167,7 @@
                   max="150"
                   class="row-input"
                   placeholder="请输入年龄"
-                  @keyup.enter="submit"
+                  @keydown.enter="!isImeEnter($event) && submit()"
                 />
               </label>
               <label class="row row-border">
@@ -181,7 +181,7 @@
                   class="row-input"
                   placeholder="用于接收验证码"
                   @input="normalizePhoneInput"
-                  @keyup.enter="submit"
+                  @keydown.enter="!isImeEnter($event) && submit()"
                 />
               </label>
               <label class="row row-border">
@@ -195,7 +195,7 @@
                     autocomplete="one-time-code"
                     class="row-input"
                     placeholder="6 位数字"
-                    @keyup.enter="submit"
+                    @keydown.enter="!isImeEnter($event) && submit()"
                   />
                   <button
                     type="button"
@@ -292,6 +292,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Eye, EyeOff, Sparkles, X } from 'lucide-vue-next'

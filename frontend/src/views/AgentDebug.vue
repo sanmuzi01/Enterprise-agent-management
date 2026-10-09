@@ -61,7 +61,7 @@
                     v-model="dryRunMessage"
                     class="ui-field h-10 min-w-0 flex-1 rounded px-3 text-sm outline-none"
                     placeholder="例如：根据我上传的资料，总结一下项目当前进度"
-                    @keydown.enter="runDryRun"
+                    @keydown.enter="!isImeEnter($event) && runDryRun()"
                   />
                   <button
                     @click="runDryRun"
@@ -330,6 +330,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { documentStatusLabel, messageRoleLabel, toolDisplayName } from '../utils/displayNames'
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'

@@ -22,7 +22,7 @@
       <select v-model="severity" class="h-8 rounded border border-slate-200 bg-white px-2" @change="load">
         <option value="">全部严重程度</option><option value="critical">严重</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option>
       </select>
-      <input v-model="keyword" type="search" placeholder="问题编号、标题、错误码" class="h-8 w-56 rounded border border-slate-200 bg-white px-2" @keyup.enter="load" />
+      <input v-model="keyword" type="search" placeholder="问题编号、标题、错误码" class="h-8 w-56 rounded border border-slate-200 bg-white px-2" @keydown.enter="!isImeEnter($event) && load()" />
     </div>
 
     <div class="overflow-x-auto rounded-lg border border-slate-200 bg-white">
@@ -131,6 +131,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../../utils/ime'
 import { eventConsumerLabel, eventTypeLabel } from '../../utils/displayNames'
 import { computed, onMounted, reactive, ref } from 'vue'
 import * as api from '../../api/issues'

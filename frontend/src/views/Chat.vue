@@ -96,7 +96,7 @@
               v-else
               ref="renameInputRef"
               v-model="renameText"
-              @keydown.enter="commitRename(c.id)"
+              @keydown.enter="!isImeEnter($event) && commitRename(c.id)"
               @keydown.esc="cancelRename"
               @click.stop
               @blur="commitRename(c.id)"
@@ -377,7 +377,7 @@
               v-model="inputText"
               :disabled="loading || !chatReady"
               rows="1"
-              @keydown.enter.exact.prevent="sendMessage"
+              @keydown.enter.exact="onComposerEnter"
               :placeholder="chatReady ? '输入消息…' : chatBlockedReason"
               class="relative max-h-40 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15.5px] leading-6 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed"
             ></textarea>
@@ -584,6 +584,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { toolDisplayName } from '../utils/displayNames'
 import { ref, onMounted, nextTick, watch, computed, onBeforeUnmount } from 'vue'
 import { useRoute ,useRouter } from 'vue-router'
@@ -1031,6 +1032,13 @@ function openOrchestration(message?: string) {
     if (message) sessionStorage.setItem('orchestration_draft', message)
   } catch { /* 存不住就让用户在协同办理里重新输入 */ }
   router.push('/department')
+}
+
+// 回车发送；输入法选词的回车留给输入法（不能 preventDefault，否则选不了词），Shift+回车换行由 .exact 排除
+const onComposerEnter = (event: KeyboardEvent) => {
+  if (isImeEnter(event)) return
+  event.preventDefault()
+  void sendMessage()
 }
 
 const sendMessage = async () => {
