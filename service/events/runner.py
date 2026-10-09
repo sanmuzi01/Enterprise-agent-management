@@ -135,11 +135,16 @@ class Runner:
 
     async def _loop(self) -> None:
         last_purge = 0.0
+        last_retention = time.monotonic()   # 启动后先等一天再跑，避免部署/重启时和迁移、体检挤在一起
         while not self._stop.is_set():
             try:
                 if time.monotonic() - last_purge > 3600:   # 每小时清理一次已发布很久的事件
                     last_purge = time.monotonic()
                     await asyncio.to_thread(outbox.purge_old, int(os.getenv("OUTBOX_RETENTION_DAYS", "7")))
+                if time.monotonic() - last_retention > 86400:   # 每天按保留策略清理一次过程记录（默认关闭，见 service/data_retention.py）
+                    last_retention = time.monotonic()
+                    from service import data_retention
+                    await asyncio.to_thread(data_retention.run_scheduled)
                 result = await run_cycle()
                 busy = result["published"]["sent"] or result["consumed"]["done"] or result["consumed"]["retry"]
             except Exception:  # noqa: BLE001 —— 一轮失败不能让整个运行器停掉

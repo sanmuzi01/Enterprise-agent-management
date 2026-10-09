@@ -214,10 +214,12 @@ def _purge_users(where_users: str) -> int:
             return 0
         inc = "(" + ",".join(str(i) for i in ids) + ")"
 
-        # 先删磁盘文件（提示词 yaml + 上传的原始文件）
-        prompts_dir = pathlib.Path(__file__).resolve().parents[1] / "prompt" / "prompts"
+        # 先删磁盘文件（提示词 yaml、企业助手的专业技能配置、上传的原始文件）。
+        # 专业技能配置以前漏删了：数据体检（service/data_health.py）在开发库里查出几十个没有对应智能体的配置文件，就是这里来的。
+        root = pathlib.Path(__file__).resolve().parents[1]
         for aid in [r[0] for r in db.execute(text(f"SELECT id FROM agent WHERE user_id IN {inc}")).all()]:
-            (prompts_dir / f"{aid}.yaml").unlink(missing_ok=True)
+            (root / "prompt" / "prompts" / f"{aid}.yaml").unlink(missing_ok=True)
+            (root / "skills" / "enterprise" / f"agent_{aid}.yml").unlink(missing_ok=True)
         krows = db.execute(text(f"SELECT id, file_path FROM knowledge WHERE user_id IN {inc}")).all()
         for _kid, fpath in krows:
             try:
