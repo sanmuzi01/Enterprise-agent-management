@@ -126,7 +126,13 @@ async def repair(db, team_id: int, operator_id: int) -> Dict[str, Any]:
         await agent_admin_service.bind_template_skill(db, primary, template, primary.user_id)
         await db.commit()
     elif template["tools"]:
-        await agent_admin_service.sync_template_skill_tools(db, primary, template)
+        added = await agent_admin_service.sync_template_skill_tools(db, primary, template)
+        if added:
+            from service import audit_service
+            await audit_service.record_async(
+                operator_id, "agent.template_tools_synced", resource_type="agent", resource_id=primary.id,
+                detail={"team_id": team.id, "template_id": template_id, "added_tools": added},
+            )
     if not primary.model_name:
         await agent_admin_service.update_managed_agent(db, primary.id, operator_id, model_name="glm-4")
     return await agent_status(db, team.id)
