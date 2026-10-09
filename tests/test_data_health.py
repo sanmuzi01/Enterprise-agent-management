@@ -45,6 +45,7 @@ class DataHealthTest(unittest.TestCase):
                 db.execute(text("DELETE FROM organization_members WHERE organization_id = :o"), {"o": cls.created_enterprise})
                 db.execute(text("UPDATE knowledge_spaces SET organization_id = NULL WHERE organization_id = :o"), {"o": cls.created_enterprise})
                 db.execute(text("DELETE FROM organizations WHERE id = :o"), {"o": cls.created_enterprise})
+                db.execute(text("DELETE FROM bootstrap_marker WHERE name = 'default_enterprise'"))   # 空库还是空库
             db.commit()
         for path in cls.cleanup_files:
             pathlib.Path(path).unlink(missing_ok=True)

@@ -1384,6 +1384,15 @@ class ReminderRun(Base):
     consecutive_failures = Column(Integer, nullable=False, default=0)
 
 
+class BootstrapMarker(Base):
+    """一次性初始化的哨兵：某件事（如“自动建企业”）做过就留一行。主键保证多个进程同时初始化时只有一个能写进去，
+    其余的撞主键后回滚（命名锁之外数据库层面的兜底，见 service/enterprise_bootstrap.py）。"""
+    __tablename__ = "bootstrap_marker"
+    name = Column(String(60), primary_key=True)
+    done_at = Column(DateTime, nullable=False, default=utcnow)
+    detail = Column(String(200), nullable=True)
+
+
 class AgentPipeline(Base):
     """Agent 流水线：把多个 Agent 串成一条固定顺序的处理链——上一步的回答自动作为
 

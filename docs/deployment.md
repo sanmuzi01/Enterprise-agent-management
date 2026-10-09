@@ -220,7 +220,7 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
   三份 nginx 配置（`deploy/nginx.conf`、`frontend/nginx.conf`、`agent-platform-https.conf`）都是这样写的，`tests/test_nginx_delivery.py` 核对；
   注意 `add_header` 不要写进 `location` 里（会让 server 级的安全头整体失效），缓存头用 `expires`。
 - **第一次启动自动建好企业**：空库第一次启动时，如果有用户但还没有企业记录，会自动建一条企业（名字取 `DEFAULT_ENTERPRISE_NAME`，没设就用“默认企业”），
-  把已有用户加为成员（平台管理员为所有者），把没有归属的知识库挂到企业下。已经有企业就什么都不做；多个实例同时启动用数据库锁保证只建一次。
+  把已有用户加为成员（平台管理员为所有者），把没有归属的知识库挂到企业下。已经有企业就什么都不做。多个实例同时启动只建一次：先拿数据库命名锁（拿不到就跳过这次，不会没锁硬做），再加一层数据库兜底——建企业和写哨兵行 `bootstrap_marker(default_enterprise)` 在同一个事务里，并发的第二个撞主键后整体回滚。以前自动建过、后来企业记录被人删了，不会自动重建（数据体检会报“没有企业”，按提示手动处理）。
   不想自动建就设 `AUTO_CREATE_ENTERPRISE=0`，再手动跑 `scripts/backfill_default_organization.py --yes`。实现见 `service/enterprise_bootstrap.py`。
 - **脚本 / 集成的令牌**：浏览器登录（`POST /user/login`）响应体里没有 JWT。需要 Bearer 令牌的脚本走 `POST /auth/token`（单独限流 + 审计 `auth.token_issued`），
   **生产默认关闭**（`AUTH_TOKEN_ENDPOINT_ENABLED=1` 才开，开了启动校验会提醒）。压测脚本 `scripts/load_test.py` 和 `scripts/drill_*.py` 用的就是它。

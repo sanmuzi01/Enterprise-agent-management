@@ -399,7 +399,7 @@ function recordsOf(data: unknown): { records: unknown[]; isList: boolean } {
 
 export interface MessageCards {
   cards: BusinessCard[]
-  /** 列表结果里没展开的单据数量 */
+  /** 超出上限、没展开的单据数量（列表结果和单条办理结果都算） */
   hidden: number
 }
 
@@ -408,7 +408,8 @@ export interface MessageCards {
  *
  * 整次回答最多 MAX_CARDS_PER_REPLY 张卡片（多个列表结果累计算，不是每个列表各算一遍）。
  * 先放助手这次办理 / 查询的那一张单子（单条结果，比如刚起草的报销单），剩下的位置留给列表查询结果，
- * 放不下的只给数量。办理产生的单子不会因为前面查了一长串列表而被挤掉。 */
+ * 放不下的只给数量。办理产生的单子不会因为前面查了一长串列表而被挤掉；
+ * 一次办理的单子本身就超过上限时，只显示最后办的几张，其余同样计入数量（上限对任何组合都成立）。 */
 export function buildMessageCards(results: ToolResultInput[]): MessageCards {
   const byKey = new Map<string, { card: BusinessCard; single: boolean }>()
   let budget: BusinessCard | null = null
@@ -432,10 +433,13 @@ export function buildMessageCards(results: ToolResultInput[]): MessageCards {
   const standaloneBudget = !!budget && !budgetTarget
   const singles = entries.filter((e) => e.single)
   const listed = entries.filter((e) => !e.single)
-  const slots = Math.max(0, MAX_CARDS_PER_REPLY - singles.length - (standaloneBudget ? 1 : 0))
-  const keep = new Set([...singles, ...listed.slice(0, slots)])
+  const room = Math.max(0, MAX_CARDS_PER_REPLY - (standaloneBudget ? 1 : 0))
+  // 单条办理结果也受上限约束：一次办了很多张时，留最后办的几张（entries 按最后一次出现排序，越靠后越新）
+  const keptSingles = room > 0 ? singles.slice(-room) : []
+  const keptListed = listed.slice(0, room - keptSingles.length)
+  const keep = new Set([...keptSingles, ...keptListed])
   const cards = entries.filter((e) => keep.has(e)).map((e) => e.card)
   if (budget && budgetTarget) budgetTarget.card.fields.splice(2, 0, { label: '预算余额', value: budget.fields[0].value })
   if (standaloneBudget && budget) cards.unshift(budget)
-  return { cards, hidden: listed.length - Math.min(listed.length, slots) }
+  return { cards, hidden: entries.length - keep.size }
 }

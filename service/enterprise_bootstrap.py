@@ -6,18 +6,26 @@
   - 没有企业、也一个用户都没有就跳过（等有人注册 / 内置管理员建好后的下一次启动再建）；
   - 企业的所有者取第一个平台管理员（没有就取最早的用户），现有用户全部加入：管理员是所有者，其他人是成员；
   - 还没归属企业的知识库空间挂到这家企业下。
-多个进程同时启动时用 MySQL 命名锁串行化，只会建一次。设 AUTO_CREATE_ENTERPRISE=0 可以关掉（改回手动跑脚本）。
+多个进程同时启动时只会建一次，两层保证：
+  1. MySQL 命名锁（GET_LOCK）串行化；没拿到锁（超时、数据库异常）就跳过这次，不在没锁的情况下继续；
+  2. 数据库兜底：建企业和写哨兵行（bootstrap_marker 主键 default_enterprise）在同一个事务里，哨兵行最先写。
+     就算两个进程都绕过了锁，后一个也会在写哨兵行时等前一个提交，然后撞主键、整体回滚，不会建出第二家企业。
+  哨兵行在、企业记录却没了（有人手动删了），不会自动再建——那是人为操作，按需手动跑脚本。
+设 AUTO_CREATE_ENTERPRISE=0 可以关掉（改回手动跑脚本）。
 """
 import os
 from typing import Any, Dict, Optional
 
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from utils.logger_handler import get_logger
 
 logger = get_logger("enterprise_bootstrap")
 
 _LOCK_NAME = "enterprise_bootstrap"
+_LOCK_TIMEOUT_SECONDS = 30
+MARKER = "default_enterprise"
 # 和 models/enterprise_dao._ENTERPRISE_ID_SQL 同一个口径：id 最小的那条就是“这家企业”
 _ANY_ENTERPRISE_SQL = "SELECT id FROM organizations ORDER BY id LIMIT 1"
 
@@ -53,7 +61,19 @@ def ensure_default_enterprise(db) -> Dict[str, Any]:
         "SELECT code, id FROM enterprise_role WHERE scope='organization' AND code IN ('owner', 'member')")).all())
     if {"owner", "member"} - set(roles):
         return {"status": "skipped", "reason": "企业角色表还没初始化（迁移没跑完）"}
+    if db.execute(text("SELECT 1 FROM bootstrap_marker WHERE name = :n"), {"n": MARKER}).scalar():
+        return {"status": "skipped", "reason": "以前自动建过企业，但企业记录已被删除；不自动重建，需要的话手动跑 scripts/backfill_default_organization.py"}
 
+    # 哨兵行最先写：并发的另一个事务会卡在这里，等这边提交后撞主键（见模块说明）
+    try:
+        db.execute(text("INSERT INTO bootstrap_marker (name, done_at, detail) VALUES (:n, NOW(), :d)"),
+                   {"n": MARKER, "d": f"owner_user_id={owner}"})
+    except IntegrityError:
+        db.rollback()
+        existing = db.execute(text(_ANY_ENTERPRISE_SQL)).scalar()
+        if existing is not None:
+            return {"status": "exists", "organization_id": int(existing)}
+        return {"status": "skipped", "reason": "另一个进程正在建企业"}
     db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
                {"n": os.getenv("DEFAULT_ENTERPRISE_NAME", DEFAULT_ORG_NAME), "o": owner})
     org_id = int(db.execute(text(_ANY_ENTERPRISE_SQL)).scalar())
@@ -79,7 +99,12 @@ def ensure_on_startup() -> Optional[Dict[str, Any]]:
     lock_conn = None
     try:
         lock_conn = engine.connect()
-        lock_conn.execute(text("SELECT GET_LOCK(:n, 30)"), {"n": _LOCK_NAME})
+        got = lock_conn.execute(text("SELECT GET_LOCK(:n, :t)"), {"n": _LOCK_NAME, "t": _LOCK_TIMEOUT_SECONDS}).scalar()
+        if got != 1:   # 0 = 等超时（别的进程拿着），NULL = 出错；都不能在没锁的情况下继续
+            lock_conn.close()
+            lock_conn = None
+            logger.warning("自动建企业：没拿到初始化锁（GET_LOCK 返回 %r），这次跳过；下次启动或手动跑脚本", got)
+            return {"status": "skipped", "reason": "没拿到初始化锁"}
         with SessionLocal() as db:
             result = ensure_default_enterprise(db)
         if result["status"] == "created":

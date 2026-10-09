@@ -54,7 +54,8 @@ def check_enterprise(db) -> Optional[Finding]:
     rows = _rows(db, "SELECT id, name FROM organizations ORDER BY id")
     if not rows:
         return Finding("enterprise_missing", "还没有企业记录", "error", 0, [],
-                       "服务启动时会自动建好（AUTO_CREATE_ENTERPRISE=1，默认开启）；关掉了的话手动跑 scripts/backfill_default_organization.py --yes")
+                       "服务启动时会自动建好（AUTO_CREATE_ENTERPRISE=1，默认开启）；关掉了，或者以前自动建过、后来企业记录被删了（不会自动重建），"
+                       "手动跑 scripts/backfill_default_organization.py --yes")
     if len(rows) > 1:
         return Finding("enterprise_multiple", "有多条企业记录（平台只服务一家企业）", "error", len(rows),
                        [f"#{r[0]} {r[1]}" for r in rows[:SAMPLE_LIMIT]],

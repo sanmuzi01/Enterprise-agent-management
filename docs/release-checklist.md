@@ -22,6 +22,9 @@
 npm run release:check
 ```
 
+综合自检第一步检查**工作区是否干净**：有未提交的改动或没纳入版本管理的文件就直接失败（本机产物——根目录 `node_modules/`、`.runlogs/`、
+根目录的 `*.log`、`*.patch`——已经在 `.gitignore` 里）。只是本机自检、不发布时可以加 `--allow-dirty`。
+
 综合自检里包含**空库测试**（`scripts/test_fresh_db.py`：临时库上跑迁移 + 两次初始化 + 和空库相关的测试，跑完删库）。
 数据库账号没有建库权限时用 `npm run release:check -- --skip-fresh-db`，并以 CI 的 backend 任务结果为准。
 

@@ -47,3 +47,11 @@ prompt/prompts/*.yaml
 
 # 一键演示环境的日志与进程号（scripts/demo.py）
 .demo/
+
+# 根目录的本机产物：依赖目录、本机进程日志、手工导出的补丁，都不是仓库内容
+# （frontend/node_modules 由 frontend/.gitignore 管；根目录 package.json 装依赖时也会生成 node_modules）
+/node_modules/
+/.runlogs/
+/*.log
+/.*.log
+/*.patch

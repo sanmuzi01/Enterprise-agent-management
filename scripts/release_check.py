@@ -363,8 +363,26 @@ def check_automation_wired() -> None:
     print(f"OK 已挂载，已注册工作流 {[w.id for w in all_workflows()]}")
 
 
+def check_clean_worktree() -> None:
+    """发布的必须是提交过的代码：有未提交的改动或没纳入版本管理的文件，换台机器就复现不出来。"""
+    print("\n检查工作区是否干净...")
+    if "--allow-dirty" in sys.argv[1:]:
+        print("跳过（--allow-dirty）：只在本机自检时用，正式发布不要加")
+        return
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if result.returncode != 0:
+        raise SystemExit("git status 失败：" + result.stderr.strip())
+    dirty = [line for line in result.stdout.splitlines() if line.strip()]
+    if dirty:
+        listing = "\n  ".join(dirty[:20]) + ("\n  ……" if len(dirty) > 20 else "")
+        raise SystemExit(f"工作区不干净（{len(dirty)} 项）：先提交、还原，或把本机产物加进 .gitignore；"
+                         f"只是本机自检可以加 --allow-dirty\n  {listing}")
+    print("OK 工作区干净")
+
+
 def main() -> None:
     python = sys.executable
+    check_clean_worktree()
     check_required_files()
     parse_configs()
     check_no_container_hostnames()

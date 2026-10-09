@@ -79,6 +79,26 @@ describe('agentCards', () => {
     expect(hidden).toBe(4)
   })
 
+  it('单条办理结果本身超过上限：也只显示 5 张（最后办的几张），其余计入数量', () => {
+    const results = Array.from({ length: MAX_CARDS_PER_REPLY + 2 }, (_, i) => (
+      { name: 'create_expense_draft', result: JSON.stringify({ ...expenseDraft, id: 200 + i }) }))
+    const { cards, hidden } = buildMessageCards(results)
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
+    expect(cards.map((c) => c.id)).toEqual([202, 203, 204, 205, 206])
+    expect(hidden).toBe(2)
+  })
+
+  it('单独的预算卡片也占名额：预算 + 一堆办理结果合计不超过 5 张', () => {
+    const results = [
+      { name: 'get_expense_budget', result: '{"teamId":3,"year":2026,"remainingAmount":500}' },
+      ...Array.from({ length: 6 }, (_, i) => ({ name: 'create_it_ticket', result: JSON.stringify({ id: 300 + i, title: `工单 ${i}`, slaDueAt: '2026-10-09T08:00:00Z', status: 'OPEN' }) })),
+    ]
+    const { cards, hidden } = buildMessageCards(results)
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
+    expect(cards[0].kind).toBe('budget')
+    expect(hidden).toBe(2)
+  })
+
   it('列表里出现过、后来又被单独办理的单子，按办理结果算并保留最新状态', () => {
     const list = Array.from({ length: 6 }, (_, i) => ({ ...expenseDraft, id: i + 1 }))
     const { cards } = buildMessageCards([
