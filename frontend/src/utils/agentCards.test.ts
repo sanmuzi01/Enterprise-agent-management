@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_LIST_CARDS, buildMessageCards, cardFromRecord, money, toolError } from './agentCards'
+import { MAX_CARDS_PER_REPLY, buildMessageCards, cardFromRecord, money, toolError } from './agentCards'
 
 const expenseDraft = {
   id: 18, applicantUserId: 7, teamId: 3, status: 'DRAFT', totalAmount: 680,
@@ -51,10 +51,42 @@ describe('agentCards', () => {
   })
 
   it('列表结果只展开前几张，其余给数量', () => {
-    const many = Array.from({ length: MAX_LIST_CARDS + 3 }, (_, i) => ({ ...expenseDraft, id: i + 1 }))
+    const many = Array.from({ length: MAX_CARDS_PER_REPLY + 3 }, (_, i) => ({ ...expenseDraft, id: i + 1 }))
     const { cards, hidden } = buildMessageCards([{ name: 'get_my_expense_claims', result: JSON.stringify(many) }])
-    expect(cards).toHaveLength(MAX_LIST_CARDS)
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
     expect(hidden).toBe(3)
+  })
+
+  it('多个列表累计也最多显示几张：两个工具各返回 5 张，只显示 5 张，其余给数量', () => {
+    const listA = Array.from({ length: 5 }, (_, i) => ({ ...expenseDraft, id: i + 1, status: 'SUBMITTED' }))
+    const listB = Array.from({ length: 5 }, (_, i) => ({ id: 100 + i, title: `工单 ${i}`, slaDueAt: '2026-10-09T08:00:00Z', status: 'OPEN' }))
+    const { cards, hidden } = buildMessageCards([
+      { name: 'get_my_expense_claims', result: JSON.stringify(listA) },
+      { name: 'get_my_it_tickets', result: JSON.stringify(listB) },
+    ])
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
+    expect(hidden).toBe(5)
+  })
+
+  it('办理产生的单子优先显示，不会被前面查出来的长列表挤掉', () => {
+    const list = Array.from({ length: 8 }, (_, i) => ({ ...expenseDraft, id: i + 1, status: 'SUBMITTED' }))
+    const { cards, hidden } = buildMessageCards([
+      { name: 'get_my_expense_claims', result: JSON.stringify(list) },
+      { name: 'create_expense_draft', result: JSON.stringify({ ...expenseDraft, id: 99 }) },
+    ])
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
+    expect(cards.some((c) => c.id === 99 && c.status === 'DRAFT')).toBe(true)
+    expect(hidden).toBe(4)
+  })
+
+  it('列表里出现过、后来又被单独办理的单子，按办理结果算并保留最新状态', () => {
+    const list = Array.from({ length: 6 }, (_, i) => ({ ...expenseDraft, id: i + 1 }))
+    const { cards } = buildMessageCards([
+      { name: 'get_my_expense_claims', result: JSON.stringify(list) },
+      { name: 'submit_expense_claim', result: JSON.stringify({ ...expenseDraft, id: 6, status: 'SUBMITTED' }) },
+    ])
+    expect(cards).toHaveLength(MAX_CARDS_PER_REPLY)
+    expect(cards.find((c) => c.id === 6)?.status).toBe('SUBMITTED')
   })
 
   it('请假单、工单、采购单、跟进记录都能识别', () => {

@@ -73,8 +73,8 @@ const STAGES: Record<string, string> = {
 const VOUCHER_STATUS: Record<string, string> = { DRAFT: '待核对', POSTED: '已入账', VOID: '已作废' }
 const RISK_TONE: Record<string, BusinessCard['tone']> = { BLOCK: 'danger', WARN: 'warn', INFO: 'normal', NONE: 'good' }
 
-/** 一次回答里最多展开几张单据卡片，再多就只给数量，避免一屏全是卡片 */
-export const MAX_LIST_CARDS = 5
+/** 一次回答里最多显示几张单据卡片（累计），再多就只给数量，避免一屏全是卡片 */
+export const MAX_CARDS_PER_REPLY = 5
 
 export function money(value: unknown): string {
   const n = Number(value)
@@ -404,14 +404,16 @@ export interface MessageCards {
 }
 
 /** 一次回答里所有工具结果 → 卡片。同一张单子被查了好几次只留最后一次；
- * 同一次回答里查过预算，就把余额写进报销 / 采购卡片，不再单独占一张卡。 */
+ * 同一次回答里查过预算，就把余额写进报销 / 采购卡片，不再单独占一张卡。
+ *
+ * 整次回答最多 MAX_CARDS_PER_REPLY 张卡片（多个列表结果累计算，不是每个列表各算一遍）。
+ * 先放助手这次办理 / 查询的那一张单子（单条结果，比如刚起草的报销单），剩下的位置留给列表查询结果，
+ * 放不下的只给数量。办理产生的单子不会因为前面查了一长串列表而被挤掉。 */
 export function buildMessageCards(results: ToolResultInput[]): MessageCards {
-  const byKey = new Map<string, BusinessCard>()
+  const byKey = new Map<string, { card: BusinessCard; single: boolean }>()
   let budget: BusinessCard | null = null
-  let hidden = 0
   for (const { result } of results) {
     const { records, isList } = recordsOf(parseJson(result))
-    let shown = 0
     for (const record of records) {
       const card = cardFromRecord(record)
       if (!card) continue
@@ -419,21 +421,21 @@ export function buildMessageCards(results: ToolResultInput[]): MessageCards {
         budget = card
         continue
       }
-      if (isList && shown >= MAX_LIST_CARDS) {
-        hidden += 1
-        continue
-      }
-      shown += 1
       const key = `${card.kind}-${card.id ?? card.title}`
+      const single = !isList || !!byKey.get(key)?.single
       byKey.delete(key)   // 重新插入，保证顺序跟最后一次出现一致
-      byKey.set(key, card)
+      byKey.set(key, { card, single })
     }
   }
-  const cards = [...byKey.values()]
-  if (budget) {
-    const target = cards.find((c) => c.kind === 'expense' || c.kind === 'purchase')
-    if (target) target.fields.splice(2, 0, { label: '预算余额', value: budget.fields[0].value })
-    else cards.unshift(budget)
-  }
-  return { cards, hidden }
+  const entries = [...byKey.values()]
+  const budgetTarget = budget ? entries.find((e) => e.card.kind === 'expense' || e.card.kind === 'purchase') : undefined
+  const standaloneBudget = !!budget && !budgetTarget
+  const singles = entries.filter((e) => e.single)
+  const listed = entries.filter((e) => !e.single)
+  const slots = Math.max(0, MAX_CARDS_PER_REPLY - singles.length - (standaloneBudget ? 1 : 0))
+  const keep = new Set([...singles, ...listed.slice(0, slots)])
+  const cards = entries.filter((e) => keep.has(e)).map((e) => e.card)
+  if (budget && budgetTarget) budgetTarget.card.fields.splice(2, 0, { label: '预算余额', value: budget.fields[0].value })
+  if (standaloneBudget && budget) cards.unshift(budget)
+  return { cards, hidden: listed.length - Math.min(listed.length, slots) }
 }

@@ -129,12 +129,65 @@ describe('接最急的一张工单', () => {
 })
 
 describe('切换部门', () => {
-  it('招牌场景换成新部门的，输入框里上一个部门的材料清空', async () => {
+  const inputValue = () => (wrapper.find('[data-testid=agent-flagship-input]').element as HTMLTextAreaElement).value
+
+  it('同一种业务类型的两个部门之间切换（销售一部 → 销售二部）：材料和一键处理结果都清空', async () => {
+    vi.mocked(deskTickets).mockResolvedValue([] as never)
+    mountHub({ teamId: 3, departmentCode: 'sales', departmentName: '销售一部' })
+    await wrapper.find('[data-testid=agent-flagship-input]').setValue('今天和华东医美王总通话，确认采购 20 台')
+    await wrapper.find('[data-testid=suggestion-quick-it_unassigned]').trigger('click')
+    await flushPromises()
+    expect(quickResult().exists()).toBe(true)
+
+    await wrapper.setProps({ teamId: 4, departmentCode: 'sales', departmentName: '销售二部' })
+    expect(inputValue()).toBe('')
+    expect(quickResult().exists()).toBe(false)
+  })
+
+  it('不同业务类型的部门之间切换：招牌场景换成新部门的', async () => {
     mountHub()
     expect(wrapper.find('[data-testid=agent-flagship]').text()).toContain('报销')
     await wrapper.find('[data-testid=agent-flagship-input]').setValue('上海出差住宿 680 元')
-    await wrapper.setProps({ departmentCode: 'it', departmentName: 'IT 部' })
+    await wrapper.setProps({ teamId: 5, departmentCode: 'it', departmentName: 'IT 部' })
     expect(wrapper.find('[data-testid=agent-flagship]').text()).toContain('故障')
-    expect((wrapper.find('[data-testid=agent-flagship-input]').element as HTMLTextAreaElement).value).toBe('')
+    expect(inputValue()).toBe('')
+  })
+
+  it('批量生成凭证途中切走：不再对旧部门继续生成，也不把结果显示到新部门', async () => {
+    vi.mocked(listUnbooked).mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }] as never)
+    let release: () => void = () => {}
+    vi.mocked(generateFromClaim).mockImplementationOnce(() => new Promise((r) => { release = () => r({} as never) }))
+      .mockResolvedValue({} as never)
+    mountHub({ teamId: 3, departmentCode: 'finance' })
+    await wrapper.find('[data-testid=suggestion-quick-unbooked]').trigger('click')
+    await flushPromises()
+    expect(generateFromClaim).toHaveBeenCalledWith(3, 1)
+
+    await wrapper.setProps({ teamId: 4, departmentName: '财务二部' })
+    expect(wrapper.find('[data-testid=suggestion-quick-unbooked]').attributes('disabled')).toBeUndefined()   // 新部门里可以立刻再点
+    release()
+    await flushPromises()
+
+    expect(generateFromClaim).toHaveBeenCalledTimes(1)                       // 第 2、3 笔不再处理
+    expect(vi.mocked(generateFromClaim).mock.calls.every(([team]) => team === 3)).toBe(true)   // 从没用新部门去调旧部门的单子
+    expect(quickResult().exists()).toBe(false)
+    expect(wrapper.emitted('changed')).toBeUndefined()
+    expect(wrapper.emitted('open')).toBeUndefined()
+  })
+
+  it('接单途中切走：结果不显示到新部门，也不跳转', async () => {
+    vi.mocked(deskTickets).mockResolvedValue([{ id: 7, title: '打印机脱机' }] as never)
+    let release: () => void = () => {}
+    vi.mocked(deskAssign).mockImplementation(() => new Promise((r) => { release = () => r({} as never) }))
+    mountHub({ teamId: 3 })
+    await wrapper.find('[data-testid=suggestion-quick-it_unassigned]').trigger('click')
+    await flushPromises()
+    expect(deskAssign).toHaveBeenCalledWith(3, 7, { take: true })
+
+    await wrapper.setProps({ teamId: 4 })
+    release()
+    await flushPromises()
+    expect(quickResult().exists()).toBe(false)
+    expect(wrapper.emitted('open')).toBeUndefined()
   })
 })

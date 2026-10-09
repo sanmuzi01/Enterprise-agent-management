@@ -129,24 +129,32 @@ const found = computed(() => {
 // ---- 一键处理：不经过助手，调用工作台里同样的接口；点按钮本身就是人的决定 ----
 const quickBusy = ref(false)
 const quickResult = ref<{ ok: boolean; text: string } | null>(null)
+// 任务令牌：每次开始一键处理、每次切换部门都换一个。处理途中切走了部门，旧任务看到令牌变了就停下：
+// 不再对旧部门继续调用，也不把旧部门的结果显示到新部门里。
+let quickToken = 0
 
 async function runQuick(action: QuickAction) {
   if (quickBusy.value) return
+  const token = ++quickToken
+  const teamId = props.teamId   // 整个任务只用开始时的部门，不在途中读 props（切换后它已经是新部门）
+  const stale = () => token !== quickToken
   quickBusy.value = true
   quickResult.value = null
   try {
     if (action === 'generate_vouchers') {
-      const claims = await listUnbooked(props.teamId)
+      const claims = await listUnbooked(teamId)
       let ok = 0
       const failed: string[] = []
       for (const c of claims) {
+        if (stale()) return
         try {
-          await generateFromClaim(props.teamId, c.id)
+          await generateFromClaim(teamId, c.id)
           ok += 1
         } catch (e) {
           failed.push(`报销单 #${c.id}：${getErrorMessage(e, '生成失败')}`)
         }
       }
+      if (stale()) return
       quickResult.value = failed.length
         ? { ok: ok > 0, text: `已为 ${ok} 笔报销生成凭证草稿；${failed.length} 笔没有成功（${failed.join('；')}）` }
         : { ok: true, text: ok ? `已为 ${ok} 笔报销生成凭证草稿，请到「财务记账」逐张核对后入账` : '没有需要生成凭证的报销了' }
@@ -155,21 +163,23 @@ async function runQuick(action: QuickAction) {
         emit('open', { section: 'business' })
       }
     } else {
-      const queue = await deskTickets(props.teamId, { assignee: 'unassigned' })
+      const queue = await deskTickets(teamId, { assignee: 'unassigned' })
+      if (stale()) return
       const ticket = queue[0]   // 服务台队列按处理时限排序，最急的在前
       if (!ticket) {
         quickResult.value = { ok: true, text: '现在没有待接单的工单了' }
       } else {
-        await deskAssign(props.teamId, ticket.id, { take: true })
+        await deskAssign(teamId, ticket.id, { take: true })
+        if (stale()) return
         quickResult.value = { ok: true, text: `已接单：工单 #${ticket.id}「${ticket.title}」，已为你打开` }
         emit('changed')
         emit('open', { section: 'business', record: { kind: 'ticket', id: ticket.id } })
       }
     }
   } catch (e) {
-    quickResult.value = { ok: false, text: getErrorMessage(e, '处理失败，请到对应分区里手动处理') }
+    if (!stale()) quickResult.value = { ok: false, text: getErrorMessage(e, '处理失败，请到对应分区里手动处理') }
   } finally {
-    quickBusy.value = false
+    if (!stale()) quickBusy.value = false
   }
 }
 const canAsk = computed(() => !!props.agent?.model_configured)
@@ -177,8 +187,14 @@ const placeholder = computed(() => (props.agent?.examples?.[0] ? `例如：${pro
 
 const scenario = computed(() => scenarioFor(props.departmentCode))
 const scenarioInput = ref('')
-// 切换部门时招牌场景换了，输入框里上一个部门的材料也清掉
-watch(() => props.departmentCode, () => { scenarioInput.value = '' })
+// 切换部门（以部门本身为准：同为销售类型的“销售一部 → 销售二部”也算）时，清掉上一个部门留下的一切：
+// 招牌场景里粘贴的材料、一键处理的结果和“处理中”状态；正在跑的一键处理作废（见 quickToken）。
+watch(() => props.teamId, () => {
+  quickToken += 1
+  scenarioInput.value = ''
+  quickResult.value = null
+  quickBusy.value = false
+})
 
 /** 代用户问一句：建议、示例问法、业务记录上的“让助手分析”都走这里 */
 function ask(text: string): boolean {
