@@ -175,9 +175,11 @@ async def _check_publishable(db, team_id: Optional[int], department_code: Option
 
 async def list_managed_agents(db) -> List[Dict[str, Any]]:
     """列出所有中央/部门 Agent（不含普通用户自己的 personal Agent）。"""
-    from service.organization_admin_service import _get_default_organization
+    from service.organization_admin_service import find_default_organization
 
-    org = await _get_default_organization(db)       # 平台只服务一个企业
+    org = await find_default_organization(db)       # 平台只服务一个企业
+    if org is None:   # 企业还没初始化（全新部署）：还没有企业智能体
+        return []
     result = await db.execute(
         select(Agent, Team.name)
         .outerjoin(Team, Team.id == Agent.team_id)
@@ -704,10 +706,12 @@ async def agent_options(db, operator_id: int, agent_id: Optional[int] = None) ->
     spaces = (await db.execute(
         select(KnowledgeSpace).where(KnowledgeSpace.status == "active").order_by(KnowledgeSpace.id.desc()))).scalars().all()
     departments = await get_space_departments_async(db, [s.id for s in spaces if s.scope_type == "department"])
-    enterprise_id = await _get_default_organization_id(db)
-    teams = (await db.execute(
+    from service.organization_admin_service import find_default_organization
+    enterprise = await find_default_organization(db)
+    # 企业还没初始化（全新部署）：可选项照常给，只是还没有部门可划分
+    teams = [] if enterprise is None else (await db.execute(
         select(Team.id, Team.name, Team.department_code)
-        .where(Team.status == "active", Team.organization_id == enterprise_id).order_by(Team.id))).all()
+        .where(Team.status == "active", Team.organization_id == enterprise.id).order_by(Team.id))).all()
     from service.llm.enterprise_llm_service import connected_providers
     from service.llm.model_catalog import provider as provider_of
     connected = await connected_providers(db)

@@ -33,9 +33,14 @@ from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 
 
-async def _get_default_organization(db) -> Organization:
+async def find_default_organization(db) -> Optional[Organization]:
+    """平台服务的那家企业（id 最小的那条）；还没初始化时返回 None。只读的列表 / 概览用它，没有企业时照常显示（没有部门）。"""
     result = await db.execute(select(Organization).order_by(Organization.id).limit(1))
-    org = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
+
+
+async def _get_default_organization(db) -> Organization:
+    org = await find_default_organization(db)
     if org is None:
         raise NotFound("企业尚未初始化（没有 Organization 记录），先跑 scripts/backfill_default_organization.py")
     return org
@@ -391,7 +396,9 @@ async def member_overview(db, user_ids: List[int]) -> Dict[int, Dict]:
     """给「用户管理」列表用：这批用户在企业里的角色 / 状态和所属部门（用户管理与组织架构共用同一份数据）。"""
     if not user_ids:
         return {}
-    org = await _get_default_organization(db)
+    org = await find_default_organization(db)
+    if org is None:   # 企业还没初始化（全新部署）：用户列表照常显示，只是没有部门和企业角色
+        return {}
     departments = await _department_map(db, org.id, user_ids)
     rows = await db.execute(
         select(OrganizationMember.user_id, OrganizationMember.status, EnterpriseRole.code, EnterpriseRole.name)

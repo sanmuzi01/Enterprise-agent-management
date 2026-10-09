@@ -382,10 +382,11 @@ async def _space_department_overview(db) -> Dict:
     """本企业每个部门下有多少知识库空间（含 0 个的部门）、全企业有多少、还没划分的有多少、一共多少。
     平台只服务一个企业，部门清单不分企业。"""
     from models.init_db import KnowledgeSpace, KnowledgeSpaceDepartment, Team
-    from service.organization_admin_service import _get_default_organization
+    from service.organization_admin_service import find_default_organization
 
-    org = await _get_default_organization(db)
-    teams = (await db.execute(
+    org = await find_default_organization(db)
+    # 企业还没初始化（全新部署）：知识库列表照常显示，只是还没有部门可划分
+    teams = [] if org is None else (await db.execute(
         select(Team.id, Team.name).where(Team.status == "active", Team.organization_id == org.id).order_by(Team.id))).all()
     counts = {row[0]: int(row[1]) for row in (await db.execute(
         select(KnowledgeSpaceDepartment.team_id, func.count(func.distinct(KnowledgeSpaceDepartment.space_id)))

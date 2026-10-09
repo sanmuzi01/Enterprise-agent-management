@@ -158,8 +158,16 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         broken = run_db(lambda db: svc.agent_status(db, team))
         self.assertEqual(broken["state"], "needs_repair")
         self.assertTrue(any("新能力" in i for i in broken["issues"]), broken["issues"])
-        fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
+        from unittest import mock
+        with mock.patch("service.audit_service.record_async", new_callable=mock.AsyncMock) as audit:
+            fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
         self.assertEqual(fixed["state"], "pending_publish")
+        # 改线上配置要留痕：谁、哪个助手、补了哪些能力
+        synced = [c for c in audit.await_args_list if c.args[1] == "agent.template_tools_synced"]
+        self.assertEqual(len(synced), 1)
+        self.assertEqual(synced[0].args[0], self.admin["id"])
+        self.assertEqual(synced[0].kwargs["resource_id"], agent_id)
+        self.assertIn("get_department_responsibility_risks", synced[0].kwargs["detail"]["added_tools"])
         names = [t["name"] for t in yaml.safe_load(open(path, encoding="utf-8"))["tools"]]
         self.assertIn("get_department_responsibility_risks", names)
         self.assertIn("get_my_it_tickets", names)
