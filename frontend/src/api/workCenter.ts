@@ -25,7 +25,13 @@ export interface ReminderRuleStatus {
 export async function listWorkItems(status: WorkItemStatus | 'all' = 'open') {
   return (await request.get<{ items: WorkItem[]; counts: WorkItemCounts }>('/work-items', { params: { status } })).data
 }
-export async function getWorkItemCounts() { return (await request.get<WorkItemCounts>('/work-items/counts')).data }
+/** 后台定时拉取（不是用户操作）带上这个头：服务端据此不续期登录，页面开着不等于“在用”（见 service/session_renewal.py） */
+export const BACKGROUND_POLL_HEADERS = { 'X-Background-Poll': '1' }
+const pollOptions = (background?: boolean) => (background ? { headers: BACKGROUND_POLL_HEADERS } : {})
+
+export async function getWorkItemCounts(opts: { background?: boolean } = {}) {
+  return (await request.get<WorkItemCounts>('/work-items/counts', pollOptions(opts.background))).data
+}
 export async function createWorkItem(data: { title: string; due_at?: string | null; priority?: Priority; detail?: string }) {
   return (await request.post<WorkItem>('/work-items', data)).data
 }
@@ -35,7 +41,9 @@ export async function setWorkItemStatus(id: number, status: WorkItemStatus) {
 export async function listNotifications(unreadOnly = false) {
   return (await request.get<{ items: AppNotification[]; unread: number }>('/notifications', { params: { unread_only: unreadOnly } })).data
 }
-export async function getUnreadCount() { return (await request.get<{ unread: number }>('/notifications/unread-count')).data.unread }
+export async function getUnreadCount(opts: { background?: boolean } = {}) {
+  return (await request.get<{ unread: number }>('/notifications/unread-count', pollOptions(opts.background))).data.unread
+}
 export async function markNotificationsRead(ids?: number[]) {
   return (await request.post<{ unread: number }>('/notifications/read', { ids: ids ?? null })).data
 }

@@ -13,9 +13,10 @@ export const useWorkCenterStore = defineStore('workCenter', {
     urgent: (state) => state.counts.overdue + state.counts.due_today,
   },
   actions: {
-    async refresh() {
+    /** background：定时轮询发起的（不是用户操作），不让服务端因此续期登录 */
+    async refresh(background = false) {
       try {
-        const [counts, unread] = await Promise.all([api.getWorkItemCounts(), api.getUnreadCount()])
+        const [counts, unread] = await Promise.all([api.getWorkItemCounts({ background }), api.getUnreadCount({ background })])
         this.counts = counts
         this.unread = unread
       } catch {
@@ -26,7 +27,7 @@ export const useWorkCenterStore = defineStore('workCenter', {
       this.refresh()
       if (timer) return
       timer = setInterval(() => {
-        if (document.visibilityState === 'visible') this.refresh()
+        if (document.visibilityState === 'visible') this.refresh(true)
       }, intervalMs)
     },
     stopPolling() {

@@ -59,6 +59,7 @@ from service import health as health_probe
 from service.metrics_async_service import async_metrics_response
 from service.metrics_service import update_runtime_metrics
 from service.request_context_middleware import RequestContextMiddleware
+from service.session_renewal import SessionRenewalMiddleware
 from service.security_middleware import SecurityHeadersMiddleware
 from service.dependencies import get_current_user_async
 from utils.cache import config_cache, skill_cache, verification_cache
@@ -84,6 +85,9 @@ async def lifespan(app: FastAPI):
     # 建表 / 幂等迁移 / 内置管理员初始化：只在服务启动时执行，不在模块导入时执行。
     # DDL 是同步阻塞操作，放线程池避免占用事件循环。
     await run_in_threadpool(bootstrap_database)
+    # 全新部署第一次启动：自动建好平台服务的那家企业（已有就什么都不做；见 service/enterprise_bootstrap.py）
+    from service import enterprise_bootstrap
+    await run_in_threadpool(enterprise_bootstrap.ensure_on_startup)
     from service.observability import otel
     await run_in_threadpool(otel.init)       # 设置了 OTEL_EXPORTER_OTLP_ENDPOINT 才启用；失败只记警告
     from service.events import handlers  # noqa: F401  —— 导入即注册所有事件消费者
@@ -111,10 +115,11 @@ app.add_middleware(
     allow_origins=_env_list("CORS_ALLOW_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "X-CSRF-Token", "traceparent"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "X-CSRF-Token", "traceparent", "X-Background-Poll"],
     expose_headers=["X-Request-ID", "X-Trace-ID", "X-Process-Time"],
 )
 app.add_middleware(OperationLogMiddleware)
+app.add_middleware(SessionRenewalMiddleware)   # 一直在用的浏览器会话自动续期（service/session_renewal.py）
 app.add_middleware(RequestContextMiddleware)
 
 # 用绝对路径挂载 static 目录，避免依赖启动时的工作目录
