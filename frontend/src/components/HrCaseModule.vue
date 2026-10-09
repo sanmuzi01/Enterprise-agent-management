@@ -87,7 +87,12 @@
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-sm font-medium text-slate-900">#{{ selected.id }} {{ selected.caseTypeLabel }} · {{ selected.employeeName }}
           <span class="text-xs font-normal text-slate-500">{{ selected.teamName }}<span v-if="selected.targetTeamName"> → {{ selected.targetTeamName }}</span> · 生效 {{ selected.effectiveDate }}</span></p>
-        <span class="rounded px-2 py-0.5 text-xs" :class="STATUS_CLASSES[selected.status]">{{ selected.statusLabel }}</span>
+        <span class="flex items-center gap-2">
+          <button v-if="askAgent" data-testid="hr-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            @click="askAgent(`分析人事事项 #${selected.id}（${selected.caseTypeLabel} · ${selected.employeeName}，生效 ${selected.effectiveDate}）：哪些办理任务还没完成、有没有逾期或风险，下一步该催谁？`)"
+          >让助手分析</button>
+          <span class="rounded px-2 py-0.5 text-xs" :class="STATUS_CLASSES[selected.status]">{{ selected.statusLabel }}</span>
+        </span>
       </div>
       <p class="text-xs text-slate-500">发起人 {{ selected.initiatorName }}<span v-if="selected.approverName"> · 审批人 {{ selected.approverName }}<span v-if="selected.decisionNote">：{{ selected.decisionNote }}</span></span><span v-if="selected.reason"> · {{ selected.reason }}</span></p>
       <CheckList :checks="selected.checks" empty="规则检查没有发现问题" />
@@ -137,8 +142,10 @@ import * as api from '../api/hrCases'
 import type { CaseStatus, CaseType, HrCase, HrCaseSummary, HrCheck, HrMe, HrTask, MyHrTask } from '../api/hrCases'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 /** 规则检查列表：阻断/需核对/提示，逐条说明。 */
 const CheckList = defineComponent({
@@ -295,4 +302,10 @@ async function init() {
 
 watch(() => props.teamId, () => { tab.value = 'tasks'; init() })
 onMounted(init)
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['hr_case'], (id) => {
+  void open(id)
+  void flashRecord(`[data-testid="hr-row-${id}"]`)
+})
 </script>

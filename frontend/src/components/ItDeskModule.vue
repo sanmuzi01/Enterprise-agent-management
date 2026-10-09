@@ -98,7 +98,11 @@
 
       <div v-if="selected" class="space-y-3 border-t border-slate-200 bg-slate-50/60 px-4 py-4" data-testid="desk-detail">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <p class="text-sm font-medium text-slate-900">#{{ selected.id }} {{ selected.title }}</p>
+          <p class="flex items-center gap-2 text-sm font-medium text-slate-900">#{{ selected.id }} {{ selected.title }}
+            <button v-if="askAgent" data-testid="desk-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+              @click="askAgent(`分析工单 #${selected.id}「${selected.title}」：根据描述给出排查思路、需要向提交人确认的信息，以及有没有超时风险`)"
+            >让助手分析</button>
+          </p>
           <p class="text-xs text-slate-500">处理时限 {{ selected.slaDueAt.slice(0, 16).replace('T', ' ') }}（UTC）· <span :class="slaClass(selected.slaStatus)" class="rounded px-1.5 py-0.5">{{ SLA_LABELS[selected.slaStatus] }}</span></p>
         </div>
         <p class="whitespace-pre-line text-sm text-slate-700">{{ selected.description }}</p>
@@ -168,8 +172,10 @@ import * as api from '../api/itService'
 import type { DeskSummary, Device, SlaStatus, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 type Tab = 'queue' | 'devices' | 'summary'
 const TABS: { value: Tab; label: string }[] = [{ value: 'queue', label: '工单队列' }, { value: 'devices', label: '设备台账' }, { value: 'summary', label: '汇总' }]
@@ -365,4 +371,10 @@ async function init() {
 
 watch(() => props.teamId, init)
 onMounted(init)
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['ticket'], (id) => {
+  void select(id)
+  void flashRecord(`[data-testid="desk-row-${id}"]`)
+})
 </script>

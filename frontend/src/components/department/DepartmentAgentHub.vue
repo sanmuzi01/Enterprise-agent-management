@@ -21,6 +21,13 @@
         需要先在「设置 → 模型连接」连接 {{ modelDisplayName(agent.model_name) }} 模型，部门助手才能回答。
       </p>
 
+      <!-- 负责人的今日摘要：把工作台上的数字交给助手排出今天的处理顺序 -->
+      <div v-if="isHead && agent" class="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-lg bg-indigo-50/60 px-3 py-2">
+        <span class="text-xs text-indigo-900">作为负责人，让助手把今天的待审批、逾期和风险排个先后。</span>
+        <button @click="ask(dailyBriefPrompt(cards, departmentName))" :disabled="!canAsk" data-testid="agent-daily-brief"
+          class="rounded bg-indigo-600 px-2.5 py-1 text-xs text-white hover:bg-indigo-700 disabled:opacity-50">生成今日摘要</button>
+      </div>
+
       <!-- 今日建议：来自首页已经算好的数字，点了才交给助手 -->
       <ul v-if="suggestions.length" class="mt-3 grid gap-2 sm:grid-cols-2" data-testid="agent-suggestions">
         <li v-for="s in suggestions" :key="s.key"
@@ -38,6 +45,24 @@
       </ul>
       <p v-else class="mt-3 text-xs text-slate-400" data-testid="agent-no-suggestions">今天没有需要马上处理的事项。</p>
 
+      <!-- 招牌场景：粘贴原始材料，一次办到草稿为止 -->
+      <div v-if="agent" class="mt-3 rounded-lg border border-slate-200 px-3 py-2.5" data-testid="agent-flagship">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <h3 class="text-sm font-medium text-slate-900">{{ scenario.title }}</h3>
+          <ol class="flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+            <li v-for="(s, i) in scenario.steps" :key="s" class="flex items-center gap-1">
+              <span v-if="i" class="text-slate-300">→</span><span class="rounded bg-slate-100 px-1.5 py-0.5">{{ s }}</span>
+            </li>
+          </ol>
+        </div>
+        <div class="mt-2 flex flex-col gap-2 sm:flex-row sm:items-end">
+          <textarea id="agent-flagship-input" v-model="scenarioInput" rows="2" :placeholder="scenario.placeholder" data-testid="agent-flagship-input"
+            class="min-h-[3rem] flex-1 resize-y rounded border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-400"></textarea>
+          <button @click="runScenario" :disabled="!canAsk || !scenarioInput.trim()" data-testid="agent-flagship-run"
+            class="shrink-0 rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50">交给助手办理</button>
+        </div>
+      </div>
+
       <div v-if="agent?.examples?.length" class="mt-3 flex flex-wrap gap-1.5" data-testid="agent-examples">
         <span class="text-xs leading-6 text-slate-400">可以这样说：</span>
         <button v-for="ex in agent.examples" :key="ex" @click="ask(ex)" :disabled="!canAsk"
@@ -46,7 +71,7 @@
     </div>
 
     <EmbeddedAgentChatPanel v-if="agent" ref="panel" class="mt-2" :agent-id="agent.id" height="440px" compact-when-empty
-      empty-hint="" :placeholder="placeholder" @changed="emit('changed')" @open="(section) => emit('open', section)" />
+      empty-hint="" :placeholder="placeholder" @changed="emit('changed')" @open="(target) => emit('open', target)" />
     <p v-else class="mx-4 mb-4 mt-3 rounded border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
       部门助手尚未发布：企业管理员完成配置并发布后，就可以在这里直接交代要办的事。下面的业务模块可以照常使用。
     </p>
@@ -54,23 +79,30 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import { Sparkles } from 'lucide-vue-next'
 import EmbeddedAgentChatPanel from '../EmbeddedAgentChatPanel.vue'
 import type { HomeCard, WorkspaceAgent } from '../../api/enterpriseWorkspace'
 import { suggestionsFromCards } from '../../utils/agentSuggestions'
+import type { CardTarget } from '../../utils/agentCards'
 import { modelDisplayName } from '../../utils/displayNames'
+import { dailyBriefPrompt, scenarioFor } from '../../utils/flagshipScenarios'
 
 const props = defineProps<{
   agent: WorkspaceAgent | null
   centralAgent: WorkspaceAgent | null
   cards: HomeCard[]
+  /** 部门业务类型，决定招牌场景 */
+  departmentCode: string | null
+  departmentName: string
+  /** 部门负责人或企业管理员：显示“生成今日摘要” */
+  isHead: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'changed'): void
-  (e: 'open', section: 'office' | 'business'): void
+  (e: 'open', target: CardTarget): void
   (e: 'openCard', card: HomeCard): void
 }>()
 
@@ -79,10 +111,21 @@ const suggestions = computed(() => suggestionsFromCards(props.cards))
 const canAsk = computed(() => !!props.agent?.model_configured)
 const placeholder = computed(() => (props.agent?.examples?.[0] ? `例如：${props.agent.examples[0]}` : '说说你要办的事…'))
 
+const scenario = computed(() => scenarioFor(props.departmentCode))
+const scenarioInput = ref('')
+// 切换部门时招牌场景换了，输入框里上一个部门的材料也清掉
+watch(() => props.departmentCode, () => { scenarioInput.value = '' })
+
 /** 代用户问一句：建议、示例问法、业务记录上的“让助手分析”都走这里 */
-function ask(text: string) {
-  if (!panel.value || panel.value.busy()) return
+function ask(text: string): boolean {
+  if (!panel.value || panel.value.busy()) return false
   void panel.value.ask(text)
+  return true
+}
+
+function runScenario() {
+  const input = scenarioInput.value.trim()
+  if (input && ask(scenario.value.buildPrompt(input))) scenarioInput.value = ''
 }
 
 defineExpose({ ask })

@@ -23,9 +23,14 @@
           从左侧选择一个客户查看详情
         </div>
         <div v-else-if="summary" class="space-y-4">
-          <div>
-            <h3 class="text-sm font-semibold text-slate-900">{{ summary.name }}</h3>
-            <p class="text-xs text-slate-400">{{ summary.industry || '行业未知' }}</p>
+          <div class="flex items-start justify-between gap-2">
+            <div>
+              <h3 class="text-sm font-semibold text-slate-900">{{ summary.name }}</h3>
+              <p class="text-xs text-slate-400">{{ summary.industry || '行业未知' }}</p>
+            </div>
+            <button v-if="askAgent" data-testid="customer-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+              @click="askAgent(`分析客户「${summary.name}」（客户 ID ${summary.id}）：最近的跟进和商机进展怎么样，下一步该怎么跟进？`)"
+            >让助手分析</button>
           </div>
 
           <div>
@@ -129,8 +134,10 @@ import * as crmApi from '../api/departmentCrm'
 import type { CustomerDto, CustomerSummaryDto, OpportunityDto } from '../api/departmentCrm'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
+import { useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 const customers = ref<CustomerDto[]>([])
 const selectedCustomerId = ref<number | null>(null)
@@ -237,4 +244,7 @@ watch(() => props.teamId, () => {
 })
 
 onMounted(() => loadCustomers())
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['customer'], (id) => selectCustomer(id))
 </script>

@@ -58,6 +58,14 @@ async def section(page, value):
     await page.wait_for_timeout(800)
 
 
+async def open_batch_tools(page):
+    """跨部门协同办理和 AI 整理收在概览的“批量与跨部门办理”里，默认折叠。"""
+    toggle = page.locator("[data-testid=batch-tools-toggle]")
+    if await toggle.get_attribute("aria-expanded") != "true":
+        await toggle.click()
+    await page.wait_for_timeout(300)
+
+
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(channel=os.environ.get("PLAYWRIGHT_CHANNEL") or None)
@@ -65,6 +73,7 @@ async def main():
         print("角色 1：销售员工 demo_emp —— 一段话办多件事")
         page = await login(browser, "demo_emp")
         await shot(page, "emp-home", "员工登录后直接落在自己的部门工作台", "概览卡片按部门和身份变化：待办、部门客户、进行中的工单。", "[data-testid=home-cards]")
+        await open_batch_tools(page)
         await page.locator("#orchestration-text").fill(
             "上周五出差高铁票 260 元，发票号 G8891；出租车 48 元，暂无发票。另外我的笔记本电脑蓝屏了，需要报修，整个组都等着用")
         await page.locator("[data-testid=orchestration-plan]").click()

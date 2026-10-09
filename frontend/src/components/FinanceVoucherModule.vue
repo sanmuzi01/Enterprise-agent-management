@@ -98,6 +98,9 @@
           <p class="text-sm font-medium text-slate-900">
             {{ selected.voucherNo || '草稿' }} · 报销单 #{{ selected.expenseClaimId }}
             <span class="ml-1 text-xs font-normal text-slate-400">{{ selected.expenseClass === 'SALES' ? '销售费用' : '管理费用' }}</span>
+            <button v-if="askAgent" data-testid="voucher-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+              @click="askAgent(`核对凭证 #${selected.id}（报销单 #${selected.expenseClaimId}）：逐项说明风险和科目依据，我需要重点核对哪些地方？入账仍由我确认。`)"
+            >让助手分析</button>
           </p>
           <div v-if="selected.status === 'DRAFT'" class="flex items-center gap-2 text-xs">
             <label :for="`voucher-date-${selected.id}`" class="text-slate-500">凭证日期</label>
@@ -199,8 +202,10 @@ import * as api from '../api/financeVouchers'
 import type { AccountSubject, RiskLevel, UnbookedClaim, VoucherDetail, VoucherEntry, VoucherMonthlySummary, VoucherStatus, VoucherSummary } from '../api/financeVouchers'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 const TABS: { value: VoucherStatus | 'summary'; label: string }[] = [
   { value: 'DRAFT', label: '待核对' }, { value: 'POSTED', label: '已入账' }, { value: 'VOID', label: '已作废' }, { value: 'summary', label: '月度汇总' },
@@ -404,4 +409,10 @@ async function init() {
 
 watch(() => props.teamId, init)
 onMounted(init)
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['voucher'], (id) => {
+  void select(id)
+  void flashRecord(`[data-testid="voucher-row-${id}"]`)
+})
 </script>

@@ -140,6 +140,34 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
         self.assertEqual(fixed["state"], "pending_publish")
 
+    def test_template_upgrade_is_diagnosed_and_repaired_without_dropping_tools(self):
+        """老 Agent 是按旧模板建的：模板新增的能力在状态里提示，一键修复补上，原有工具不丢。"""
+        import yaml
+        from service import agent_admin_service
+        from service.enterprise_agent_templates import get_template
+        from service.skills import loader as skill_loader
+        team, status = self.new_team("finance")
+        agent_id = status["agent"]["id"]
+        path = skill_loader._get_yml_path(f"enterprise/agent_{agent_id}.yml")
+        data = yaml.safe_load(open(path, encoding="utf-8"))
+        data["tools"] = [t for t in data["tools"] if t["name"] != "get_department_responsibility_risks"]
+        data["tools"].append({"name": "get_my_it_tickets"})   # 管理员自己加过的工具，修复后要保留
+        open(path, "w", encoding="utf-8").write(yaml.safe_dump(data, allow_unicode=True))
+        skill_loader.invalidate_skill_config(f"enterprise/agent_{agent_id}.yml")
+
+        broken = run_db(lambda db: svc.agent_status(db, team))
+        self.assertEqual(broken["state"], "needs_repair")
+        self.assertTrue(any("新能力" in i for i in broken["issues"]), broken["issues"])
+        fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
+        self.assertEqual(fixed["state"], "pending_publish")
+        names = [t["name"] for t in yaml.safe_load(open(path, encoding="utf-8"))["tools"]]
+        self.assertIn("get_department_responsibility_risks", names)
+        self.assertIn("get_my_it_tickets", names)
+        self.assertEqual(len(names), len(set(names)))
+        template = get_template("finance")
+        agent = run_db(lambda db: db.get(svc.Agent, agent_id))
+        self.assertEqual(agent_admin_service.template_skill_missing_tools(agent, template), [])
+
     def test_central_router_picks_department_agent_of_users_own_team(self):
         from service.runtime.central_router import _find_department_agent_async
         team_a, _ = self.new_team("sales")

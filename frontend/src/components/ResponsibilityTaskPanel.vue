@@ -6,6 +6,9 @@
         <h3 class="mt-0.5 text-sm font-semibold text-slate-900">{{ detail?.task.title }}</h3>
       </div>
       <div class="flex shrink-0 items-center gap-2">
+        <button v-if="askAgent && detail" data-testid="resp-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          @click="askAgent(`分析责任事项 #${detail.task.id}「${detail.task.title}」：现在进展到哪、离截止还有多久、有没有受阻或验收风险，我下一步该做什么？`)"
+        >让助手分析</button>
         <span v-if="detail" class="rounded-full px-2 py-0.5 text-xs" :class="statusClass(detail.task.status)" data-testid="resp-task-status">{{ detail.task.statusLabel }}</span>
         <button class="text-xs text-slate-400 hover:text-slate-700" @click="$emit('close')">关闭</button>
       </div>
@@ -123,8 +126,10 @@ import { computed, reactive, ref, watch } from 'vue'
 import * as api from '../api/responsibility'
 import type { Candidates, RespTaskDetail } from '../api/responsibility'
 import { getErrorMessage } from '../utils/request'
+import { useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number; taskId: number; candidates: Candidates }>()
+const askAgent = useAskDeptAgent()
 const emit = defineEmits<{ close: []; changed: [] }>()
 
 type Kind = 'text' | 'textarea' | 'date' | 'number' | 'member' | 'reviewer' | 'priority' | 'choice'

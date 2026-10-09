@@ -33,13 +33,16 @@
     </div>
 
     <ul class="divide-y divide-slate-100">
-      <li v-for="r in myRequests" :key="r.id" class="flex items-center justify-between px-4 py-3">
+      <li v-for="r in myRequests" :key="r.id" :data-record="`leave-${r.id}`" class="flex items-center justify-between rounded px-4 py-3">
         <div>
           <p class="text-sm text-slate-900">{{ leaveTypeLabel(r.leaveTypeCode) }} · {{ r.startDate }} ~ {{ r.endDate }}（{{ r.days }} 天）</p>
           <p class="mt-0.5 text-xs text-slate-400">{{ r.reason || '无备注' }}<span v-if="r.decisionNote"> · 处理意见：{{ r.decisionNote }}</span></p>
         </div>
         <div class="flex items-center gap-2">
           <span class="rounded px-2 py-0.5 text-xs" :class="statusBadgeClass(r.status)">{{ statusLabel(r.status) }}</span>
+          <button v-if="askAgent" data-testid="leave-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            @click="askAgent(`分析请假单 #${r.id}（${leaveTypeLabel(r.leaveTypeCode)}，${r.startDate} 至 ${r.endDate}，${statusLabel(r.status)}）：假期余额够不够、审批到哪一步了、我下一步该做什么？`)"
+          >让助手分析</button>
           <button
             v-if="r.status === 'DRAFT'"
             @click="doSubmitRequest(r.id)"
@@ -85,8 +88,10 @@ import type { LeaveRequestDto } from '../api/departmentLeave'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { statusBadgeClass, statusLabel } from '../utils/requestStatus'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 const myRequests = ref<LeaveRequestDto[]>([])
 const pendingRequests = ref<LeaveRequestDto[]>([])
@@ -179,4 +184,7 @@ onMounted(() => {
   loadMyRequests()
   loadPending()
 })
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['leave'], (id) => void flashRecord(`[data-record="leave-${id}"]`))
 </script>

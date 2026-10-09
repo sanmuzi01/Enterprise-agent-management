@@ -44,6 +44,9 @@ async def main():
             await skip.click()
         await page.wait_for_selector("[data-testid=home-cards]")
 
+        toggle = page.locator("[data-testid=batch-tools-toggle]")   # AI 整理收在“批量与跨部门办理”里，默认折叠
+        if await toggle.get_attribute("aria-expanded") != "true":
+            await toggle.click()
         panel = page.locator("[data-testid=automation-panel]").first
         await panel.get_by_label("工作类型").select_option(label="费用材料 → 报销草稿")
         await panel.locator("[data-testid=batch-panel] summary").click()

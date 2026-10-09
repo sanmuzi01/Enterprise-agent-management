@@ -38,7 +38,7 @@
     </div>
 
     <ul class="divide-y divide-slate-100">
-      <li v-for="r in myRequests" :key="r.id" class="flex items-center justify-between px-4 py-3">
+      <li v-for="r in myRequests" :key="r.id" :data-record="`purchase-${r.id}`" class="flex items-center justify-between rounded px-4 py-3">
         <div>
           <p class="text-sm text-slate-900">
             {{ lineSummary(r.lines) }} · 合计 ¥{{ r.totalAmount.toFixed(2) }}
@@ -50,6 +50,9 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="rounded px-2 py-0.5 text-xs" :class="statusBadgeClass(r.status)">{{ statusLabel(r.status) }}</span>
+          <button v-if="askAgent" data-testid="purchase-ask-agent" class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+            @click="askAgent(`分析采购申请 #${r.id}（${lineSummary(r.lines)}，合计 ¥${r.totalAmount.toFixed(2)}，${statusLabel(r.status)}）：库存和预算是否支持、审批到哪一步了、我下一步该做什么？`)"
+          >让助手分析</button>
           <button
             v-if="r.status === 'DRAFT'"
             @click="doSubmitRequest(r.id)"
@@ -95,8 +98,10 @@ import type { PurchaseLineDto, PurchaseRequestDto } from '../api/departmentProcu
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { statusBadgeClass, statusLabel } from '../utils/requestStatus'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 const myRequests = ref<PurchaseRequestDto[]>([])
 const pendingRequests = ref<PurchaseRequestDto[]>([])
@@ -186,4 +191,7 @@ onMounted(() => {
   loadMyRequests()
   loadPending()
 })
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['purchase'], (id) => void flashRecord(`[data-record="purchase-${id}"]`))
 </script>

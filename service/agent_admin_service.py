@@ -262,6 +262,45 @@ async def bind_template_skill(db, agent: Agent, template: Dict[str, Any], owner_
     await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill.id))
 
 
+def _template_skill_config(agent: Agent) -> Optional[Dict[str, Any]]:
+    import os
+    import yaml
+    from service.skills import loader as skill_loader
+    path = skill_loader._get_yml_path(f"enterprise/agent_{agent.id}.yml")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    return data if isinstance(data, dict) else None
+
+
+def template_skill_missing_tools(agent: Agent, template: Dict[str, Any]) -> List[str]:
+    """模板后来新增、这个 Agent 的专业技能里还没有的工具。
+
+    专业技能配置是建 Agent 时按当时的模板生成的一份独立文件，模板以后加了能力（比如负责人的今日摘要），
+    老 Agent 不会自动拿到——部门 Agent 状态里提示出来，由管理员点“一键修复”补上，不悄悄改线上配置。"""
+    data = _template_skill_config(agent)
+    if data is None:
+        return []   # 没有专业技能是另一类问题，单独诊断
+    have = {t.get("name") for t in data.get("tools") or [] if isinstance(t, dict)}
+    return [tool for tool in template["tools"] if tool not in have]
+
+
+async def sync_template_skill_tools(db, agent: Agent, template: Dict[str, Any]) -> List[str]:
+    """把模板新增的工具补进 Agent 的专业技能（原有工具和其它配置原样保留）。返回补上的工具。"""
+    missing = template_skill_missing_tools(agent, template)
+    if not missing:
+        return []
+    import yaml
+    from service.skills_core.config_io import atomic_write_validated
+    data = _template_skill_config(agent) or {}
+    data["tools"] = list(data.get("tools") or []) + [{"name": tool} for tool in missing]
+    validation = atomic_write_validated(f"enterprise/agent_{agent.id}.yml", yaml.safe_dump(data, allow_unicode=True))
+    if not validation["ok"]:
+        raise InvalidInput("专业技能配置校验失败")
+    return missing
+
+
 async def create_managed_agent(
         db, creator_user_id: int, name: str, agent_type: str,
         department_code: Optional[str] = None, team_id: Optional[int] = None,

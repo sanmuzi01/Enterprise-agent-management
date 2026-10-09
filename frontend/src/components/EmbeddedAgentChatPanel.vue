@@ -24,7 +24,7 @@
           <!-- 业务结果卡片：报销草稿、请假单、工单…… -->
           <div v-if="cardsOf(m).cards.length" class="grid gap-2 sm:grid-cols-2">
             <AgentResultCard v-for="(c, k) in cardsOf(m).cards" :key="`${c.kind}-${c.id ?? k}`" :card="c"
-              @open="(section) => emit('open', section)" @changed="emit('changed')" />
+              @open="(target) => emit('open', target)" @changed="emit('changed')" @ask="(text) => send(text)" />
           </div>
           <p v-if="cardsOf(m).hidden" class="text-xs text-slate-400">还有 {{ cardsOf(m).hidden }} 条记录没有展开，可以到工作台里查看全部。</p>
 
@@ -90,7 +90,7 @@ import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle, Check, Hand, Loader2, X } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'
 import AgentResultCard from './department/AgentResultCard.vue'
-import { buildMessageCards, toolError, type MessageCards, type ToolResultInput } from '../utils/agentCards'
+import { buildMessageCards, toolError, type CardTarget, type MessageCards, type ToolResultInput } from '../utils/agentCards'
 import { toolDisplayName } from '../utils/displayNames'
 import { renderMarkdown } from '../utils/markdown'
 
@@ -112,7 +112,7 @@ const emit = defineEmits<{
   /** 助手或卡片改了业务数据（建了草稿、提交了单子……），页面据此刷新业务模块 */
   (e: 'changed'): void
   /** 用户想去工作台里看这张单子 */
-  (e: 'open', section: 'office' | 'business'): void
+  (e: 'open', target: CardTarget): void
 }>()
 
 type StepState = 'running' | 'done' | 'error' | 'confirm'

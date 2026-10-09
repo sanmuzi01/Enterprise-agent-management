@@ -152,7 +152,7 @@ import * as api from '../api/itService'
 import type { Device, Suggestion, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
-import { useAskDeptAgent } from './department/askAgent'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const askAgent = useAskDeptAgent()
 
@@ -338,4 +338,10 @@ function init() {
 
 watch(() => props.teamId, init)
 onMounted(init)
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['ticket'], (id) => {
+  if (open.value?.id !== id) void toggle(id)
+  void flashRecord(`[data-testid="ticket-row-${id}"]`)
+})
 </script>

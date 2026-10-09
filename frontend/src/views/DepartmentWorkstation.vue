@@ -43,6 +43,8 @@
     <div v-else class="space-y-5">
       <!-- 部门助手是工作台的入口：常驻顶部，主动给出今天该处理的事；下面的业务模块是它的执行与核对界面 -->
       <DepartmentAgentHub ref="agentHub" :agent="deptAgent" :central-agent="centralAgent" :cards="home?.cards || []"
+        :department-code="moduleCode" :department-name="currentDept.name"
+        :is-head="!!(home?.identity.is_head || home?.identity.org_admin)"
         @changed="onAgentChanged" @open="openSection" @open-card="openCard" />
 
       <!-- 概览：按部门业务和我的身份汇总，点卡片直达对应工作区 -->
@@ -63,10 +65,23 @@
           :class="section === s.value ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'">{{ s.label }}</button>
       </nav>
 
-      <OrchestrationPanel v-if="section === 'overview'" :key="`orch-${deptStore.currentTeamId}`" :team-id="deptStore.currentTeamId!"
-        :revision="businessRevision" @open-work="openWork" />
-      <AutomationWorkPanel ref="workPanel" v-show="section === 'overview'" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
-        @saved="businessRevision++" @open-result="openResponsibilityPlan" />
+      <!-- 单件事交给顶部的部门助手；一段话里有几个部门的事、或者成批的材料，在这里拆分 / 批量整理 -->
+      <section v-show="section === 'overview'" class="rounded-lg border border-slate-200 bg-white" data-testid="batch-tools">
+        <button @click="toggleBatchTools" class="flex w-full items-center justify-between gap-3 px-4 py-3 text-left" data-testid="batch-tools-toggle"
+          :aria-expanded="batchToolsOpen">
+          <span>
+            <span class="block text-sm font-semibold text-slate-900">批量与跨部门办理</span>
+            <span class="block text-xs text-slate-500">一段话里有几个部门的事（请假 + 报销 + 报修），或者一批报销单据、会议纪要要整理时用这里；单件事直接问上面的部门助手。</span>
+          </span>
+          <ChevronDown :size="16" class="shrink-0 text-slate-400 transition-transform" :class="batchToolsOpen ? 'rotate-180' : ''" />
+        </button>
+        <div v-show="batchToolsOpen" class="space-y-5 border-t border-slate-100 p-4">
+          <OrchestrationPanel v-if="section === 'overview' && batchToolsOpen" :key="`orch-${deptStore.currentTeamId}`" :team-id="deptStore.currentTeamId!"
+            :revision="businessRevision" @open-work="openWork" />
+          <AutomationWorkPanel ref="workPanel" :key="deptStore.currentTeamId!" :team-id="deptStore.currentTeamId!"
+            @saved="businessRevision++" @open-result="openResponsibilityPlan" />
+        </div>
+      </section>
 
       <ResponsibilityModule v-if="section === 'collab'" ref="collabModule" :key="`collab-${deptStore.currentTeamId}`"
         :team-id="deptStore.currentTeamId!" :initial-tab="collabTab" />
@@ -98,14 +113,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { RefreshCcw } from 'lucide-vue-next'
+import { ChevronDown, RefreshCcw } from 'lucide-vue-next'
 import { useCurrentDepartmentStore } from '../stores/currentDepartment'
 import { getDepartmentHome } from '../api/enterpriseWorkspace'
 import type { DepartmentHome, HomeCard } from '../api/enterpriseWorkspace'
 import { getErrorMessage } from '../utils/request'
 import CrmModule from '../components/CrmModule.vue'
 import DepartmentAgentHub from '../components/department/DepartmentAgentHub.vue'
-import { ASK_DEPT_AGENT } from '../components/department/askAgent'
+import { ASK_DEPT_AGENT, FOCUS_RECORD, type FocusRequest } from '../components/department/askAgent'
+import type { CardTarget } from '../utils/agentCards'
 import FinanceModule from '../components/FinanceModule.vue'
 import FinanceVoucherModule from '../components/FinanceVoucherModule.vue'
 import HrCaseModule from '../components/HrCaseModule.vue'
@@ -157,12 +173,30 @@ function onAgentChanged() {
   businessRevision.value++
 }
 
-// 卡片上的“在工作台中查看”：切到对应分区并滚过去（该分区对当前身份不存在时停在概览）
-async function openSection(target: 'office' | 'business') {
-  setSection(sections.value.some((s) => s.value === target) ? target : 'overview')
+// 卡片上的“在工作台中查看”：切到对应分区（必要时打开责任协同里的某个视图 / 某份计划）并滚过去。
+// 该分区对当前身份不存在时（比如人事办理只给人事部门成员）依次退到办公事务、概览。
+async function openSection(target: CardTarget) {
+  if (target.planId != null) {
+    await openResponsibilityPlan(target.planId)
+  } else {
+    const has = (v: string) => sections.value.some((s) => s.value === v)
+    const section = (has(target.section) ? target.section : has('office') ? 'office' : 'overview') as Section
+    collabTab.value = section === 'collab' ? target.tab : undefined
+    setSection(section)
+    if (section === 'collab' && target.tab) void nextTick(() => collabModule.value?.setTab(target.tab as never))
+  }
   await nextTick()
   sectionNav.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  if (target.record) {
+    // 分区切好后广播：正在显示、认识这种记录的模块打开详情或高亮那一行；过一会儿清掉，免得以后切回来又被打开
+    const request = { ...target.record, nonce: Date.now() }
+    focusRecord.value = request
+    setTimeout(() => { if (focusRecord.value === request) focusRecord.value = null }, 3000)
+  }
 }
+
+const focusRecord = ref<FocusRequest | null>(null)
+provide(FOCUS_RECORD, focusRecord)
 
 // 业务模块里的“让助手分析”：把记录交给顶部的助手，并滚回顶部看结果
 provide(ASK_DEPT_AGENT, (prompt: string) => {
@@ -230,9 +264,20 @@ async function reload(force = false) {
   }
 }
 
+// “批量与跨部门办理”默认收起（顶部助手是主入口）；展开过的人下次还展开
+const BATCH_TOOLS_KEY = 'dept_batch_tools_open'
+const batchToolsOpen = ref(false)
+try { batchToolsOpen.value = localStorage.getItem(BATCH_TOOLS_KEY) === '1' } catch { /* 记不住不影响使用 */ }
+function toggleBatchTools() {
+  batchToolsOpen.value = !batchToolsOpen.value
+  try { localStorage.setItem(BATCH_TOOLS_KEY, batchToolsOpen.value ? '1' : '0') } catch { /* ignore */ }
+}
+
 const workPanel = ref<InstanceType<typeof AutomationWorkPanel> | null>(null)
 // 协同办理的某一步整理好后，在下方工作成果面板里直接打开它核对
 async function openWork(id: string) {
+  batchToolsOpen.value = true
+  await nextTick()
   await workPanel.value?.refresh()
   await workPanel.value?.open(id)
   document.querySelector('[data-testid="automation-panel"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' })

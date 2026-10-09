@@ -71,6 +71,10 @@ async def agent_status(db, team_id: int) -> Dict[str, Any]:
         else:
             if template["tools"] and not await _has_template_skill(db, primary):
                 issues.append("专业技能未绑定，Agent 无法调用业务工具")
+            elif template["tools"]:
+                missing = agent_admin_service.template_skill_missing_tools(primary, template)
+                if missing:
+                    issues.append(f"专业技能缺少 {len(missing)} 项新能力（模板已更新），一键修复会补上")
             from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
             if normalize_model_name(primary.model_name or "") not in CHAT_MODELS:
                 issues.append(f"模型「{primary.model_name}」不是可用的聊天模型")
@@ -121,6 +125,8 @@ async def repair(db, team_id: int, operator_id: int) -> Dict[str, Any]:
     if template["tools"] and not await _has_template_skill(db, primary):
         await agent_admin_service.bind_template_skill(db, primary, template, primary.user_id)
         await db.commit()
+    elif template["tools"]:
+        await agent_admin_service.sync_template_skill_tools(db, primary, template)
     if not primary.model_name:
         await agent_admin_service.update_managed_agent(db, primary.id, operator_id, model_name="glm-4")
     return await agent_status(db, team.id)

@@ -42,7 +42,7 @@
     </div>
 
     <ul class="divide-y divide-slate-100">
-      <li v-for="r in myRequests" :key="r.id" class="flex items-center justify-between px-4 py-3">
+      <li v-for="r in myRequests" :key="r.id" :data-record="`expense-${r.id}`" class="flex items-center justify-between rounded px-4 py-3">
         <div>
           <p class="text-sm text-slate-900">
             {{ lineSummary(r.lines) }} · 合计 ¥{{ r.totalAmount.toFixed(2) }}
@@ -103,7 +103,7 @@ import type { ExpenseClaimDto, ExpenseLineDto } from '../api/departmentFinance'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { statusBadgeClass, statusLabel } from '../utils/requestStatus'
-import { useAskDeptAgent } from './department/askAgent'
+import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
 const askAgent = useAskDeptAgent()
@@ -208,4 +208,7 @@ onMounted(() => {
   loadMyRequests()
   loadPending()
 })
+
+// 助手回复里的卡片 → 打开这条记录
+useFocusRecord(['expense'], (id) => void flashRecord(`[data-record="expense-${id}"]`))
 </script>

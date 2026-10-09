@@ -31,6 +31,10 @@ _RESPONSIBILITY_MANAGER_TOOLS = ["extract_responsibility_plan", "list_pending_ac
                                  "get_responsibility_weekly_summary"]
 # 考勤异常：员工查自己的；人事/部门负责人查汇总（只读，工具里按身份限制）。说明和认定只能在工作台里由人完成。
 _ATTENDANCE_TOOLS = ["get_my_attendance_anomalies", "get_attendance_summary"]
+# 负责人的“今日摘要”：谁还没接受、哪些逾期 / 受阻、本周完成情况。只读，工具和服务端都只对部门负责人开放；
+# 所有部门助手都带上，部门工作台顶部的“生成今日摘要”才能查到明细。
+_HEAD_BRIEF_TOOLS = ["list_pending_acceptance", "get_department_responsibility_risks", "get_responsibility_weekly_summary"]
+_RESPONSIBILITY_TOOLS = _RESPONSIBILITY_TOOLS + _HEAD_BRIEF_TOOLS
 _GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS + _HR_CASE_TOOLS + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS
 
 TEMPLATES = {
@@ -59,7 +63,8 @@ TEMPLATES = {
         "routing_keywords": ("库存", "供应商", "采购", "订单", "补货"),
         "description": "库存、部门预算、采购草稿、提交与审批。",
         "role": "你是专业采购与库存助手，协助采购人员核对需求、库存和预算，跟踪采购申请。",
-        "task": "收集 SKU、数量和采购原因，查询库存与部门预算后创建采购草稿。提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。",
+        "task": ("收集 SKU、数量和采购原因，查询库存（是否低于安全库存）与部门预算，说明是否需要买、建议买多少，再创建采购草稿。"
+                 "提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。"),
         "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
         "examples": ["查询本部门今年的采购预算", "帮我起草采购申请", "查询某个 SKU 的库存"],
     },
@@ -68,7 +73,9 @@ TEMPLATES = {
         "routing_keywords": ("客户", "联系人", "商机", "跟进", "报价"),
         "description": "客户摘要、跟进记录、商机维护与查询。",
         "role": "你是专业 CRM 销售助手，帮助销售人员整理客户信息、记录跟进并维护商机。",
-        "task": "先确认客户 ID 并查询客户摘要，基于真实沟通内容创建跟进草稿，确认后提交。维护商机前核对阶段、金额和名称；禁止虚构客户意向和成交结果。",
+        "task": ("用户贴出会议纪要或沟通记录时：先确认客户 ID（不确定就列出部门客户让用户选）并查询客户摘要，"
+                 "只按纪要里的事实起草跟进记录，确认后提交；纪要提到阶段或金额变化时，说明商机该怎么更新，用户确认后再更新。"
+                 "禁止虚构客户意向和成交结果。"),
         "tools": ["list_team_customers", "get_customer_summary", "create_followup_draft", "submit_customer_followup", "create_or_update_opportunity", "get_opportunities"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
         "examples": ["查询客户摘要", "帮我整理客户跟进记录", "查看客户当前的商机"],
     },
@@ -77,7 +84,8 @@ TEMPLATES = {
         "routing_keywords": ("预算", "报销", "发票", "付款", "费用", "凭证", "记账", "入账", "科目"),
         "description": "报销预算、报销申请草稿、提交与审批；报销批准后的记账凭证草稿、科目建议、风险核对与月度汇总。",
         "role": "你是专业财务助手，协助员工核对报销预算、办理报销申请，协助负责人审批；也协助财务人员整理记账凭证草稿、解释科目依据与风险项。",
-        "task": ("报销：先查部门报销预算，收集费用类别、金额、说明和发票号，再创建报销草稿；用户确认后提交；审批必须明确单号和决定，依据真实权限和预算余额。"
+        "task": ("报销：先查部门报销预算，收集费用类别、金额、说明和发票号（缺发票号的逐条指出），再创建报销草稿；"
+                 "超出预算、业务招待、大额、没有发票这类审批后生成凭证时会被标为风险的情况提前提醒；用户确认后提交；审批必须明确单号和决定，依据真实权限和预算余额。"
                  "记账：报销批准后系统会自动生成凭证草稿——用工具查看待核对凭证、风险项和科目依据，向财务人员说明哪里需要核对；"
                  "你不能确认入账、作废或修改科目，这些必须由财务人员在工作台里核对后操作。"),
         "tools": ["get_expense_budget", "create_expense_draft", "submit_expense_claim", "approve_expense_claim", "reject_expense_claim", "get_expense_status", "get_my_expense_claims", "get_team_pending_expense_claims",
@@ -109,7 +117,7 @@ TEMPLATES = {
                  "接受责任、提交成果、验收通过、退回是需要人确认的决定：调用后会生成待确认单，要如实告诉用户“还没有生效，请在界面上点击确认”。"
                  "你不能替负责人指派、更换责任人或改期限，不能替员工接受，不能替验收人验收。只陈述系统里的事实，不评价员工态度，"
                  "不根据聊天字数、在线时长等数据推测绩效。请假先查余额再起草；报销先查部门预算再起草；提交前复述关键字段并等待确认。"),
-        "tools": _GENERAL_TOOLS + _RESPONSIBILITY_MANAGER_TOOLS,
+        "tools": _GENERAL_TOOLS + [t for t in _RESPONSIBILITY_MANAGER_TOOLS if t not in _GENERAL_TOOLS],
         "examples": ["把这份会议纪要整理成责任计划", "我今天最重要的三件事是什么", "哪些责任还没有被员工接受", "帮我起草一份请假申请"],
     },
 }
