@@ -1,4 +1,5 @@
 """部门专业 Agent 自动配置（service/department_agent_service.py）。"""
+import pathlib
 import unittest
 import uuid
 
@@ -149,10 +150,10 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         team, status = self.new_team("finance")
         agent_id = status["agent"]["id"]
         path = skill_loader._get_yml_path(f"enterprise/agent_{agent_id}.yml")
-        data = yaml.safe_load(open(path, encoding="utf-8"))
+        data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))
         data["tools"] = [t for t in data["tools"] if t["name"] != "get_department_responsibility_risks"]
         data["tools"].append({"name": "get_my_it_tickets"})   # 管理员自己加过的工具，修复后要保留
-        open(path, "w", encoding="utf-8").write(yaml.safe_dump(data, allow_unicode=True))
+        pathlib.Path(path).write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         skill_loader.invalidate_skill_config(f"enterprise/agent_{agent_id}.yml")
 
         broken = run_db(lambda db: svc.agent_status(db, team))
@@ -168,7 +169,7 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         self.assertEqual(synced[0].args[0], self.admin["id"])
         self.assertEqual(synced[0].kwargs["resource_id"], agent_id)
         self.assertIn("get_department_responsibility_risks", synced[0].kwargs["detail"]["added_tools"])
-        names = [t["name"] for t in yaml.safe_load(open(path, encoding="utf-8"))["tools"]]
+        names = [t["name"] for t in yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))["tools"]]
         self.assertIn("get_department_responsibility_risks", names)
         self.assertIn("get_my_it_tickets", names)
         self.assertEqual(len(names), len(set(names)))

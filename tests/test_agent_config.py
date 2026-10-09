@@ -93,7 +93,7 @@ class AgentConfigTest(unittest.TestCase):
         return svc
 
     def _org(self):
-        return mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org))
+        return mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org))
 
     def create(self, name, agent_type="department", **kw):
         with self._org():

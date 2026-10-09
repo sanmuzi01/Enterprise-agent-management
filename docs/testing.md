@@ -1,6 +1,6 @@
 # Testing
 
-项目当前使用 Python `unittest`，1898 条（2026-10-08 更新）；前端 Vitest 87 条（含部门助手组件交互测试）；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+项目当前使用 Python `unittest`，1986 条（2026-10-09 更新）；前端 Vitest 111 条（含部门助手组件交互测试）；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -97,7 +97,7 @@ npm run test:coverage
 - 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
 - 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
   文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
-- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1839 项通过、15 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
+- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1986 项、全部通过，16 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 
@@ -151,6 +151,34 @@ npm run test:coverage
 - **Vitest 串行跑**（`fileParallelism: false`、`pool: 'forks'`）：几个 worker 同时写临时 / 缓存文件，在 Windows 和一些沙箱里会出现临时文件 ENOENT。CI 里还有一个 `frontend-windows` 任务在 Windows 上跑前端单测。
 - **CI 里 Linux 才出现的问题**：OTel SDK 在 Linux 上给批处理器注册了 fork 回调，批处理器被回收后，之后任何一次 fork 都会报 `'NoneType' object is not callable`
   （`otel.shutdown()` 现在会保留已关闭的 provider）；新增的文件被 `.gitignore` 的 `.env.*` 静默排除（本地测试通过、CI 里找不到）。Windows 本地全绿不代表 Linux CI 全绿，两边都要看。
+
+## 空库测试：推送前在本地复现 CI 的起点
+
+```powershell
+.venv\Scripts\python.exe scripts\test_fresh_db.py          # 和“空库”最相关的一组（约 1 分钟）
+.venv\Scripts\python.exe scripts\test_fresh_db.py --all    # 全量，和 CI 一样
+```
+
+建一个临时库 `agent_sql_fresh_<时间戳>` → `alembic upgrade head` → 所有表的自增起点抬到 9 亿 → 跑两次 `bootstrap_database`（验证幂等）→ 把 `DB_NAME` 指向它跑测试 → 删库（`--keep` 保留排查）。
+抬自增起点是因为提示词、专业技能配置等文件按 id 命名、和开发库共用目录：空库里的 1 号助手会覆盖并在清理时删掉开发库 1 号助手的文件（踩过一次，已从 git 恢复）。
+已经接进 `npm run release:check`（账号没有建库权限时加 `--skip-fresh-db`）。
+
+## 测试问题复盘（2026-10）
+
+| 问题 | 为什么本地没发现 | 改了什么 |
+|---|---|---|
+| CI 的 backend 连续几轮失败：库里还没有企业记录时，用户管理、企业知识库、企业智能体列表直接报错 | 本地开发库一直有企业记录，跑多少遍都绿；CI 每次是空库 | 列表在没有企业时返回空（`find_default_organization`），写操作才要求企业存在；加 `tests/test_no_enterprise_yet.py`；加空库测试脚本并接进发布自检；首次启动自动建企业 |
+| 空库上 `rc.create_user(..., admin=True)` 建的不是管理员 | 开发库里测试账号恰好有别的管理员兜底 | 测试统一用 `rc.admin_env(name)`；这是测试写法问题，不是产品问题 |
+| 删除企业助手后留下没有主人的技能记录和 `skills/enterprise/agent_<id>.yml` | 没有任何页面会列出“孤儿”，只有数据体检查出来（开发库里 50 个文件） | `agent_service.delete` 连同专属技能一起删；测试清理也删文件；体检常驻这两项检查 |
+| 发布前端后部分浏览器白屏，换浏览器才能进 | 本地开发服务器不缓存；只在 nginx + 旧标签页上出现 | `/assets/` 找不到返回 404 而不是 `index.html`，`index.html` 不缓存，前端加载旧文件失败时自动刷新；`tests/test_nginx_delivery.py` 用正则核对三份配置，并在真实 nginx 容器里验证过响应头 |
+| 用着用着被登出 | 测试会话都很短 | 滑动续期 + 最长时限；后台轮询不算“在用”；`tests/test_session_renewal.py` 走真实 HTTP 验证续期后带新 CSRF 的写请求能成功 |
+| 中文输入法选词按回车直接把半句话发出去 | 自动化测试不会触发输入法组合事件 | `isImeEnter` 守卫 + 一条扫描所有输入框的测试 |
+| 第一次跑空库测试后，`prompt/prompts/1.yaml`、`5.yaml` 被删了 | 空库的 id 从 1 开始，按 id 命名的文件和开发库共用目录 | 从 git 恢复；空库建表后把自增起点抬到 9 亿；跑完看一眼 `git status` |
+| 修完“空库列表报错”后，本地全量有 9 条失败（CI 是绿的） | 列表改用 `find_default_organization`，但这几个测试只替换了 `_get_default_organization`；CI 空库里测试自己建的企业恰好 id 最小，所以碰巧对 | 测试改为替换最底层的 `find_default_organization`（另一个也调它）；教训：改了“取数的入口”，要搜一遍测试里替换的是哪个入口 |
+| 数据体检的断言在开发库上失败：自己造的孤儿文件不在前 5 条样例里 | 开发库里本来就有别的孤儿 | 测试里放开样例数再断言；体检本身只给 5 条样例是对的 |
+
+几条规律：**开发库里的“现成数据”会掩盖问题**（空库测试解决）；**部署层的问题测不到代码里**（直接解析 nginx 配置 + 真实容器验证）；
+**每个修复都做反向验证**——把修复去掉，对应测试必须失败，否则测试没有测到点子上。
 
 ## 本机跑全量测试前：先停掉 Worker
 

@@ -71,11 +71,11 @@ class AgentAssignmentTest(unittest.TestCase):
         return svc
 
     def _create(self, name, agent_type="department", **kw):
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             return _run_db(lambda db: self._svc().create_managed_agent(db, self.admin["id"], name, agent_type, **kw))
 
     def _assign(self, agent_id, target, **kw):
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             return _run_db(lambda db: self._svc().assign_managed_agent(db, agent_id, self.admin["id"], target, **kw))
 
     def _row(self, agent_id):
@@ -101,7 +101,7 @@ class AgentAssignmentTest(unittest.TestCase):
             return space.id
 
     def _listed(self, agent_id):
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             agents = _run_db(lambda db: self._svc().list_managed_agents(db))
         return next(a for a in agents if a["id"] == agent_id)
 

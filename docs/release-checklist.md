@@ -22,6 +22,9 @@
 npm run release:check
 ```
 
+综合自检里包含**空库测试**（`scripts/test_fresh_db.py`：临时库上跑迁移 + 两次初始化 + 和空库相关的测试，跑完删库）。
+数据库账号没有建库权限时用 `npm run release:check -- --skip-fresh-db`，并以 CI 的 backend 任务结果为准。
+
 必须确认：
 
 - 应用可导入。
@@ -88,6 +91,15 @@ npm run frontend:build
 - `python -m alembic upgrade head` 已执行，表结构与迁移一致。
 - 前端 `npm run frontend:build` 产物由 Nginx 托管，`/api`、`/health`、`/metrics` 反代到后端。
 - 浏览器访问 `/health` 返回后端健康检查；`/metrics` 返回 Prometheus 文本指标。
+
+## 上线后验收（交付）
+
+- 用一个**从没打开过本站的浏览器**和一个**开着旧版本页面的浏览器**各访问一次：旧页面应自动刷新到新版本，不能白屏（nginx 缓存规则见 `docs/deployment.md` 2.3）。
+- `curl -I https://<域名>/` 看到 `Cache-Control: no-cache`；`curl -I https://<域名>/assets/不存在.js` 返回 404，不是 200 的 HTML。
+- 登录后持续操作超过 30 分钟不被登出；后台“组织架构”能看到企业（空库首次部署时由启动自动创建）。
+- 跑一次数据体检：`.venv/bin/python scripts/data_health_check.py`，没有“严重”项；“注意”项和客户确认后再 `--fix`（先备份）。
+- 和客户确认数据保留期限后再打开 `DATA_RETENTION_AUTO`（见 `docs/deployment.md` 5.2）；第一次先 `scripts/data_retention.py` 只看不删。
+- 启用每日数据体检定时任务 `deploy/systemd/agent-data-health.timer`。
 
 ## 备份恢复
 

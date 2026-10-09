@@ -70,15 +70,15 @@ class AdminSpaceDepartmentsTest(unittest.TestCase):
     # ---------- 辅助 ----------
     def _create(self, name, **kw):
         # “全企业”划分到本测试企业，而不是本机恰好 id 最小的那个企业
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             return _run_db(lambda db: svc.admin_create_space(db, self.admin["id"], {"name": name, **kw}))
 
     def _update(self, space_id, patch):
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             return _run_db(lambda db: svc.admin_update_space(db, self.admin["id"], space_id, patch))
 
     def _list(self, scope=None, limit=500):
-        with mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=self.org)):
+        with mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=self.org)):
             return _run_db(lambda db: svc.list_knowledge_spaces(db, limit=limit, scope=scope))
 
     @staticmethod

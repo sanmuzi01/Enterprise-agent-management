@@ -55,6 +55,14 @@ REQUIRED_FILES = [
     "tests/test_db_timeouts.py",
     "docs/database-migrations.md",
     "docs/testing.md",
+    # 交付与数据治理：会话续期、首次启动建企业、空库测试、数据体检、数据保留
+    "service/session_renewal.py",
+    "service/enterprise_bootstrap.py",
+    "scripts/test_fresh_db.py",
+    "service/data_health.py",
+    "scripts/data_health_check.py",
+    "service/data_retention.py",
+    "scripts/data_retention.py",
     # 知识库空间（阶段1）
     "FasdtApi/knowledge_space.py",
     "service/knowledge_space/space_async_service.py",
@@ -364,6 +372,12 @@ def main() -> None:
     check_automation_wired()
     run([python, "-m", "compileall", "FasdtApi", "service", "models", "utils", "scripts", "tests"])
     run([python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
+    # 再在一个全新的空库上跑一遍和“空库”最相关的测试：开发库里有现成数据，有些问题只在空库（CI、客户第一次部署）上出现。
+    # 数据库账号没有建库权限时加 --skip-fresh-db，并在 CI 上确认 backend 任务是绿的。
+    if "--skip-fresh-db" in sys.argv[1:]:
+        print("\n跳过空库测试（--skip-fresh-db）")
+    else:
+        run([python, "scripts/test_fresh_db.py"])
     run(["npm.cmd" if sys.platform.startswith("win") else "npm", "run", "frontend:build"])
     print("\n发布自检完成")
 

@@ -38,7 +38,7 @@ class EnterpriseTest(unittest.TestCase):
         cls.client = rc.make_client()
         cls.env = rc.admin_env(cls.admin["name"])
         cls.env.start()
-        cls.enterprise = mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=cls.org))
+        cls.enterprise = mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=cls.org))
         cls.enterprise.start()
 
     @classmethod

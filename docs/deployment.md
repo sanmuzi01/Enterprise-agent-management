@@ -210,6 +210,18 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
   `KNOWLEDGE_UPLOAD_REQUEST_MAX_BYTES`（一次请求累计，默认 50MB，与 Nginx `client_max_body_size 50m` 一致）、`KNOWLEDGE_UPLOAD_MAX_FILES`（批量个数，默认 20）、
   `USER_MAX_CONCURRENT_UPLOADS`（同一用户同时上传的个数，默认 3）；Nginx 的 `client_max_body_size` 和 `MAX_REQUEST_BODY_BYTES` 要不小于它们。
   没有写权限或文件类型不支持的请求，在接收文件内容之前就被拒绝。
+- **登录有效期（滑动续期）**：令牌本身 60 分钟有效（`ACCESS_TOKEN_EXPIRE_MINUTES`）。用户在用的时候，剩余不到一半就自动换一张新的（响应里重新下发 Cookie），
+  所以一直在用就不会被登出；一直不操作 60 分钟后要重新登录。从登录算起最长 `SESSION_MAX_HOURS`（默认 12 小时）必须重新登录一次，续期不会超过它。
+  页面后台的定时轮询（待办数、未读数）带 `X-Background-Poll: 1`，**不算“在用”**，不会让挂着不动的页面永远不过期。
+  只有浏览器 Cookie 登录会续期，脚本用的 Bearer 令牌不续期。实现见 `service/session_renewal.py`。
+- **前端发布后旧页面自动更新**：`index.html` 不缓存（`expires -1`），带哈希的 `/assets/` 缓存一年；`/assets/` 下找不到的文件返回 404，
+  **不能**回退成 `index.html`——否则旧页面按需加载已经不存在的旧文件时拿到一段 HTML，浏览器报 MIME 错误，页面白屏，只能换浏览器或清缓存。
+  前端捕获到“加载旧版本文件失败”后会自动刷新一次拿新版本（10 秒内不重复刷新，`frontend/src/utils/staleBuild.ts`）。
+  三份 nginx 配置（`deploy/nginx.conf`、`frontend/nginx.conf`、`agent-platform-https.conf`）都是这样写的，`tests/test_nginx_delivery.py` 核对；
+  注意 `add_header` 不要写进 `location` 里（会让 server 级的安全头整体失效），缓存头用 `expires`。
+- **第一次启动自动建好企业**：空库第一次启动时，如果有用户但还没有企业记录，会自动建一条企业（名字取 `DEFAULT_ENTERPRISE_NAME`，没设就用“默认企业”），
+  把已有用户加为成员（平台管理员为所有者），把没有归属的知识库挂到企业下。已经有企业就什么都不做；多个实例同时启动用数据库锁保证只建一次。
+  不想自动建就设 `AUTO_CREATE_ENTERPRISE=0`，再手动跑 `scripts/backfill_default_organization.py --yes`。实现见 `service/enterprise_bootstrap.py`。
 - **脚本 / 集成的令牌**：浏览器登录（`POST /user/login`）响应体里没有 JWT。需要 Bearer 令牌的脚本走 `POST /auth/token`（单独限流 + 审计 `auth.token_issued`），
   **生产默认关闭**（`AUTH_TOKEN_ENDPOINT_ENABLED=1` 才开，开了启动校验会提醒）。压测脚本 `scripts/load_test.py` 和 `scripts/drill_*.py` 用的就是它。
 
@@ -381,6 +393,61 @@ docker run --rm -v pythonproject1_chroma_data:/data -v "$PWD/backups":/backup \
 ```
 
 （卷名前缀跟你项目目录名有关，跑 `docker volume ls` 确认实际名字。）
+
+### 5.1 数据体检
+
+库里“已经在那儿”的脏数据和前后不一致的数据，在页面上表现为“这个人看不到部门助手”“这个知识库谁都看不到”，很难从现象倒推回数据。体检脚本把这些查出来：
+
+```bash
+.venv/bin/python scripts/data_health_check.py            # 只读，列出问题、数量、样例和处理方法
+.venv/bin/python scripts/data_health_check.py --json     # 给监控 / 定时任务
+.venv/bin/python scripts/data_health_check.py --fix      # 先备份！只修“补数据、不删数据、不需要人判断”的几类，写审计
+```
+
+| 检查 | 级别 | 能自动修 |
+|---|---|---|
+| 没有企业记录 / 有多条企业记录 | 严重 | 否（保留哪家要人判断） |
+| 已停用部门的智能体仍是已发布状态 | 严重 | 否（停用助手还是启用部门要人判断） |
+| 在用的账号没有加入企业 | 注意 | 是（加为企业成员，管理员为所有者） |
+| 知识库空间没有归属企业 | 注意 | 是（挂到企业下，不改划分和成员） |
+| 部门成员在企业里已停用或不存在 | 注意 | 否 |
+| 部门助手缺少模板里新增的能力 | 注意 | 否（在“组织架构”里点一键修复，原配置保留） |
+| 技能配置文件 / 助手专属技能记录对应的助手已不存在 | 提示 | 否（确认后归档） |
+| 残留的自动化测试账号（`rt_` 开头） | 提示 | 否（`scripts/purge_test_users.py`） |
+
+有严重问题时退出码为 1。交付 / 升级后先跑一次；生产上每天跑一次：`deploy/systemd/agent-data-health.{service,timer}`（只读，不自动修；单元变成 failed 就是有严重问题）。
+
+```bash
+sudo cp deploy/systemd/agent-data-health.* /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now agent-data-health.timer
+```
+
+### 5.2 数据保留期限
+
+运行轨迹、操作日志、通知、后台任务记录每次使用都会写，只增不减。保留策略按类配置（`service/data_retention.py`）：
+
+| 数据 | 环境变量 | 默认 | 不删的 |
+|---|---|---|---|
+| 智能体运行轨迹（含每一步） | `AGENT_RUN_RETENTION_DAYS` | 180 天 | 运行中的 |
+| 接口操作日志 | `OPERATION_LOG_RETENTION_DAYS` | 90 天 | — |
+| 站内通知 | `NOTIFICATION_RETENTION_DAYS` | 180 天 | 未读的 |
+| 后台任务记录 | `BACKGROUND_TASK_RETENTION_DAYS` | 90 天 | 排队中、执行中的 |
+| 死信 | `DEAD_LETTER_RETENTION_DAYS` | 180 天 | 待处理的 |
+
+- **永远保留**：审计记录（`audit_event`、`kb_audit_log`）、问题中心（`system_issue`、`issue_event`）、审批单、对话内容（对话是用户自己的，由用户删除对话或删除助手时删）。
+- 天数设 `0` 表示这一类不清理；小于 7 天按 7 天算（防止手误把近期数据删光）。分批删除（每批 1000 条、单独提交），不长时间锁表。
+- 已有的清理照旧：发件箱事件 7 天（`OUTBOX_RETENTION_DAYS`）、附件 7 天、组件数据点 90 天。
+- 注意：一条已读通知删掉后，如果对应的高优先级提醒还没处理，下次提醒运行时会再通知一次。
+
+**自动清理默认关闭**。删数据之前要和客户确认保留期限（有的行业有留存要求），确认后：
+
+```bash
+.venv/bin/python scripts/data_retention.py            # 先看：每类保留多少天、到期多少条（不删）
+.venv/bin/python scripts/backup.py                    # 第一次清理前备份
+.venv/bin/python scripts/data_retention.py --apply    # 清理，写审计 data_retention.applied
+```
+
+之后在 `.env` 里设 `DATA_RETENTION_AUTO=1`，事件运行器每天自动清理一次（启动后满一天才跑第一次）；或者不开自动，用定时任务调 `--apply`。
 
 ## 6. 开发临时模式
 

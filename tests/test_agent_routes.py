@@ -40,7 +40,7 @@ class AgentRoutesTest(unittest.TestCase):
         cls.env = rc.admin_env(cls.admin["name"])
         cls.env.start()
         # 平台只服务一个企业（id 最小的那个）；这里把本测试建的企业当作“这个企业”
-        cls.enterprise = mock.patch("service.organization_admin_service._get_default_organization", mock.AsyncMock(return_value=org))
+        cls.enterprise = mock.patch("service.organization_admin_service.find_default_organization", mock.AsyncMock(return_value=org))
         cls.enterprise.start()
 
     @classmethod
