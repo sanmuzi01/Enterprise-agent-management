@@ -78,7 +78,11 @@
     <div v-if="open" class="space-y-3 border-t border-slate-200 bg-slate-50/60 px-4 py-4" data-testid="ticket-detail">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-sm font-medium text-slate-900">#{{ open.id }} {{ open.title }}</p>
-        <span class="rounded px-2 py-0.5 text-xs" :class="statusClass(open.status)">{{ open.statusLabel }}</span>
+        <span class="flex items-center gap-2">
+          <button v-if="askAgent" @click="askAgent(`分析工单 #${open.id}「${open.title}」：现在卡在哪一步，我接下来该做什么？`)"
+            data-testid="ticket-ask-agent" class="rounded border border-indigo-200 px-2 py-0.5 text-xs text-indigo-700 hover:bg-indigo-50">让助手分析</button>
+          <span class="rounded px-2 py-0.5 text-xs" :class="statusClass(open.status)">{{ open.statusLabel }}</span>
+        </span>
       </div>
       <p class="whitespace-pre-line text-sm text-slate-700">{{ open.description }}</p>
       <p v-if="open.status === 'WAITING_USER'" class="rounded border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-800">IT 在等你补充信息，请在下面回复。</p>
@@ -148,6 +152,9 @@ import * as api from '../api/itService'
 import type { Device, Suggestion, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
+import { useAskDeptAgent } from './department/askAgent'
+
+const askAgent = useAskDeptAgent()
 
 const props = defineProps<{ teamId: number }>()
 

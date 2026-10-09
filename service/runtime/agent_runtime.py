@@ -163,9 +163,26 @@ def _compose_kb_prompt(system_prompt: str, agent, rag: Dict[str, Any]) -> str:
     return system_prompt
 
 
+_WEEKDAYS = "一二三四五六日"
+
+
+def _today_line(now=None) -> str:
+    """告诉模型今天是哪天。员工说“报销昨天的住宿费”“下周一请假”，模型得先知道今天的日期
+    才能换算；不写的话它只能猜，起草的单据日期会错。按企业所在时区（APP_TIMEZONE，默认北京时间）。"""
+    import os
+    from datetime import timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 —— 没有时区数据时退回东八区
+        tz = timezone(timedelta(hours=8))
+    local = (now or utcnow()).replace(tzinfo=timezone.utc).astimezone(tz)
+    return f"今天是 {local:%Y-%m-%d}（星期{_WEEKDAYS[local.weekday()]}）。用户说“昨天”“下周一”等相对日期时，按这个日期换算。"
+
+
 async def _compose_system_prompt_async(db, user_id: int, agent_id: int, agent) -> Dict[str, str]:
     """统一组装 Agent 基础提示词、用户画像和长期记忆（画像 / 记忆走 *_async）。"""
-    base_prompt = build_prompt(agent_id) or "你是一个通用智能助理。"
+    base_prompt = (build_prompt(agent_id) or "你是一个通用智能助理。") + "\n\n" + _today_line()
 
     profile_text = ""
     try:

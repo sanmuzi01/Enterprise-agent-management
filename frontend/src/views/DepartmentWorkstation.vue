@@ -41,6 +41,10 @@
     </div>
 
     <div v-else class="space-y-5">
+      <!-- 部门助手是工作台的入口：常驻顶部，主动给出今天该处理的事；下面的业务模块是它的执行与核对界面 -->
+      <DepartmentAgentHub ref="agentHub" :agent="deptAgent" :central-agent="centralAgent" :cards="home?.cards || []"
+        @changed="onAgentChanged" @open="openSection" @open-card="openCard" />
+
       <!-- 概览：按部门业务和我的身份汇总，点卡片直达对应工作区 -->
       <div v-if="home" class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" data-testid="home-cards">
         <button v-for="c in home.cards" :key="c.key" @click="openCard(c)" :data-testid="`home-card-${c.key}`"
@@ -53,7 +57,7 @@
         </button>
       </div>
 
-      <nav class="flex flex-wrap gap-1 border-b border-slate-200" data-testid="dept-sections">
+      <nav ref="sectionNav" class="flex flex-wrap gap-1 border-b border-slate-200" data-testid="dept-sections">
         <button v-for="s in sections" :key="s.value" @click="setSection(s.value)" :data-testid="`dept-section-${s.value}`"
           class="-mb-px border-b-2 px-3 py-2 text-sm"
           :class="section === s.value ? 'border-indigo-600 font-medium text-indigo-700' : 'border-transparent text-slate-500 hover:text-slate-800'">{{ s.label }}</button>
@@ -86,34 +90,13 @@
         </template>
       </div>
 
-      <template v-if="section === 'assistant'">
-        <section v-if="deptAgent" class="rounded-lg border border-slate-200 bg-white">
-          <div class="border-b border-slate-200 px-4 py-3">
-            <h2 class="text-sm font-semibold text-slate-900">部门助手 · {{ deptAgent.name }}</h2>
-            <p class="text-xs text-slate-400 mt-0.5">{{ deptAgent.description }}</p>
-            <p v-if="!deptAgent.model_configured" class="mt-1 text-xs text-amber-700">
-              需要先在「设置 → 模型连接」连接 {{ modelDisplayName(deptAgent.model_name) }} 模型，部门助手才能回答。
-            </p>
-          </div>
-          <EmbeddedAgentChatPanel :agent-id="deptAgent.id" />
-        </section>
-        <p v-else class="rounded-lg border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-xs text-slate-500">
-          部门助手尚未发布：企业管理员完成配置并发布后，会出现在这里。
-        </p>
-      </template>
-      <RouterLink v-if="centralAgent && (section === 'assistant' || section === 'overview')" :to="`/agents/${centralAgent.id}/chat`" data-testid="central-entry"
-        class="flex items-center justify-between rounded-lg border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-900 hover:bg-sky-100">
-        <span><strong>不确定该找哪个部门？</strong>问「{{ centralAgent.name }}」，它会按问题转交给你有权使用的部门助手。</span>
-        <span class="shrink-0 text-xs text-sky-700">去提问 →</span>
-      </RouterLink>
     </div>
   </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { modelDisplayName } from '../utils/displayNames'
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, provide, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { RefreshCcw } from 'lucide-vue-next'
 import { useCurrentDepartmentStore } from '../stores/currentDepartment'
@@ -121,7 +104,8 @@ import { getDepartmentHome } from '../api/enterpriseWorkspace'
 import type { DepartmentHome, HomeCard } from '../api/enterpriseWorkspace'
 import { getErrorMessage } from '../utils/request'
 import CrmModule from '../components/CrmModule.vue'
-import EmbeddedAgentChatPanel from '../components/EmbeddedAgentChatPanel.vue'
+import DepartmentAgentHub from '../components/department/DepartmentAgentHub.vue'
+import { ASK_DEPT_AGENT } from '../components/department/askAgent'
 import FinanceModule from '../components/FinanceModule.vue'
 import FinanceVoucherModule from '../components/FinanceVoucherModule.vue'
 import HrCaseModule from '../components/HrCaseModule.vue'
@@ -142,7 +126,7 @@ const businessRevision = ref(0)
 const errorMsg = ref('')
 const home = ref<DepartmentHome | null>(null)
 
-type Section = 'overview' | 'business' | 'collab' | 'attendance' | 'office' | 'assistant'
+type Section = 'overview' | 'business' | 'collab' | 'attendance' | 'office'
 const section = ref<Section>('overview')
 
 const currentDept = computed(() => deptStore.currentDepartment)
@@ -160,8 +144,31 @@ const hasBusiness = computed(() => !!home.value?.business_label)
 const sections = computed(() => {
   const list: { value: Section; label: string }[] = [{ value: 'overview', label: '概览' }]
   if (home.value?.business_label) list.push({ value: 'business', label: home.value.business_label })
-  list.push({ value: 'collab', label: '责任协同' }, { value: 'attendance', label: '考勤' }, { value: 'office', label: '办公事务' }, { value: 'assistant', label: '部门助手' })
+  list.push({ value: 'collab', label: '责任协同' }, { value: 'attendance', label: '考勤' }, { value: 'office', label: '办公事务' })
   return list
+})
+
+// ---- 部门助手：入口在页面顶部，业务模块是它的执行与核对界面 ----
+const agentHub = ref<InstanceType<typeof DepartmentAgentHub> | null>(null)
+const sectionNav = ref<HTMLElement | null>(null)
+
+// 助手建了草稿 / 提交了单子：刷新业务模块和概览数字
+function onAgentChanged() {
+  businessRevision.value++
+}
+
+// 卡片上的“在工作台中查看”：切到对应分区并滚过去（该分区对当前身份不存在时停在概览）
+async function openSection(target: 'office' | 'business') {
+  setSection(sections.value.some((s) => s.value === target) ? target : 'overview')
+  await nextTick()
+  sectionNav.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
+// 业务模块里的“让助手分析”：把记录交给顶部的助手，并滚回顶部看结果
+provide(ASK_DEPT_AGENT, (prompt: string) => {
+  if (!deptAgent.value?.model_configured) return
+  agentHub.value?.ask(prompt)
+  agentHub.value?.$el?.scrollIntoView?.({ behavior: 'smooth', block: 'start' })
 })
 const sectionKey = (teamId: number) => `dept_section_${teamId}`
 

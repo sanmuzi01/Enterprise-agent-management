@@ -53,6 +53,11 @@
         </div>
         <div class="flex items-center gap-2">
           <span class="rounded px-2 py-0.5 text-xs" :class="statusBadgeClass(r.status)">{{ statusLabel(r.status) }}</span>
+          <button v-if="askAgent"
+            @click="askAgent(`分析报销单 #${r.id}（${lineSummary(r.lines)}，合计 ¥${r.totalAmount.toFixed(2)}，${statusLabel(r.status)}）：材料是否齐全、预算够不够、下一步该做什么？`)"
+            data-testid="expense-ask-agent"
+            class="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50"
+          >让助手分析</button>
           <button
             v-if="r.status === 'DRAFT'"
             @click="doSubmitRequest(r.id)"
@@ -98,8 +103,10 @@ import type { ExpenseClaimDto, ExpenseLineDto } from '../api/departmentFinance'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { statusBadgeClass, statusLabel } from '../utils/requestStatus'
+import { useAskDeptAgent } from './department/askAgent'
 
 const props = defineProps<{ teamId: number }>()
+const askAgent = useAskDeptAgent()
 
 const myRequests = ref<ExpenseClaimDto[]>([])
 const pendingRequests = ref<ExpenseClaimDto[]>([])

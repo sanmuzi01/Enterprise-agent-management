@@ -7,9 +7,10 @@ import tailwindcss from '@tailwindcss/vite'
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
 
 const apiProxy = {
-  // 前端请求 /api/xxx → 代理到 http://127.0.0.1:8011/xxx ，避免 CORS
+  // 前端请求 /api/xxx → 代理到 http://127.0.0.1:8011/xxx ，避免 CORS。
+  // 8011 被别的服务占着时（比如 Docker 版正在跑），用 VITE_API_PROXY_TARGET 指到本地另起的后端。
   '/api': {
-    target: 'http://127.0.0.1:8011',
+    target: process.env.VITE_API_PROXY_TARGET || 'http://127.0.0.1:8011',
     changeOrigin: true,
     rewrite: (path: string) => path.replace(/^\/api/, ''),
   },
