@@ -132,6 +132,8 @@ cloudflared tunnel --url http://127.0.0.1:8011
 
 ## 真机联调步骤
 
+还没有测试应用和公网 HTTPS 时，先用开放平台仿真器在 Docker 里把整条链路跑一遍，见 [real-env-simulation.md](real-env-simulation.md)。
+
 1. **开放平台建测试应用**
    - 飞书：开放平台 → 创建企业自建应用 → 添加“机器人”能力 → 权限管理开通“获取与发送单聊、群组消息”“获取通讯录基本信息”“获取用户手机号”
      （要整群记录到 CRM 再开“获取群组中所有消息”“获取群组信息”，并订阅 `im.message.recalled_v1`）→

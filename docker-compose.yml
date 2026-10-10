@@ -36,8 +36,16 @@ x-backend-env: &backend-env
   # 各自内嵌 PersistentClient 并发读写同一份 sqlite 文件有损坏风险。
   CHROMA_SERVER_HOST: chroma
   CHROMA_SERVER_PORT: "8000"
-  TRUSTED_HOSTS: localhost,127.0.0.1
-  CORS_ALLOW_ORIGINS: http://localhost:8080
+  # 飞书 / 钉钉真机联调：公网域名必须加进 TRUSTED_HOSTS（否则回调被 Host 白名单拒绝），在项目根目录的 .env 里覆盖即可
+  TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1}
+  CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:8080}
+  # 飞书 / 钉钉接入（docs/collaboration-integrations.md）：公网 HTTPS 地址、网页地址、通知推送开关、开放平台地址
+  INTEGRATION_PUBLIC_BASE_URL: ${INTEGRATION_PUBLIC_BASE_URL:-}
+  INTEGRATION_WEB_BASE_URL: ${INTEGRATION_WEB_BASE_URL:-http://localhost:8080}
+  INTEGRATION_PUSH_NOTIFICATIONS: ${INTEGRATION_PUSH_NOTIFICATIONS:-1}
+  FEISHU_BASE_URL: ${FEISHU_BASE_URL:-https://open.feishu.cn}
+  DINGTALK_BASE_URL: ${DINGTALK_BASE_URL:-https://api.dingtalk.com}
+  DINGTALK_OAPI_URL: ${DINGTALK_OAPI_URL:-https://oapi.dingtalk.com}
   WIDGET_SCHEDULER_ENABLED: "1"
   # 企业业务中心（Java）：部门工作台的请假、采购、CRM、报销、IT、责任协同都要它。
   # 两边的签名密钥必须一致；这是公开的演示值，正式用请在 .env 里覆盖。

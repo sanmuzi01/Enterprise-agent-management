@@ -73,9 +73,12 @@ def enterprise_engine():
 
 def purge(db, ent):
     org_ids = [r[0] for r in db.execute(text("SELECT id FROM organizations WHERE name = :n"), {"n": ORG_NAME}).all()]
-    team_ids = [r[0] for r in db.execute(text("SELECT id FROM teams WHERE organization_id IN (SELECT id FROM organizations WHERE name = :n)"),
-                                         {"n": ORG_NAME}).all()] if org_ids else []
     user_ids = [r[0] for r in db.execute(text("SELECT id FROM `user` WHERE name LIKE 'demo\\_%'")).all()]
+    owner = db.execute(text("SELECT id FROM `user` WHERE name = 'demo_owner'")).scalar()
+    # 演示部门：演示企业里的，加上放进已有企业时由 demo_owner 建的
+    team_ids = [r[0] for r in db.execute(text(
+        "SELECT id FROM teams WHERE organization_id IN (SELECT id FROM organizations WHERE name = :n) OR owner_user_id = :u"),
+        {"n": ORG_NAME, "u": owner or 0}).all()]
     ids = ",".join(str(t) for t in team_ids) or "0"
     users = ",".join(str(u) for u in user_ids) or "0"
     with ent.begin() as conn:
@@ -138,20 +141,31 @@ def create_structure(db):
     for name in ACCOUNTS:
         users[name] = create_user(db, name=name, password=hash_password(PASSWORD), age=30)
     owner = users["demo_owner"]
-    db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
-               {"n": ORG_NAME, "o": owner.id})
-    db.commit()
-    org = db.execute(text("SELECT id FROM organizations WHERE name = :n ORDER BY id DESC LIMIT 1"), {"n": ORG_NAME}).scalar()
+    # 平台只服务一家企业（id 最小的那条，见 models/enterprise_dao.py）。全新部署启动时已经自动建好了企业
+    # （service/enterprise_bootstrap.py），这时演示部门和账号要放进这家企业，不能再建第二家——
+    # 否则演示账号都不算“本企业成员”，飞书 / 钉钉绑定这类企业级功能用不了（仿真联调发现的问题）。
+    org = db.execute(text("SELECT id FROM organizations ORDER BY id LIMIT 1")).scalar()
+    joined_existing = org is not None
+    if not joined_existing:
+        db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
+                   {"n": ORG_NAME, "o": owner.id})
+        db.commit()
+        org = db.execute(text("SELECT id FROM organizations WHERE name = :n ORDER BY id DESC LIMIT 1"), {"n": ORG_NAME}).scalar()
     teams = {}
     for code, label in TEAMS.items():
         db.execute(text("INSERT INTO teams (organization_id, name, owner_user_id, status, department_code, created_at) "
                         "VALUES (:o, :n, :u, 'active', :c, NOW())"), {"o": org, "n": label, "u": owner.id, "c": code})
         db.commit()
-        teams[code] = db.execute(text("SELECT id FROM teams WHERE organization_id = :o AND department_code = :c"),
-                                 {"o": org, "c": code}).scalar()
+        # 按“演示负责人建的”找：企业里可能已经有同类型的部门
+        teams[code] = db.execute(text("SELECT id FROM teams WHERE organization_id = :o AND department_code = :c AND owner_user_id = :u "
+                                      "ORDER BY id DESC LIMIT 1"), {"o": org, "c": code, "u": owner.id}).scalar()
     for name, (_, team, team_role, org_role) in ACCOUNTS.items():
-        _add_org_member(db, org, users[name].id, org_role)
+        # 加入已有企业时不抢所有者：demo_owner 以企业管理员身份加入，原所有者不变
+        _add_org_member(db, org, users[name].id, "admin" if joined_existing and org_role == "owner" else org_role)
         _add_team_member(db, teams[team], users[name].id, team_role)
+    if joined_existing:
+        name = db.execute(text("SELECT name FROM organizations WHERE id = :o"), {"o": org}).scalar()
+        print(f"    放进已有企业「{name}」（平台只服务一家企业）")
     return org, teams, users
 
 
