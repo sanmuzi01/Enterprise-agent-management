@@ -1637,6 +1637,50 @@ class CrmMailAccount(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class CrmChatGroup(Base):
+    """开启了“群消息记录到 CRM”的飞书群。只有销售部门负责人或群主能在群里 @机器人 开启 / 关闭，开启时机器人在群里公告；
+    没开启的群，平台不保存任何消息。一个群同时只归一个销售部门；customer_id 不为空时，群消息直接记到这个客户。"""
+    __tablename__ = "crm_chat_group"
+    __table_args__ = (
+        UniqueConstraint("provider", "tenant_id", "chat_id", name="uq_crm_chat_group"),
+        Index("idx_crm_chat_group_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    tenant_id = Column(String(120), nullable=False)
+    chat_id = Column(String(120), nullable=False)
+    chat_name = Column(String(200), nullable=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    customer_name = Column(String(200), nullable=True)
+    status = Column(String(20), nullable=False, default="active")      # active / closed
+    enabled_by = Column(Integer, nullable=False)
+    enabled_at = Column(DateTime, nullable=False, default=utcnow)
+    closed_by = Column(Integer, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    close_reason = Column(String(200), nullable=True)
+    message_count = Column(Integer, nullable=False, default=0)          # 开启以来记录的消息数
+    last_message_at = Column(DateTime, nullable=True)
+
+
+class CrmChatMessage(Base):
+    """已开启记录的群里收到、还没整理成客户活动的消息（暂存）。一段对话停下 30 分钟后由定时任务整理成一条
+    “群聊”客户活动，随后删除暂存。撤回的消息在整理前从这里删掉，不会进 CRM。"""
+    __tablename__ = "crm_chat_message"
+    __table_args__ = (
+        UniqueConstraint("group_id", "message_id", name="uq_crm_chat_message"),
+        Index("idx_crm_chat_message_sent", "group_id", "sent_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, nullable=False)
+    message_id = Column(String(120), nullable=False)
+    sender_id = Column(String(120), nullable=True)
+    sender_name = Column(String(120), nullable=True)
+    content = Column(Text, nullable=False)
+    sent_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class InvoiceExtraction(Base):
     """发票识别结果（图片 / PDF → 结构化字段）。每个字段都有置信度（field_confidence_json）；
     低于阈值的字段必须员工逐项确认后才能用于报销（status: needs_review → confirmed）。

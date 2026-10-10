@@ -180,3 +180,31 @@ export async function syncMailbox(teamId: number) {
   const { data } = await request.post(`${base}/mailbox/sync`, { team_id: teamId }, { timeout: 120000 })
   return data as { fetched: number; created: number; duplicates: number; failed: number }
 }
+
+// ------------------------------------------------------------------ 群消息记录到 CRM（飞书群里 @机器人 开启）
+
+export interface ChatGroup {
+  id: number
+  provider: string
+  chat_name: string
+  customer_id: number | null
+  customer_name: string | null
+  status: 'active' | 'closed'
+  enabled_by: string
+  enabled_at: string
+  closed_at: string | null
+  close_reason: string | null
+  message_count: number
+  pending_messages: number
+  last_message_at: string | null
+}
+
+export async function listChatGroups(teamId: number): Promise<{ items: ChatGroup[]; can_manage: boolean }> {
+  const { data } = await request.get(`${base}/chat-groups`, { params: { team_id: teamId } })
+  return data
+}
+
+export async function closeChatGroup(teamId: number, groupId: number): Promise<{ saved: number; group: ChatGroup }> {
+  const { data } = await request.post(`${base}/chat-groups/${groupId}/close`, { team_id: teamId })
+  return data
+}

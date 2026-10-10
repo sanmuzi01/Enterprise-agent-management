@@ -67,7 +67,7 @@ def _robot_message(app, data: Dict[str, Any]) -> ParsedEvent:
         chat_id=data.get("conversationId"), chat_type="group" if group else "p2p", message_id=event_id,
         reply_context={"session_webhook": data.get("sessionWebhook"),
                        "session_webhook_expires": data.get("sessionWebhookExpiredTime"), "staff_id": staff_id},
-        event_type="robot.message")
+        event_type="robot.message", message_type=str(data.get("msgtype") or "text"), record_text=text)
 
 
 def _subscription(app, query: Dict[str, str], data: Dict[str, Any]) -> ParsedEvent:

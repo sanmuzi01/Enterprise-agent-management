@@ -3,6 +3,7 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from utils.logger_handler import get_logger
@@ -39,6 +40,29 @@ class InboundMessage:
     event_type: str = "message"
     ack: Dict[str, Any] = field(default_factory=dict)             # 立即回给平台的应答（钉钉事件订阅要加密的 success）
     mention_ids: List[str] = field(default_factory=list)          # 群消息里被 @ 的人（飞书 open_id），用来确认 @ 的是本机器人
+    message_type: str = "text"                  # text / post / merge_forward（合并转发的聊天记录）/ image / file ……
+    record_text: str = ""                       # 记到 CRM 用的文字：@ 换成人名，图片 / 文件写成占位
+    sent_at: Optional[datetime] = None          # 消息发送时间（UTC）
+
+
+@dataclass
+class ChatLine:
+    """聊天记录里的一条消息（合并转发的子消息 / 群里的一条消息）。"""
+    sender_id: str
+    sender_name: str
+    text: str
+    sent_at: datetime                           # UTC，不带时区
+
+
+@dataclass
+class MessageRecalled:
+    """员工撤回了一条消息：还没整理进 CRM 的群消息暂存要删掉。"""
+    provider: str
+    tenant_id: str
+    event_id: str
+    message_id: str
+    event_type: str = "message.recalled"
+    ack: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,7 +106,7 @@ class Ignored:
     ack: Dict[str, Any] = field(default_factory=dict)
 
 
-ParsedEvent = Union[InboundMessage, CardAction, OrgChange, Handshake, Ignored]
+ParsedEvent = Union[InboundMessage, CardAction, OrgChange, MessageRecalled, Handshake, Ignored]
 
 
 # ---------------------------------------------------------------- 统一卡片模型
@@ -257,6 +281,16 @@ class ProviderAdapter:
     def addressed_to_bot(self, app, message: "InboundMessage") -> bool:
         """群消息是不是 @ 了本机器人；单聊一律是。确认不了时按“是”处理（不漏掉员工的消息）。"""
         return True
+
+    def fetch_forwarded(self, app, message: "InboundMessage") -> Optional[List[ChatLine]]:
+        """员工转发给机器人的聊天记录（合并转发）里的每条消息；平台不支持返回 None。取不到抛 IntegrationError。"""
+        return None
+
+    supports_group_capture = False              # 机器人能不能收到群里没 @ 它的消息（“群消息记录到 CRM”需要）
+
+    def chat_info(self, app, chat_id: str) -> Dict[str, str]:
+        """群名称和群主（{"name", "owner_id"}）；查不到返回空字典，不抛错。"""
+        return {}
 
     def fetch_organization(self, app) -> Dict[str, List[Dict[str, Any]]]:
         """{"tenant_id": str, "departments": [{id, name, parent_id}], "users": [{user_id, union_id, name, mobile, email, department_ids, active}]}"""

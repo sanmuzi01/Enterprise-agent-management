@@ -7,14 +7,12 @@
 nonce 没用过 → Token 和 App ID 对得上 → 再看事件内容。任何一步不通过都抛 VerificationError（路由返回 401）。
 """
 import json
-import re
-from typing import Any, Dict
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
 
-from service.integrations.base import (CardAction, Handshake, Ignored, InboundMessage, OrgChange, ParsedEvent,
-                                       VerificationError, check_timestamp, parse_button_value, remember_nonce)
-from service.integrations.feishu import signature
-
-_MENTION = re.compile(r"@_user_\d+")
+from service.integrations.base import (CardAction, Handshake, Ignored, InboundMessage, MessageRecalled, OrgChange,
+                                       ParsedEvent, VerificationError, check_timestamp, parse_button_value, remember_nonce)
+from service.integrations.feishu import content, signature
 
 
 def _header(headers: Dict[str, str], name: str) -> str:
@@ -75,6 +73,11 @@ def parse(app, headers: Dict[str, str], body: bytes) -> ParsedEvent:
         return _message(tenant, event_id, event)
     if event_type == "card.action.trigger":
         return _card(tenant, event_id, event)
+    if event_type == "im.message.recalled_v1":
+        message_id = str(event.get("message_id") or "")
+        if not message_id:
+            return Ignored("撤回事件没有 message_id", tenant, event_id, event_type)
+        return MessageRecalled("feishu", tenant, event_id, message_id, event_type=event_type)
     if event_type == "contact.user.deleted_v3":
         open_id = ((event.get("object") or {}).get("open_id"))
         return OrgChange("feishu", tenant, event_id, event_type, [open_id] if open_id else [])
@@ -92,23 +95,28 @@ def _message(tenant: str, event_id: str, event: Dict[str, Any]) -> ParsedEvent:
         return Ignored("不是员工发的消息", tenant, event_id, "im.message.receive_v1")
     ids = sender.get("sender_id") or {}
     chat_type = message.get("chat_type") or "p2p"
-    if chat_type != "p2p" and not message.get("mentions"):
-        # 群聊只处理 @ 机器人的消息（机器人默认也只收得到这些），不读群里其他人的聊天
-        return Ignored("群消息没有 @ 机器人", tenant, event_id, "im.message.receive_v1")
-    text = ""
-    if message.get("message_type") == "text":
-        try:
-            text = str(json.loads(message.get("content") or "{}").get("text") or "")
-        except ValueError:
-            text = ""
-        text = _MENTION.sub("", text).strip()
+    # 群里没 @ 机器人的消息：只有应用开通了“获取群组中所有消息”权限才会推过来。这里照样解析，由 dispatcher 决定：
+    # 这个群开启了“记录到 CRM”就暂存，没开启就丢弃（不保存、不回复）
+    msg_type = str(message.get("message_type") or "")
+    raw, mentions = message.get("content") or "", message.get("mentions") or []
     return InboundMessage(
         provider="feishu", tenant_id=tenant, event_id=event_id, external_user_id=str(ids.get("open_id") or ""),
-        union_id=ids.get("union_id"), text=text, chat_id=message.get("chat_id"),
+        union_id=ids.get("union_id"), text=content.render(msg_type, raw, mentions, strip_mentions=True),
+        chat_id=message.get("chat_id"),
         chat_type="p2p" if chat_type == "p2p" else "group", message_id=message.get("message_id"),
         reply_context={"message_id": message.get("message_id"), "open_id": ids.get("open_id"), "chat_id": message.get("chat_id")},
         event_type="im.message.receive_v1",
-        mention_ids=[str((m.get("id") or {}).get("open_id")) for m in message.get("mentions") or [] if (m.get("id") or {}).get("open_id")])
+        mention_ids=[str((m.get("id") or {}).get("open_id")) for m in mentions if (m.get("id") or {}).get("open_id")],
+        message_type=msg_type, record_text=content.render(msg_type, raw, mentions, strip_mentions=False),
+        sent_at=millis(message.get("create_time")))
+
+
+def millis(value: Any) -> Optional[datetime]:
+    """飞书的毫秒时间戳（字符串）→ UTC 时间（不带时区）。"""
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, tz=timezone.utc).replace(tzinfo=None)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
 
 
 def _card(tenant: str, event_id: str, event: Dict[str, Any]) -> CardAction:

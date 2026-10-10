@@ -1,16 +1,20 @@
-"""飞书 / 钉钉聊天内容进 CRM：只处理员工明确要求保存的消息。
+"""飞书 / 钉钉聊天内容进 CRM：只处理员工明确交给机器人的内容。
 
-员工给机器人发“保存到CRM：……”（或转发聊天记录时带上这句话），这条内容才会存成客户活动；
+- 员工给机器人发“保存到CRM：……”，这条内容存成客户活动；
+- 员工把和客户的聊天记录合并转发给机器人（飞书），整段记录存成一条“群聊 / 聊天”活动，每条带发送人和时间；
+- 按群开启的“群消息记录到 CRM”见 service/crm/group_capture.py。
 不读取员工之间的私聊，也不会把发给机器人的普通对话自动存进 CRM。
 """
 import re
-from typing import Any, Dict, Optional
+from datetime import timedelta
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 
 from models.init_db import Team, TeamMember
 from service.crm import activities as acts
 from service.crm.sources import ActivityDraft
+from service.integrations.base import ChatLine
 from service.exceptions import AppError
 from utils.timeutil import utcnow
 
@@ -40,9 +44,53 @@ async def save(db, user_id: int, provider: str, message_id: str, text: str) -> s
         result = await acts.ingest(db, user_id, team_id, draft, provider)
     except AppError as exc:
         return f"没有保存：{exc}"
-    activity: Dict[str, Any] = result["activity"] or {}
     if result["duplicate"]:
         return "这条内容已经保存过了，不会重复记录。"
+    return reply_for(result["activity"] or {})
+
+
+def beijing(value) -> str:
+    return (value + timedelta(hours=8)).strftime("%m-%d %H:%M")
+
+
+def transcript(lines: List[ChatLine], limit: int = 20000) -> str:
+    """聊天记录排成“[10-09 14:03] 王总：……”一行一条（北京时间）。超长时保留最后的部分（最近的对话更有用）。"""
+    rows = [f"[{beijing(line.sent_at)}] {line.sender_name}：{line.text}" for line in lines]
+    text = "\n".join(rows)
+    if len(text) > limit:
+        text = "（前面的记录过长，已省略）\n" + text[-limit:]
+    return text
+
+
+def participants(lines: List[ChatLine]) -> List[Dict[str, str]]:
+    seen: Dict[str, Dict[str, str]] = {}
+    for line in lines:
+        seen.setdefault(line.sender_name, {"name": line.sender_name, "email": "", "role": "chat"})
+    return list(seen.values())[:50]
+
+
+async def save_forward(db, user_id: int, provider: str, message_id: str, lines: List[ChatLine]) -> str:
+    """员工合并转发给机器人的聊天记录：整段存成一条客户活动（同一次转发只存一次）。"""
+    if not lines:
+        return "这段聊天记录里没有能读取的文字（图片、文件暂时不能识别），没有保存。"
+    team_id = await _sales_team(db, user_id)
+    if team_id is None:
+        return "转发聊天记录目前用于保存到 CRM，只有销售部门的同事可以用。"
+    people = participants(lines)
+    names = "、".join(p["name"] for p in people[:4]) + ("等" if len(people) > 4 else "")
+    title = f"聊天记录：{names}（{len(lines)} 条，{beijing(lines[0].sent_at)} 起）"
+    draft = ActivityDraft("chat", f"{provider}:{message_id}", lines[-1].sent_at, title[:300], transcript(lines),
+                          participants=people)
+    try:
+        result = await acts.ingest(db, user_id, team_id, draft, provider)
+    except AppError as exc:
+        return f"没有保存：{exc}"
+    if result["duplicate"]:
+        return "这段聊天记录已经保存过了，不会重复记录。"
+    return f"收到 {len(lines)} 条聊天记录。" + reply_for(result["activity"] or {})
+
+
+def reply_for(activity: Dict[str, Any]) -> str:
     if activity.get("customer_id"):
         return f"已保存到客户「{activity.get('customer_name')}」的时间线。"
     candidates = activity.get("match_candidates") or []

@@ -32,12 +32,26 @@ class FeishuAdapter(ProviderAdapter):
         return client.user_name(app, external_user_id)
 
     def addressed_to_bot(self, app, message) -> bool:
-        # 应用开了“读取群内所有消息”权限时，@ 别人的消息也会推过来：只处理 @ 本机器人的
+        # 应用开了“获取群组中所有消息”权限时，没 @ 或 @ 别人的消息也会推过来：只处理 @ 本机器人的
         if message.chat_type == "p2p":
             return True
+        if not message.mention_ids:
+            return False
         from service.integrations.feishu import client
         bot = client.bot_open_id(app)
         return not bot or bot in message.mention_ids
+
+    supports_group_capture = True
+
+    def fetch_forwarded(self, app, message):
+        if message.message_type != "merge_forward" or not message.message_id:
+            return None
+        from service.integrations.feishu import client
+        return client.forwarded_lines(app, message.message_id)
+
+    def chat_info(self, app, chat_id: str) -> Dict[str, str]:
+        from service.integrations.feishu import client
+        return client.chat_info(app, chat_id)
 
     def fetch_organization(self, app) -> Dict[str, Any]:
         return contacts.fetch_organization(app)

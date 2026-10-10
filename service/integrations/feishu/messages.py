@@ -16,8 +16,11 @@ def _send(app, context: Dict[str, Any], msg_type: str, content: Dict[str, Any]) 
     elif context.get("open_id"):
         client.call(app, "POST", "/open-apis/im/v1/messages", params={"receive_id_type": "open_id"},
                     json_body={**payload, "receive_id": context["open_id"]})
+    elif context.get("chat_id"):               # 发到群里（例如网页上关闭了本群的 CRM 记录，在群里告知）
+        client.call(app, "POST", "/open-apis/im/v1/messages", params={"receive_id_type": "chat_id"},
+                    json_body={**payload, "receive_id": context["chat_id"]})
     else:
-        raise IntegrationError("不知道发给谁（缺少 message_id / open_id）")
+        raise IntegrationError("不知道发给谁（缺少 message_id / open_id / chat_id）")
 
 
 def send_text(app, context: Dict[str, Any], text: str) -> None:

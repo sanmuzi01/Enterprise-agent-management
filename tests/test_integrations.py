@@ -200,9 +200,14 @@ class FeishuCallbackTest(unittest.TestCase):
             {"type": "url_verification", "challenge": "abc", "token": "vtoken"}))}).encode()
         self.assertEqual(fs_callback.parse(self.app, {}, body), Handshake({"challenge": "abc"}))
 
-    def test_group_message_without_mention_ignored(self):
+    def test_group_message_without_mention_is_not_for_the_bot(self):
+        # 解析出来交给 dispatcher：本群开启了 CRM 记录就暂存，否则丢弃（见 test_crm_chat_capture）；不会当成对机器人说的话
+        from service.integrations.feishu.adapter import FeishuAdapter
         headers, body = feishu_request(self.app, feishu_message(self.app, "ou_1", chat_type="group"))
-        self.assertIsInstance(fs_callback.parse(self.app, headers, body), Ignored)
+        parsed = fs_callback.parse(self.app, headers, body)
+        self.assertIsInstance(parsed, InboundMessage)
+        self.assertEqual((parsed.chat_type, parsed.mention_ids), ("group", []))
+        self.assertFalse(FeishuAdapter().addressed_to_bot(self.app, parsed))
 
     def test_card_action_only_accepts_action_and_token(self):
         headers, body = feishu_request(self.app, feishu_card(self.app, "ou_1", {"action": "confirm", "token": TOKEN}))
@@ -534,7 +539,7 @@ class IntegrationRouteTest(unittest.TestCase):
             return {"answer": "需要你确认", "conversation_id": 9200}, None
         self.run_turn.side_effect = with_confirmation
         self.post_feishu(feishu_message(self.feishu, "ou_alice", "@_user_1 提交报销", chat_type="group",
-                                        mentions=[{"key": "@_user_1"}]))
+                                        mentions=[{"key": "@_user_1", "id": {"open_id": "ou_bot"}}]))
         self.assertEqual(len(self.cards), 1)
         context, card = self.cards[0]
         self.assertEqual(context, {"open_id": "ou_alice"})           # 群里问的，确认卡片私发给本人

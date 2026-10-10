@@ -372,6 +372,12 @@ async def run_weekly_digest(db) -> Tuple[int, int]:
     return sent, 0
 
 
+async def run_crm_chat_flush(db) -> Tuple[int, int]:
+    """开启了“群消息记录到 CRM”的群：把停下 30 分钟以上的对话整理成客户活动（不发提醒）。"""
+    from service.crm import group_capture
+    return await group_capture.flush_due(db)
+
+
 from service.reminders.responsibility_rules import run_resp_accept, run_resp_due, run_resp_review  # noqa: E402
 from service.reminders.attendance_reminders import run_attendance_decide, run_attendance_explain  # noqa: E402
 
@@ -384,6 +390,8 @@ RULES: List[ReminderRule] = [
                  "销售：按规则扫描客户和商机风险（长期未跟进、报价无回复、临近成交未推进、金额下降、多次延期……），生成下一步建议"),
     ReminderRule("it_kb_maintenance", "知识文章待维护", "it_ticket", 1440, run_kb_maintenance,
                  "IT 部门负责人：自助解决率低（推荐 ≥5 次、解决率 <30%）或评价差的知识文章，需要更新"),
+    ReminderRule("crm_chat_flush", "群聊记录整理", "system", 10, run_crm_chat_flush,
+                 "后台：开启了 CRM 记录的群，对话停下 30 分钟后整理成一条群聊客户活动（不发提醒）"),
     ReminderRule("productivity_refresh", "提效数据整理", "system", 1440, run_productivity_refresh,
                  "后台：把 AI 整理、助手办理、发票识别、CRM 建议、IT 自助、助手运行整理成提效事实（不发提醒）"),
     ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,

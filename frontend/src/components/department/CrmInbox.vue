@@ -4,7 +4,7 @@
       <div>
         <h2 class="text-sm font-semibold text-slate-900">客户沟通收集</h2>
         <p class="mt-0.5 text-xs text-slate-500">
-          邮件、会议自动对上客户；对不上的放在下面等你指定。只收你主动转进来的内容，不读其他邮件和私聊。
+          邮件、会议、飞书聊天记录自动对上客户；对不上的放在下面等你指定。只收你主动转进来的内容和开启了记录的群，不读其他邮件和私聊。
         </p>
       </div>
       <div class="flex flex-wrap gap-2 text-xs">
@@ -19,6 +19,10 @@
         <button type="button" class="rounded border border-slate-300 px-2.5 py-1 text-slate-700 hover:bg-slate-50"
           :aria-expanded="mailboxOpen" @click="mailboxOpen = !mailboxOpen">
           {{ mailbox ? '邮箱已连接' : '连接邮箱' }}
+        </button>
+        <button type="button" class="rounded border border-slate-300 px-2.5 py-1 text-slate-700 hover:bg-slate-50"
+          :aria-expanded="groupsOpen" data-testid="crm-chat-groups-toggle" @click="groupsOpen = !groupsOpen">
+          飞书群记录{{ activeGroups ? `（${activeGroups}）` : '' }}
         </button>
       </div>
     </div>
@@ -54,6 +58,38 @@
       </div>
     </form>
 
+    <div v-if="groupsOpen" class="border-b border-slate-100 bg-slate-50 px-4 py-3 text-xs" data-testid="crm-chat-groups">
+      <div class="space-y-1 text-slate-600">
+        <p><b class="text-slate-800">转发聊天记录：</b>在飞书里把和客户的聊天记录“合并转发”给企业机器人，整段会存成一条客户活动。</p>
+        <p><b class="text-slate-800">整群记录：</b>销售负责人或群主在客户群里 @机器人 发“开启CRM记录 客户名称”（客户名可不写），
+          机器人会在群里公告，之后群里的聊天每段对话结束 30 分钟后整理进 CRM；发“关闭CRM记录”随时关闭。没开启的群不会保存任何消息。</p>
+      </div>
+      <ul v-if="groups.length" class="mt-3 space-y-2">
+        <li v-for="g in groups" :key="g.id" class="rounded border border-slate-200 bg-white px-3 py-2" :data-testid="`crm-chat-group-${g.id}`">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <p class="font-medium text-slate-800">
+              {{ g.chat_name }}
+              <span class="ml-1 rounded px-1.5 py-0.5 font-normal" :class="g.status === 'active' ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'">
+                {{ g.status === 'active' ? '记录中' : '已关闭' }}
+              </span>
+            </p>
+            <button v-if="g.status === 'active' && canManageGroups" type="button" :disabled="busy" @click="closeGroup(g)"
+              class="rounded border border-red-200 px-2.5 py-1 text-red-600 hover:bg-red-50 disabled:opacity-50">关闭记录</button>
+          </div>
+          <p class="mt-1 text-slate-500">
+            {{ g.customer_name ? `记到「${g.customer_name}」` : '按内容自动对应客户' }} · {{ g.enabled_by }} {{ formatTime(g.enabled_at) }} 开启 ·
+            已记录 {{ g.message_count }} 条<span v-if="g.pending_messages">（{{ g.pending_messages }} 条等对话结束后整理）</span>
+            <span v-if="g.last_message_at"> · 最近一条 {{ formatTime(g.last_message_at) }}</span>
+          </p>
+          <p v-if="g.status === 'closed' && g.close_reason" class="mt-0.5 text-slate-400">{{ formatTime(g.closed_at!) }} {{ g.close_reason }}</p>
+          <p v-if="silent(g)" class="mt-1 text-amber-700">
+            开启超过 10 分钟还没收到消息：请管理员在飞书开放平台给应用开通“获取群组中所有消息”权限并发布新版本。
+          </p>
+        </li>
+      </ul>
+      <p v-else class="mt-3 text-slate-400">还没有群开启记录。</p>
+    </div>
+
     <ul class="divide-y divide-slate-100" data-testid="crm-pending">
       <li v-for="a in pending" :key="a.id" class="px-4 py-3 text-xs">
         <div class="flex flex-wrap items-baseline justify-between gap-2">
@@ -85,9 +121,9 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import * as api from '../../api/crmCopilot'
-import type { CrmActivity, MailAccount } from '../../api/crmCopilot'
+import type { ChatGroup, CrmActivity, MailAccount } from '../../api/crmCopilot'
 import type { CustomerDto } from '../../api/departmentCrm'
 import { getErrorMessage } from '../../utils/request'
 import { toastError, toastSuccess } from '../../utils/toast'
@@ -100,9 +136,17 @@ const choice = reactive<Record<number, number | undefined>>({})
 const mailbox = ref<MailAccount | null>(null)
 const mailboxOpen = ref(false)
 const busy = ref(false)
+const groups = ref<ChatGroup[]>([])
+const groupsOpen = ref(false)
+const canManageGroups = ref(false)
+const activeGroups = computed(() => groups.value.filter((g) => g.status === 'active').length)
+// 开启 10 分钟后还一条都没收到：多半是应用没开通“获取群组中所有消息”权限
+const silent = (g: ChatGroup) => g.status === 'active' && !g.message_count && Date.now() - new Date(g.enabled_at).getTime() > 10 * 60 * 1000
 const box = reactive({ imap_host: '', imap_port: 993, username: '', password: '', folder: 'CRM', enabled: true })
 
-const formatTime = (iso: string) => new Date(iso).toLocaleString('zh-CN', { hour12: false }).slice(0, 16)
+const formatTime = (iso: string) => new Date(iso).toLocaleString('zh-CN', {
+  hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+})
 const otherCustomers = (a: CrmActivity) => props.customers.filter((c) => !a.match_candidates.some((m) => m.customer_id === c.id))
 
 async function load() {
@@ -113,6 +157,17 @@ async function load() {
     if (mailbox.value) Object.assign(box, { ...mailbox.value, password: '' })
   } catch (e) {
     toastError(getErrorMessage(e, '加载失败'))
+  }
+  await loadGroups()
+}
+
+async function loadGroups() {
+  try {
+    const chat = await api.listChatGroups(props.teamId)
+    groups.value = chat.items
+    canManageGroups.value = chat.can_manage
+  } catch (e) {
+    toastError(getErrorMessage(e, '飞书群记录加载失败'))
   }
 }
 
@@ -169,6 +224,15 @@ async function assign(a: CrmActivity) {
 
 async function ignore(a: CrmActivity) {
   if (await run(() => api.ignoreActivity(props.teamId, a.id), '操作失败') !== undefined) await load()
+}
+
+async function closeGroup(g: ChatGroup) {
+  if (!window.confirm(`关闭「${g.chat_name}」的 CRM 记录？已收到的消息会先整理进 CRM，之后群里的聊天不再记录。`)) return
+  const result = await run(() => api.closeChatGroup(props.teamId, g.id), '关闭失败')
+  if (!result) return
+  toastSuccess(result.saved ? `已关闭，剩下的消息整理成 ${result.saved} 条客户活动` : '已关闭')
+  await load()
+  emit('changed')
 }
 
 async function saveBox() {

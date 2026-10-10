@@ -12,6 +12,7 @@
   POST /enterprise/crm-copilot/risks/{id}/dismiss
   GET  /enterprise/crm-copilot/suggestions ；POST /enterprise/crm-copilot/suggestions/{id}/decide
   GET/PUT/DELETE /enterprise/crm-copilot/mailbox ；POST /enterprise/crm-copilot/mailbox/sync
+  GET  /enterprise/crm-copilot/chat-groups ；POST /enterprise/crm-copilot/chat-groups/{id}/close（群消息记录到 CRM）
 """
 from typing import Literal, Optional
 
@@ -20,7 +21,7 @@ from pydantic import BaseModel, Field
 
 from models.async_db import get_async_db
 from models.init_db import User
-from service.crm import activities, insights, mailbox
+from service.crm import activities, group_capture, insights, mailbox
 from service.crm.sources import parse_calendar, parse_email
 from service.dependencies import get_current_user_async
 from service.exceptions import InvalidInput
@@ -189,3 +190,36 @@ async def delete_mailbox(team_id: int, db=Depends(get_async_db), user: User = De
 @router.post("/mailbox/sync", summary="立即同步邮箱")
 async def sync_mailbox(body: TeamBody, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
     return await mailbox.sync(db, user.id, body.team_id)
+
+
+@router.get("/chat-groups", summary="本部门开启了“群消息记录到 CRM”的群")
+async def chat_groups(team_id: int, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
+    return await group_capture.list_groups(db, user.id, team_id)
+
+
+@router.post("/chat-groups/{group_id}/close", summary="关闭一个群的 CRM 记录（开启人或销售负责人）")
+async def close_chat_group(group_id: int, body: TeamBody, db=Depends(get_async_db),
+                           user: User = Depends(get_current_user_async)):
+    import asyncio
+    result, group = await group_capture.close_from_web(db, user.id, body.team_id, group_id)
+    await asyncio.to_thread(_tell_group, group.provider, group.chat_id, f"本群的 CRM 记录已由 {user.name} 在网页上关闭，之后的聊天不再记录。")
+    return result
+
+
+def _tell_group(provider: str, chat_id: str, text: str) -> None:
+    """在群里告知记录已关闭。发不出去不影响关闭本身。"""
+    from models.init_db import SessionLocal
+    from service.integrations import apps
+    from service.integrations.base import logger
+    from service.integrations.registry import get_adapter
+    db = SessionLocal()
+    try:
+        app = apps.load_enabled_sync(db, provider)
+    finally:
+        db.close()
+    if app is None:
+        return
+    try:
+        get_adapter(provider).send_text(app, {"chat_id": chat_id}, text)
+    except Exception:  # noqa: BLE001
+        logger.warning("在群里告知 CRM 记录已关闭失败", exc_info=True)

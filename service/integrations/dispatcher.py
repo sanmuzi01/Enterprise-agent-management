@@ -17,8 +17,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from models.init_db import SessionLocal
 from service.integrations import apps, event_inbox, identity
 from service.integrations.base import (PROVIDER_LABELS, BusinessCard, CardAction, CardField, ConfirmAction, Handshake,
-                                       Ignored, InboundMessage, IntegrationError, OpenUrlAction, OrgChange, RejectAction,
-                                       VerificationError, logger)
+                                       Ignored, InboundMessage, IntegrationError, MessageRecalled, OpenUrlAction, OrgChange,
+                                       RejectAction, VerificationError, logger)
 from service.integrations.registry import get_adapter
 from utils.cache import TTLCache
 from utils.timeutil import utcnow
@@ -81,10 +81,22 @@ async def handle(provider: str, kind: str, headers: Dict[str, str], query: Dict[
     if isinstance(parsed, OrgChange):
         await _in_thread(_apply_org_change, parsed, inbox_id)
         return Outcome(200, parsed.ack or {})
+    if isinstance(parsed, MessageRecalled):
+        removed = await _recall(parsed)
+        await _in_thread(event_inbox.finish_sync, inbox_id, "done" if removed else "ignored",
+                         None if removed else "撤回的消息不在 CRM 暂存里")
+        return Outcome(200, parsed.ack or {})
     if isinstance(parsed, CardAction):
         body_out = adapter.card_action_response(app, "已收到，正在处理…", True)
         return Outcome(200, body_out, background=lambda: process_card_action(app, parsed, inbox_id))
     return Outcome(200, parsed.ack or {}, background=lambda: process_message(app, parsed, inbox_id))
+
+
+async def _recall(event: MessageRecalled) -> int:
+    from models.async_db import AsyncSessionLocal
+    from service.crm import group_capture
+    async with AsyncSessionLocal() as db:
+        return await group_capture.recall(db, event.provider, event.tenant_id, event.message_id)
 
 
 def _apply_org_change(db, change: OrgChange, inbox_id: int) -> None:
@@ -127,7 +139,9 @@ async def process_message(app, msg: InboundMessage, inbox_id: int) -> None:
     adapter = get_adapter(msg.provider)
     status, error = "done", None
     try:
-        await _process_message(app, adapter, msg)
+        skipped = await _process_message(app, adapter, msg)
+        if skipped:
+            status, error = "ignored", skipped
     except Exception as exc:  # noqa: BLE001 —— 后台任务：记下原因，尽量告诉员工
         status, error = "failed", f"{type(exc).__name__}: {exc}"
         logger.error(f"{msg.provider} 消息处理失败 event={msg.event_id}", exc_info=True)
@@ -142,11 +156,29 @@ def _safe_send(adapter, app, context: Dict[str, Any], text: str) -> None:
         logger.warning("给外部平台回消息失败", exc_info=True)
 
 
-async def _process_message(app, adapter, msg: InboundMessage) -> None:
+FORWARD_TYPES = {"merge_forward", "chatRecord"}
+
+
+async def _capture(app, adapter, msg: InboundMessage) -> Optional[str]:
+    """群里没 @ 机器人的消息：本群开启了“记录到 CRM”就暂存，否则丢弃。返回不处理的原因（存了返回 None）。"""
+    from models.async_db import AsyncSessionLocal
+    from service.crm import group_capture
+
+    async def name_of(external_id: str) -> str:
+        return await asyncio.to_thread(adapter.user_name, app, external_id)
+    async with AsyncSessionLocal() as db:
+        captured = await group_capture.capture(db, msg, name_of)
+    return None if captured else "群消息没有 @ 机器人（本群没有开启 CRM 记录，不保存）"
+
+
+async def _process_message(app, adapter, msg: InboundMessage) -> Optional[str]:
+    """返回 None 表示处理了；返回字符串表示没处理的原因（记到 external_event_inbox）。"""
     from service.integrations import oauth, self_binding
     label = PROVIDER_LABELS[msg.provider]
     if not await asyncio.to_thread(adapter.addressed_to_bot, app, msg):
-        return                                   # 群里 @ 的不是本机器人：不处理、不回复
+        if msg.chat_type != "p2p" and adapter.supports_group_capture:
+            return await _capture(app, adapter, msg)
+        return "群里 @ 的不是本机器人"            # 不处理、不回复
     code = self_binding.parse_command(msg.text)
     if code is not None:
         if msg.chat_type != "p2p":
@@ -165,19 +197,48 @@ async def _process_message(app, adapter, msg: InboundMessage) -> None:
         reply = identity.REASONS[reason].format(platform=label, web_hint=f"平台地址：{web}/settings/integrations\n" if web else "")
         await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
         return
+
+    from models.async_db import AsyncSessionLocal
+    from service.crm import chat_ingest, group_capture
+
+    command = group_capture.parse_command(msg.text)
+    if command is not None:
+        # 群里开启 / 关闭 / 查看“群消息记录到 CRM”
+        async def info() -> Dict[str, str]:
+            return await asyncio.to_thread(adapter.chat_info, app, msg.chat_id) if msg.chat_id else {}
+        async with AsyncSessionLocal() as db:
+            reply = await group_capture.handle_command(db, adapter, app, msg, user_id, command[0], command[1], info)
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
+        return None
+
+    if msg.message_type in FORWARD_TYPES:
+        # 员工把聊天记录合并转发给机器人：整段存进 CRM
+        try:
+            lines = await asyncio.to_thread(adapter.fetch_forwarded, app, msg)
+        except IntegrationError as exc:
+            logger.warning(f"{msg.provider} 读取合并转发的聊天记录失败：{exc}")
+            reply = "读取这段聊天记录失败了，请稍后再转发一次（一直失败的话，请管理员确认应用有“读取单聊、群组消息”权限）。"
+        else:
+            if lines is None:
+                reply = f"{label}机器人暂时不能读取转发的聊天记录。可以复制要保存的文字，发“保存到CRM：……”。"
+            else:
+                async with AsyncSessionLocal() as db:
+                    reply = await chat_ingest.save_forward(db, user_id, msg.provider, msg.message_id or msg.event_id, lines)
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
+        return None
+
     if not msg.text:
-        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, "目前只支持文字消息，请直接用文字描述你要办的事。")
-        return
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context,
+                                "目前只支持文字消息和转发的聊天记录，请直接用文字描述你要办的事。")
+        return None
     key = _conversation_key(msg.provider, user_id, msg.chat_id)
     if msg.text.strip() in NEW_CONVERSATION_WORDS:
         _conversations.invalidate(key)
         await asyncio.to_thread(adapter.send_text, app, msg.reply_context, "好的，已开始新的对话。")
         return
 
-    from models.async_db import AsyncSessionLocal
     from models.user_async_dao import get_user_by_id_async
     from service import chat_pipeline
-    from service.crm import chat_ingest
     from utils.rate_limit import LimitExceeded
 
     if chat_ingest.wants_crm(msg.text):
