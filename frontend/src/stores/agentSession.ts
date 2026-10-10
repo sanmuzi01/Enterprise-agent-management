@@ -23,7 +23,7 @@ export const useAgentSessionStore = defineStore('agentSession', {
     },
     async loadSelected(force = false) {
       const userStore = useUserStore()
-      if (!userStore.token || userStore.user?.is_admin) {
+      if (!userStore.isLoggedIn() || userStore.user?.is_admin) {
         this.remember(null)
         return null
       }

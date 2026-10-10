@@ -106,7 +106,7 @@ public class ProcurementService {
         if (request.getRequesterUserId() == approverUserId) {
             throw badRequest("不能审批自己提交的申请，需要由部门负责人或企业管理员处理");
         }
-        DepartmentBudget budget = budgetRepository.findByTeamIdAndYear(request.getTeamId(), Year.now().getValue())
+        DepartmentBudget budget = budgetRepository.findForUpdate(request.getTeamId(), Year.now().getValue())     // 预算行锁：同部门两张采购同时批准，不能都读到同一份余额
                 .orElseThrow(() -> badRequest("预算记录不存在，无法批准"));
         if (budget.getRemainingAmount().compareTo(request.getTotalAmount()) < 0) {
             throw badRequest("批准时预算不足（可能已被其它已批准的申请占用）");
@@ -140,6 +140,22 @@ public class ProcurementService {
         TeamAccessGuard.requireOwnerOrTeamAccess(request.getRequesterUserId(), requesterUserId, requesterTeamId,
                 isOrgAdmin, isTeamAdmin, request.getTeamId());
         return toDto(request);
+    }
+
+    /** "我的采购申请"列表——天然按 requesterUserId 过滤，不存在跨用户泄露的可能，
+     * 不需要额外的归属校验，跟 LeaveService.listMine 是同一个道理。 */
+    public List<PurchaseRequestDto> listMine(long requesterUserId) {
+        return requestRepository.findByRequesterUserIdOrderByCreatedAtDesc(requesterUserId).stream()
+                .map(this::toDto).toList();
+    }
+
+    /** "部门待审批"列表——跟 approve/reject 用同一个 TeamAccessGuard 检查，只有这个
+     * 部门的负责人或企业管理员能看，权限判断口径跟审批时完全一致。 */
+    public List<PurchaseRequestDto> listTeamPending(long teamId, Long callerTeamId, boolean isOrgAdmin,
+                                                     boolean isTeamAdmin) {
+        TeamAccessGuard.requireTeamAccess(callerTeamId, isOrgAdmin, isTeamAdmin, teamId);
+        return requestRepository.findByTeamIdAndStatusOrderByCreatedAtDesc(teamId, PurchaseStatus.SUBMITTED).stream()
+                .map(this::toDto).toList();
     }
 
     private void createPurchaseOrder(PurchaseRequest request) {
@@ -180,7 +196,7 @@ public class ProcurementService {
     }
 
     private PurchaseRequest getOwnedDraft(long requestId, long requesterUserId) {
-        PurchaseRequest request = requestRepository.findById(requestId)
+        PurchaseRequest request = requestRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("采购申请不存在"));
         if (request.getRequesterUserId() != requesterUserId) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "采购申请不存在");
@@ -192,7 +208,7 @@ public class ProcurementService {
     }
 
     private PurchaseRequest getSubmitted(long requestId) {
-        PurchaseRequest request = requestRepository.findById(requestId)
+        PurchaseRequest request = requestRepository.findForUpdate(requestId)
                 .orElseThrow(() -> notFound("采购申请不存在"));
         if (request.getStatus() != PurchaseStatus.SUBMITTED) {
             throw badRequest("只有已提交状态的采购申请能审批，当前状态: " + request.getStatus());

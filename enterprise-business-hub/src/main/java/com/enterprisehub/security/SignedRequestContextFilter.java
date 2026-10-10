@@ -117,9 +117,16 @@ public class SignedRequestContextFilter extends OncePerRequestFilter {
         }
 
         RequestContextHolder.set(context);
+        // trace_id 是 FastAPI 签在上下文里的同一个值：写进日志 MDC 和响应头，Java 日志、错误响应都能和前端、FastAPI 的同一次请求对上
+        String traceId = context.traceId();
+        if (traceId != null && traceId.matches("[A-Za-z0-9_.:-]{8,80}")) {
+            org.slf4j.MDC.put("traceId", traceId);
+            response.setHeader("X-Trace-ID", traceId);
+        }
         try {
             chain.doFilter(cachedRequest, response);
         } finally {
+            org.slf4j.MDC.remove("traceId");
             RequestContextHolder.clear();
         }
     }

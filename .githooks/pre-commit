@@ -1,0 +1,35 @@
+#!/bin/sh
+# 提交前检查：和 CI 的 backend 任务同一套代码规范检查（ruff），改了前端时再跑一次类型检查。
+# 不通过就拦下提交，避免 CI 变红了才发现。启用：npm run hooks:install（git config core.hooksPath .githooks）
+# 临时跳过（不推荐）：git commit --no-verify
+
+ROOT=$(git rev-parse --show-toplevel) || exit 1
+cd "$ROOT" || exit 1
+
+if [ -x ".venv/Scripts/python.exe" ]; then
+    PY=".venv/Scripts/python.exe"
+elif [ -x ".venv/bin/python" ]; then
+    PY=".venv/bin/python"
+else
+    PY="python"
+fi
+
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR)
+
+if echo "$STAGED" | grep -qE '\.py$'; then
+    echo "[pre-commit] ruff check（和 CI 同样的目录）…"
+    if ! "$PY" -m ruff check FasdtApi service models utils scripts tests deploy; then
+        echo "[pre-commit] 代码规范检查没通过：按上面的提示修改（很多可以用 ruff check --fix 自动修），再提交。"
+        exit 1
+    fi
+fi
+
+if echo "$STAGED" | grep -qE '^frontend/src/.*\.(ts|vue)$'; then
+    echo "[pre-commit] 前端类型检查（vue-tsc）…"
+    if ! (cd frontend && npx vue-tsc -b); then
+        echo "[pre-commit] 前端类型检查没通过，修好再提交。"
+        exit 1
+    fi
+fi
+
+exit 0

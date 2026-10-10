@@ -173,6 +173,7 @@
 </template>
 
 <script setup lang="ts">
+import { taskTypeLabel } from '../utils/displayNames'
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { RefreshCw, RotateCcw, X, Clock, Loader, CheckCircle2, AlertCircle, Ban } from 'lucide-vue-next'
 import { useUserStore } from '../stores/user'
@@ -255,11 +256,6 @@ watch([filterStatus, filterType], () => reload())
 // ===== 操作 =====
 const canRetry = (t: Task) => t.status === 'failed' || t.status === 'cancelled'
 const canCancel = (t: Task) => t.status === 'queued'
-
-const taskTypeLabel = (type: string) => ({
-  knowledge_index: '资料入库',
-  knowledge_reindex: '重建资料',
-}[type] || type)
 
 const handleRetry = async (t: Task) => {
   if (!confirm(`确认重试任务「${t.title}」？将创建新任务并重新执行。`)) return

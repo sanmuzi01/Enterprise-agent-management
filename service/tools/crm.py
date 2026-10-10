@@ -22,11 +22,43 @@ def _require_user_and_auth(ctx) -> tuple:
     auth = hub.resolve_caller_context(user_id, ctx.agent_id)
     if auth["team_id"] is None and not auth["is_org_admin"]:
         raise ValueError("当前用户不属于任何部门，无法进行 CRM 操作（客户按部门隔离）")
+    from service.department_access import check_team_module
+    check_team_module(auth["team_id"], "crm")
     return user_id, auth
 
 
 def _error_json(exc: hub.EnterpriseHubError) -> str:
     return json.dumps({"error": exc.detail, "status_code": exc.status_code}, ensure_ascii=False)
+
+
+@ToolRegistry.register
+class ListTeamCustomersTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "list_team_customers"
+
+    def get_description(self) -> str:
+        return "查询当前用户所在部门的客户列表。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        try:
+            user_id, auth = _require_user_and_auth(self._ctx)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        try:
+            result = hub.call(
+                "GET", "/crm/customers", user_id, auth["team_id"],
+                ["crm.read"], "list_team_customers",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)
 
 
 @ToolRegistry.register

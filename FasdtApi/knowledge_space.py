@@ -20,6 +20,7 @@ from service.knowledge_space import document_service, health_service, space_asyn
 from service.web_crawler_service import CrawlerError
 from service.web_crawler_async_service import async_crawl_url_to_markdown
 from utils.rate_limit import LimitExceeded, require_limit
+from utils.upload_limits import spooled_uploads
 
 router = APIRouter(prefix="/knowledge-spaces", tags=["知识库空间"])
 
@@ -39,6 +40,7 @@ class SpaceCreate(BaseModel):
     description: Optional[str] = Field(default=None, max_length=500)
     purpose: Optional[str] = Field(default=None, max_length=60)
     tags: List[str] = Field(default_factory=list)
+    sensitivity: Optional[str] = Field(default=None, max_length=20, description="public / internal / confidential / restricted")
 
 
 class SpaceUpdate(BaseModel):
@@ -48,6 +50,7 @@ class SpaceUpdate(BaseModel):
     tags: Optional[List[str]] = None
     is_enabled: Optional[bool] = None
     status: Optional[str] = Field(default=None, max_length=20)
+    sensitivity: Optional[str] = Field(default=None, max_length=20)
 
 
 @router.get("", summary="我的知识库空间列表 + 用途目录")
@@ -138,17 +141,18 @@ async def upload_space_document_route(
         current_user: User = Depends(get_current_user_async),
 ):
     _rate_limit_upload(current_user.id)
-    content = await file.read()
-    try:
-        return document_service.upload(
-            db, background_tasks, current_user.id, space_id, file.filename or "", content,
-            category=category, version=version,
-        )
-    except (HTTPException, AppError):
-        raise
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传失败: {e}")
+    document_service.precheck_upload(db, current_user.id, space_id, [file.filename or ""])      # 没权限 / 类型不对：不收文件
+    async with spooled_uploads(current_user.id, [file]) as (content,):      # 流式写临时文件，超限立即 413
+        try:
+            return document_service.upload(
+                db, background_tasks, current_user.id, space_id, file.filename or "", content,
+                category=category, version=version,
+            )
+        except (HTTPException, AppError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传失败: {e}")
 
 
 @router.post("/{space_id:int}/documents/batch", summary="批量上传文档到空间")
@@ -160,15 +164,17 @@ async def upload_space_documents_batch_route(
         current_user: User = Depends(get_current_user_async),
 ):
     _rate_limit_upload(current_user.id)
-    prepared = [{"file_name": f.filename or "", "content": await f.read()} for f in files]
-    try:
-        items = document_service.upload_batch(db, background_tasks, current_user.id, space_id, prepared)
-        return {"message": f"已创建{len(items)}个入库任务", "count": len(items), "items": items}
-    except (HTTPException, AppError):
-        raise
-    except Exception as e:  # noqa: BLE001
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量上传失败: {e}")
+    document_service.precheck_upload(db, current_user.id, space_id, [f.filename or "" for f in files])
+    async with spooled_uploads(current_user.id, files) as contents:        # 个数、每个文件、累计大小三个上限 + 用户级上传并发
+        prepared = [{"file_name": f.filename or "", "content": c} for f, c in zip(files, contents)]
+        try:
+            items = document_service.upload_batch(db, background_tasks, current_user.id, space_id, prepared)
+            return {"message": f"已创建{len(items)}个入库任务", "count": len(items), "items": items}
+        except (HTTPException, AppError):
+            raise
+        except Exception as e:  # noqa: BLE001
+            db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"批量上传失败: {e}")
 
 
 @router.post("/{space_id:int}/documents/crawl", summary="抓取网页入库到空间")

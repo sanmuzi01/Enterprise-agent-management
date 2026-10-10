@@ -53,6 +53,10 @@ class CircuitBreaker:
     """
 
     def __init__(self):
+        # 状态变化监听：listener(name, "opened" | "recovered")。只在状态真的变化时触发一次，
+        # 而不是每个失败请求都触发——否则一次故障会刷出成百上千条一样的告警。
+        self.listener: Optional[Callable[[str, str], None]] = None
+        self._announced_open: set = set()
         self._states: Dict[str, CircuitState] = {}
         self._lock = threading.RLock()
         self._redis = RedisClientManager(decode_responses=True)
@@ -79,7 +83,23 @@ class CircuitBreaker:
                 retry_after = int(state.opened_until - now) or 1
                 raise CircuitOpenError(f"{name} 暂时不可用，熔断保护中，请 {retry_after} 秒后重试")
 
+    def _announce(self, name: str, state: str) -> None:
+        if state == "opened":
+            if name in self._announced_open:
+                return
+            self._announced_open.add(name)
+        else:
+            if name not in self._announced_open:
+                return
+            self._announced_open.discard(name)
+        if self.listener:
+            try:
+                self.listener(name, state)
+            except Exception:  # noqa: BLE001 —— 监听失败不能影响请求
+                logger.warning("熔断状态监听失败", exc_info=True)
+
     def record_success(self, name: str) -> None:
+        self._announce(name, "recovered")
         client = self._redis.get_client()
         if client:
             try:
@@ -106,6 +126,7 @@ class CircuitBreaker:
                 if threshold > 0 and failures >= threshold:
                     client.set(f"circuit:{name}:opened_until", time.time() + cooldown, ex=cooldown)
                     logger.warning(f"外部服务熔断打开: service={name}, failures={failures}, cooldown={cooldown}s")
+                    self._announce(name, "opened")
                 return
             except Exception:
                 self._redis.mark_failed()
@@ -116,6 +137,7 @@ class CircuitBreaker:
             if threshold > 0 and state.failures >= threshold:
                 state.opened_until = time.time() + cooldown
                 logger.warning(f"外部服务熔断打开: service={name}, failures={state.failures}, cooldown={cooldown}s")
+                self._announce(name, "opened")
 
     def stats(self) -> Dict[str, Dict[str, int]]:
         """返回当前熔断状态，用于健康检查和排障。"""

@@ -6,7 +6,7 @@
 import json
 from typing import Any, Dict, List, Optional
 
-from models import kb_audit_dao, knowledge_space_async_dao as dao
+from models import enterprise_dao, kb_audit_dao, knowledge_space_async_dao as dao
 from service.access_control import get_owned_space_async, get_space_role_async
 from service.exceptions import InvalidInput, NotFound, PermissionDenied
 from service.knowledge_space import membership
@@ -21,6 +21,12 @@ PURPOSE_LABELS = {
 }
 
 
+SENSITIVITIES = ("public", "internal", "confidential", "restricted")
+SENSITIVITY_LABELS = {
+    "public": "公开", "internal": "内部", "confidential": "机密", "restricted": "绝密",
+}
+
+
 def _tags(raw) -> List[str]:
     if isinstance(raw, list):
         return [str(t).strip()[:40] for t in raw if str(t).strip()][:20]
@@ -32,7 +38,14 @@ def _dump_tags(raw) -> Optional[str]:
     return json.dumps(tags, ensure_ascii=False) if tags else None
 
 
-def _to_dict(space, stats: Dict[str, int] = None, *, role: str = "owner") -> Dict[str, Any]:
+def _scope_of(space, role: str) -> str:
+    """personal = 我自己的；shared = 别人分享给我的；department = 划分给部门的；enterprise = 划分给全企业的。"""
+    if space.scope_type in ("department", "enterprise"):
+        return space.scope_type
+    return "personal" if role == "owner" else "shared"
+
+
+def _to_dict(space, stats: Dict[str, int] = None, *, role: str = "owner", departments: Optional[list] = None) -> Dict[str, Any]:
     try:
         tags = json.loads(space.tags_json) if space.tags_json else []
     except (TypeError, ValueError):
@@ -52,7 +65,10 @@ def _to_dict(space, stats: Dict[str, int] = None, *, role: str = "owner") -> Dic
         "last_indexed_at": space.last_indexed_at.strftime("%Y-%m-%d %H:%M:%S") if space.last_indexed_at else None,
         "created_at": space.created_at.strftime("%Y-%m-%d %H:%M:%S") if space.created_at else None,
         "updated_at": space.updated_at.strftime("%Y-%m-%d %H:%M:%S") if space.updated_at else None,
-        "scope": "personal" if role == "owner" else "shared",
+        "scope": _scope_of(space, role),
+        "departments": departments or [],        # 被划分给了哪些部门（scope 为 department 时）
+        "sensitivity": space.sensitivity or "internal",
+        "sensitivity_label": SENSITIVITY_LABELS.get(space.sensitivity or "internal", "内部"),
         "my_role": role,
         "can_write_doc": membership.can_write_doc(role),
         "can_manage": membership.can_manage_space(role),
@@ -64,15 +80,20 @@ def _to_dict(space, stats: Dict[str, int] = None, *, role: str = "owner") -> Dic
 
 
 async def list_spaces(db, user_id: int) -> Dict[str, Any]:
-    spaces = await dao.list_accessible_spaces_async(db, user_id)
+    # 自己的 + 被加入的 + 划分给本人所在部门 / 全企业的（绝密除外）
+    from service.access_control import user_space_ids_async
+
+    spaces = await dao.list_spaces_by_ids_async(db, sorted(await user_space_ids_async(db, user_id), reverse=True))
+    departments = await enterprise_dao.get_space_departments_async(db, [s.id for s in spaces if s.scope_type == "department"])
     items = []
     for s in spaces:
         stats = await dao.live_stats_async(db, s.id)
         role = "owner" if s.user_id == user_id else (await get_space_role_async(db, user_id, s.id) or "viewer")
-        items.append(_to_dict(s, stats, role=role))
+        items.append(_to_dict(s, stats, role=role, departments=departments.get(s.id)))
     return {
         "items": items,
         "purposes": [{"key": k, "label": PURPOSE_LABELS[k]} for k in PURPOSES],
+        "sensitivities": [{"key": k, "label": SENSITIVITY_LABELS[k]} for k in SENSITIVITIES],
     }
 
 
@@ -82,7 +103,8 @@ async def get_space(db, user_id: int, space_id: int) -> Dict[str, Any]:
         raise NotFound("知识库空间不存在或无权限")
     role = await get_space_role_async(db, user_id, space_id) or "viewer"
     stats = await dao.live_stats_async(db, space_id)
-    return _to_dict(space, stats, role=role)
+    departments = await enterprise_dao.get_space_departments_async(db, [space_id])
+    return _to_dict(space, stats, role=role, departments=departments.get(space_id))
 
 
 def _clean_create(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -100,8 +122,17 @@ def _clean_create(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _clean_sensitivity(value) -> str:
+    if value not in SENSITIVITIES:
+        raise InvalidInput(f"密级只能是 {'、'.join(SENSITIVITY_LABELS[k] for k in SENSITIVITIES)} 之一")
+    return value
+
+
 async def create_space(db, user_id: int, payload: Dict[str, Any]) -> Dict[str, Any]:
+    """创建个人知识库空间。划分给部门 / 全企业是管理员在「企业知识库」里统一做的事，这里不接受。"""
     fields = _clean_create(payload)
+    if payload.get("sensitivity") is not None:
+        fields["sensitivity"] = _clean_sensitivity(payload["sensitivity"])
     space = await dao.create_space_async(db, user_id, fields)
     return _to_dict(space, {"doc_count": 0, "chunk_count": 0, "bound_agent_count": 0})
 
@@ -129,13 +160,18 @@ async def update_space(db, user_id: int, space_id: int, patch: Dict[str, Any]) -
         fields["is_enabled"] = 1 if patch["is_enabled"] else 0
     if "status" in patch and patch["status"] in ("active", "archived"):
         fields["status"] = patch["status"]
+    if "sensitivity" in patch and patch["sensitivity"] is not None:
+        fields["sensitivity"] = _clean_sensitivity(patch["sensitivity"])
+        if fields["sensitivity"] != space.sensitivity and space.scope_type != "personal":
+            raise PermissionDenied("已经划分给部门或全企业的知识库，密级由管理员在「企业知识库」里调整")
     if not fields:
         raise InvalidInput("没有需要更新的内容")
     space = await dao.update_space_async(db, space, fields)
     await _audit(db, user_id, "space.update", space_id=space_id, target_type="space",
-                target_id=space_id, detail={"fields": sorted(fields.keys())})
+                target_id=space_id, detail={"fields": sorted(fields.keys()), "sensitivity": space.sensitivity})
     stats = await dao.live_stats_async(db, space_id)
-    return _to_dict(space, stats, role=role)
+    departments = await enterprise_dao.get_space_departments_async(db, [space_id])
+    return _to_dict(space, stats, role=role, departments=departments.get(space_id))
 
 
 async def delete_space(db, user_id: int, space_id: int) -> Dict[str, Any]:

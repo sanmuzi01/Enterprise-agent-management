@@ -1,6 +1,7 @@
 from utils.timeutil import utcnow
 from datetime import timedelta
 from typing import Optional
+import calendar
 
 from jose import jwt, JWTError
 from dotenv import load_dotenv
@@ -34,8 +35,9 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
         expire = utcnow() + expires_delta
     else:
         expire = utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    # 把过期时间加到 payload
+    # 把过期时间加到 payload；auth_time 是最初登录的时刻，续期时原样带过去（见 service/session_renewal.py）
     to_encode.update({"exp": expire})
+    to_encode.setdefault("auth_time", calendar.timegm(utcnow().utctimetuple()))
     # 生成并返回 token
     return jwt.encode(to_encode, _get_secret_key(), algorithm=ALGORITHM)
 

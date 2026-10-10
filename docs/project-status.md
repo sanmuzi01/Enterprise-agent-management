@@ -2,6 +2,24 @@
 
 本项目当前处于功能完善后的上线前工程化阶段。核心业务链路已经具备，但还需要继续补齐生产安全、测试、部署验证和可观测性。
 
+## 当前验证状态（2026-10-07，以此为准；下文的历史数字是当时的快照）
+
+- **测试数量**见 [docs/testing.md 的统计块](testing.md)（`scripts/test_counts.py` 统计，不手填）；通过情况以 CI 最近一次结果为准。
+  Python：`python -m unittest discover -s tests -p "test_*.py"`（需要真实 Redis 的并发 / 缓存安全测试设置 `REDIS_URL` 才跑）；Java：`enterprise-business-hub` 里 `mvn test`（跑之前先停掉在 8090 的 Java 进程）；前端：Vitest、`vue-tsc` 与构建。
+- **真实端到端**（真实 FastAPI + MySQL + Java，模型为确定性替身）：责任协同 117、人事 47、IT 64、财务凭证 43、AI 整理 30、考勤 51 项，
+  外加真实浏览器流程（`scripts/e2e_*_browser.py`）和故障演练（`drill_java_down.py`、`drill_batch_restart.py`）。
+- **本阶段新增能力**：部门责任执行、文件导入与批量整理、事务性发件箱/收件箱/死信、trace_id 与统一错误、问题中心、
+  页面脚本错误上报、Agent 运行失败追踪、考勤异常发现（见 `docs/agent-productivity-workflows.md`）。
+- **安全专项**（`docs/security-testing.md`）：SSRF、恶意文件、SQL 注入、XSS、提示注入与工具越权、跨部门 / 跨企业越权、重复与并发都有会失败的测试；
+  过程中发现并修复了跨企业提权（企业 B 的管理员能审批企业 A 的请假、批准企业 A 的空间删除）、请假 / 采购 / 报销的并发重复处理与预算 / 余额覆盖、SSRF 的 5 类绕过、压缩炸弹等。
+- **代码审查后的收口**（2026-10-07，见 `docs/security-testing.md`）：Redis 并发配额改成原子操作（并修了 Redis 客户端并发首次连接时各线程退回内存限流的竞态）、缓存不再用 pickle 且 Redis 里只存模型密钥的密文、登录令牌改放 HttpOnly Cookie + 签名 CSRF 并上线内容安全策略、知识库上传加单文件 / 累计 / 个数上限。同时加了前端 Vitest、漏洞豁免登记表（负责人 / 到期日）、Dependabot、Docker 与直接部署两份生产环境模板、测试用 MySQL / Redis 一条命令。
+  **还没做**：OIDC / SAML 单点登录、SCIM / LDAP 同步、管理员 MFA、短期令牌 + 轮换刷新令牌、真实 SAP 连接器、第三方渗透测试、生产规模容量基准与 RTO / RPO 演练。
+- **真实基础设施联调**（`docs/observability-integration.md`）：Kafka（KRaft 单节点，消费者组 / 手动提交 / 重试 / 死信 Topic，`scripts/e2e_kafka.py` 28 项）、
+  OpenTelemetry Collector → Tempo / Loki、Prometheus、Grafana（`scripts/e2e_observability.py` 40 项，含 Collector / Loki / Tempo 中断后恢复、Sentry 未配置与不可达）。
+  联调中发现并修复了 span 全被丢弃、成功请求没有日志、`/metrics` 被 Host 白名单拒绝等问题。
+  **仍未验证**：真实的云日志账号和 Sentry 项目（没有账号 / DSN，只验证了“未配置或不可达不影响业务”）。
+- **没有真实用户数据**：功能都在，但还没有真实企业的使用数据。
+
 ## 已完成能力
 
 - 用户系统：注册、登录、当前用户、修改密码、账号禁用。
@@ -115,10 +133,10 @@
   重新定基线后挪到了 `migrations/archive_pre_baseline/`）的过期文件路径，实际跑一遍完整
   `scripts/release_check.py`（含全量测试 + 前端构建）确认真的能走完，不再是失败状态。CI
   （`.github/workflows/ci.yml`）新增 `java` job：真实 MySQL 服务容器 + `mvn test` 跑
-  `enterprise-business-hub` 的 35 个测试，之前 Java 权限逻辑改坏了没有任何自动化能拦截。
+  `enterprise-business-hub` 的 35 个测试（当时的数字，现为 138 个），之前 Java 权限逻辑改坏了没有任何自动化能拦截。
 - 备份恢复：部署文档给出本地 MySQL `mysqldump` 导出 / 恢复命令与应用文件目录清单。
 - 数据库迁移：已加入 Alembic 迁移骨架、基线版本和迁移文档，当前处于兼容过渡期。
-- 部署基础：阿里云 ECS 上走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，
+- 部署方案（面向阿里云 ECS 设计，已做好上线准备，**尚未正式上线**，目前在本地 Docker 环境验证）：走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，
   MySQL 为自建容器、备份需自己负责）；前端 `npm run build` 后由宿主机 Nginx + certbot 托管并反代 `/api`、
   `/health`、`/metrics`。原生方案（`deploy/systemd/*.service` 常驻 uvicorn + worker）保留为备选，
   `deploy/` 提供 nginx / prometheus / grafana 模板。根目录 `docker-compose.yml` 仅用于本地演示。

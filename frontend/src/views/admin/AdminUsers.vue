@@ -1,7 +1,7 @@
 <template>
   <div class="p-6">
     <div class="flex items-center justify-between mb-5">
-      <p class="text-xs text-slate-500">管理用户账号、角色和权限</p>
+      <p class="text-xs text-slate-500">管理账号、所属部门和企业角色。成员注册后自动属于本企业；部门的划分与负责人在「组织架构」里设置。</p>
       <button
         @click="loadUsers"
         :disabled="loading"
@@ -49,7 +49,7 @@
             <tr>
               <th class="px-4 py-3 font-medium">用户</th>
               <th class="px-4 py-3 font-medium">状态</th>
-              <th class="px-4 py-3 font-medium">角色</th>
+              <th class="px-4 py-3 font-medium">部门与角色</th>
               <th class="px-4 py-3 font-medium">套餐</th>
               <th class="px-4 py-3 font-medium">资源</th>
               <th class="px-4 py-3 font-medium">操作</th>
@@ -80,16 +80,30 @@
                 <p class="mt-1 text-xs text-slate-400">最近访问 {{ user.last_seen_at || '-' }}</p>
               </td>
               <td class="px-4 py-3">
-                <div class="flex flex-wrap gap-1">
+                <div class="flex flex-wrap gap-1" data-testid="user-departments">
                   <span
-                    v-for="role in user.roles"
-                    :key="role"
-                    class="rounded px-2 py-1 text-xs"
-                    :class="role === 'admin' ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100 text-slate-600'"
+                    v-for="d in user.departments || []"
+                    :key="d.id"
+                    class="rounded bg-sky-50 px-2 py-1 text-xs text-sky-700"
+                    :class="d.status !== 'active' ? 'opacity-50' : ''"
                   >
-                    {{ role }}
+                    {{ d.name }}<span v-if="d.role_code === 'admin'" class="ml-1 text-sky-500">负责人</span>
                   </span>
-                  <span v-if="!user.roles.length" class="text-xs text-slate-400">无角色</span>
+                  <span v-if="!user.departments?.length" class="text-xs text-slate-400">未分配部门</span>
+                </div>
+                <div class="mt-1.5 flex items-center gap-1.5">
+                  <select
+                    v-if="user.org_role_code"
+                    :value="user.org_role_code"
+                    @change="onOrgRoleChange(user, $event)"
+                    data-testid="user-org-role"
+                    class="h-7 rounded border border-slate-200 px-1.5 text-xs text-slate-700 outline-none focus:border-indigo-500"
+                    :title="'企业角色'"
+                  >
+                    <option v-for="r in orgRoles" :key="r.code" :value="r.code">{{ r.name }}</option>
+                  </select>
+                  <span v-else class="text-xs text-slate-400">未加入企业</span>
+                  <span v-if="user.roles.includes('admin')" class="rounded bg-indigo-50 px-2 py-0.5 text-xs text-indigo-600">后台管理员</span>
                 </div>
               </td>
               <td class="px-4 py-3">
@@ -230,10 +244,13 @@ import { RefreshCcw, Search } from 'lucide-vue-next'
 import AdminPagination from '../../components/admin/AdminPagination.vue'
 import * as adminApi from '../../api/admin'
 import type { AdminPlan, AdminUser } from '../../api/admin'
+import * as orgApi from '../../api/organizationAdmin'
+import type { EnterpriseRoleOption } from '../../api/organizationAdmin'
 import { getErrorMessage } from '../../utils/request'
 
 const users = ref<AdminUser[]>([])
 const plans = ref<AdminPlan[]>([])
+const orgRoles = ref<EnterpriseRoleOption[]>([])
 const total = ref(0)
 const limit = ref(50)
 const offset = ref(0)
@@ -415,6 +432,25 @@ const planIdForUser = (user: AdminUser): number | '' => {
   return plan ? plan.id : ''
 }
 
+const loadOrgRoles = async () => {
+  try {
+    orgRoles.value = (await orgApi.getEnterpriseRoles()).organization
+  } catch {
+    // 角色目录加载失败不影响用户列表，下拉框留空即可
+  }
+}
+
+const onOrgRoleChange = async (user: AdminUser, event: Event) => {
+  const select = event.target as HTMLSelectElement
+  try {
+    await orgApi.updateOrgMember(user.id, { role_code: select.value })
+    await loadUsers()
+  } catch (e: any) {
+    select.value = user.org_role_code || ''
+    alert(getErrorMessage(e, '修改企业角色失败'))
+  }
+}
+
 const onPlanChange = async (user: AdminUser, event: Event) => {
   const value = (event.target as HTMLSelectElement).value
   if (!value) return
@@ -429,5 +465,6 @@ const onPlanChange = async (user: AdminUser, event: Event) => {
 onMounted(() => {
   loadUsers()
   loadPlans()
+  loadOrgRoles()
 })
 </script>

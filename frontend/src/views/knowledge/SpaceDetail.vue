@@ -117,7 +117,7 @@
             <tr v-for="d in docs" :key="d.id" class="border-t border-slate-100 align-top">
               <td class="px-3 py-2">
                 <p class="font-medium text-slate-800">{{ d.file_name }}</p>
-                <p class="text-[11px] text-slate-400">{{ d.source_type }} · {{ d.created_at }}</p>
+                <p class="text-[11px] text-slate-400">{{ sourceTypeLabel(d.source_type) }} · {{ d.created_at }}</p>
                 <a v-if="d.source_url" :href="d.source_url" target="_blank" class="text-[11px] text-sky-600 hover:underline">来源链接</a>
               </td>
               <td class="px-3 py-2">
@@ -156,6 +156,7 @@
 </template>
 
 <script setup lang="ts">
+import { sourceTypeLabel } from '../../utils/displayNames'
 import { onMounted, onBeforeUnmount, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ArrowLeft, UploadCloud } from 'lucide-vue-next'

@@ -106,7 +106,7 @@ class HttpConnector(BaseConnector):
         else:
             try:
                 parsed = json.loads(text) if text.strip() else None
-            except ValueError:
+            except (ValueError, RecursionError):          # 深度嵌套的 JSON 会让解析器 RecursionError：当作普通文本，不能让组件整个失败
                 parsed = text
 
         json_path = str(config.get("json_path") or "").strip()

@@ -1,0 +1,15 @@
+[Unit]
+Description=Agent Platform - daily data health check (report only, never fixes)
+After=network.target
+
+[Service]
+Type=oneshot
+User=deploy
+Group=deploy
+WorkingDirectory=/srv/agent-app
+EnvironmentFile=/srv/agent-app/.env
+# 只读体检：有严重问题时退出码为 1，这个单元会变成 failed（`systemctl --failed` 能看到，接告警就盯这个）。
+# 自动修复（--fix）不放在定时任务里：要先备份、由人确认后手动跑。
+ExecStart=/srv/agent-app/.venv/bin/python scripts/data_health_check.py
+StandardOutput=append:/srv/agent-app/logs/data-health.log
+StandardError=append:/srv/agent-app/logs/data-health.log

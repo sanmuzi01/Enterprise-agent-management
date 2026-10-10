@@ -13,8 +13,20 @@ from service.tools.crm import (
     CreateOrUpdateOpportunityTool,
     GetCustomerSummaryTool,
     GetOpportunitiesTool,
+    ListTeamCustomersTool,
     SubmitCustomerFollowupTool,
 )
+
+def setUpModule():
+    # 工具单测用的是伪造的 team_id，部门业务类型校验另有专门测试（tests/test_department_access.py）。
+    global _module_patch
+    _module_patch = patch("service.department_access.check_team_module")
+    _module_patch.start()
+
+
+def tearDownModule():
+    _module_patch.stop()
+
 
 
 def _ctx(user_id=3001):
@@ -27,6 +39,17 @@ def _auth(team_id=5, is_org_admin=False, is_team_admin=False):
 
 @patch("service.tools.crm.hub.resolve_caller_context", return_value=_auth())
 class CrmToolsTest(unittest.TestCase):
+    def test_list_team_customers_uses_read_scope(self, _auth_mock):
+        with patch("service.tools.crm.hub.call", return_value=[{"id": 1}]) as mock_call:
+            tool = ListTeamCustomersTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_called_once_with(
+            "GET", "/crm/customers", 3001, 5, ["crm.read"], "list_team_customers",
+            is_org_admin=False, is_team_admin=False,
+        )
+        self.assertEqual(json.loads(result), [{"id": 1}])
+
     def test_get_customer_summary_uses_read_scope(self, _auth_mock):
         with patch("service.tools.crm.hub.call", return_value={"id": 10}) as mock_call:
             tool = GetCustomerSummaryTool()

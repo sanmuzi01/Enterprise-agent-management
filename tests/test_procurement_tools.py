@@ -23,10 +23,23 @@ from service.tools.procurement import (
     CreatePurchaseDraftTool,
     GetDepartmentBudgetTool,
     GetInventoryStatusTool,
+    GetMyPurchaseRequestsTool,
     GetPurchaseStatusTool,
+    GetTeamPendingPurchaseRequestsTool,
     RejectPurchaseRequestTool,
     SubmitPurchaseRequestTool,
 )
+
+def setUpModule():
+    # 工具单测用的是伪造的 team_id，部门业务类型校验另有专门测试（tests/test_department_access.py）。
+    global _module_patch
+    _module_patch = patch("service.department_access.check_team_module")
+    _module_patch.start()
+
+
+def tearDownModule():
+    _module_patch.stop()
+
 
 
 def _ctx(user_id=2001):
@@ -94,6 +107,21 @@ class ProcurementToolsTest(unittest.TestCase):
         ))
         self.assertEqual(kwargs["is_org_admin"], False)
         self.assertEqual(kwargs["is_team_admin"], False)
+
+    def test_get_my_purchase_requests_uses_read_scope_and_team_id(self, _auth_mock):
+        # 跟请假模块的 GetMyLeaveRequestsTool 不同：那边 team_id 传 None（请假不
+        # 分部门查），这里要跟 procurement.py 里其余工具一样传 auth["team_id"]——
+        # _require_user_and_auth 已经保证了有部门上下文，混用请假模块的 None 写法
+        # 会破坏这个文件内部的一致性。
+        with patch("service.tools.procurement.hub.call", return_value=[]) as mock_call:
+            tool = GetMyPurchaseRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_called_once_with(
+            "GET", "/procurement/requests/mine", 2001, 9, ["procurement.read"], "get_my_purchase_requests",
+            is_org_admin=False, is_team_admin=False,
+        )
+        self.assertEqual(json.loads(result), [])
 
     def test_hub_error_becomes_error_json(self, _auth_mock):
         with patch("service.tools.procurement.hub.call",
@@ -182,6 +210,29 @@ class ApproveRejectAuthorizationTest(unittest.TestCase):
             "POST", "/procurement/requests/7/reject", 2001, 9, ["procurement.approve"], "reject_purchase_request",
         ))
         self.assertEqual(kwargs["is_org_admin"], True)
+
+    @patch("service.tools.procurement.hub.resolve_caller_context",
+           return_value=_auth(is_org_admin=False, is_team_admin=False))
+    def test_team_pending_denied_locally_when_neither_org_nor_team_admin(self, _auth_mock):
+        with patch("service.tools.procurement.hub.call") as mock_call:
+            tool = GetTeamPendingPurchaseRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_not_called()
+        self.assertIn("error", json.loads(result))
+
+    @patch("service.tools.procurement.hub.resolve_caller_context",
+           return_value=_auth(is_org_admin=False, is_team_admin=True))
+    def test_team_pending_proceeds_when_team_admin(self, _auth_mock):
+        with patch("service.tools.procurement.hub.call", return_value=[]) as mock_call:
+            tool = GetTeamPendingPurchaseRequestsTool()
+            tool.set_context(_ctx())
+            tool.execute()
+        mock_call.assert_called_once_with(
+            "GET", "/procurement/requests/team-pending?teamId=9", 2001, 9,
+            ["procurement.read"], "get_team_pending_purchase_requests",
+            is_org_admin=False, is_team_admin=True,
+        )
 
 
 if __name__ == "__main__":

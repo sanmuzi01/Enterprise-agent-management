@@ -64,3 +64,11 @@ management:
     web:
       exposure:
         include: health,info
+
+logging:
+  pattern:
+    # 日志里带上 FastAPI 签进来的 traceId，和前端、Python 侧同一次请求对上
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{traceId:-}] %-40.40logger{39} : %m%n"
+  charset:
+    console: UTF-8
+    file: UTF-8

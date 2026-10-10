@@ -1,10 +1,15 @@
 from typing import Dict,Any,List,Optional
-from models.llm_config_dao import get_config_by_user_and_model, list_configs_by_user, create_config, update_config, delete_config
+from models.llm_config_dao import (
+    create_config, delete_config, get_config_by_user_and_model, get_own_config_by_user_and_model,
+    list_configs_by_user, list_own_configs_by_user, update_config,
+)
 from models.llm_config_async_dao import (
     create_config_async,
     delete_config_async,
     get_config_by_user_and_model_async,
+    get_own_config_by_user_and_model_async,
     list_configs_by_user_async,
+    list_own_configs_by_user_async,
     update_config_async,
 )
 from utils.crypto import encrypt, decrypt
@@ -21,10 +26,21 @@ def invalidate_user_config_cache(user_id: int, model_name: str = None):
     config_cache.invalidate(prefix=("llm_config_list", user_id))
     config_cache.invalidate(("embedding_api_config", user_id))
 
+
+def _reveal(payload):
+    """缓存里的配置只带密文（和数据库里一样）；调用方要用时才在内存里解密。Redis 即使被读到，也拿不到明文密钥。"""
+    if not payload:
+        return payload
+    revealed = dict(payload)
+    if revealed.get("api_key"):
+        revealed["api_key"] = decrypt(revealed["api_key"])
+    return revealed
+
+
 def list_configs(db,user)->list:
     """获取用户的模型配置列表（api_key 脱敏显示）"""
     def load():
-        configs = list_configs_by_user(db, user.id)
+        configs = list_own_configs_by_user(db, user.id)
         return [
             {
                 "id": c.id,
@@ -46,7 +62,7 @@ async def async_list_configs(db, user) -> list:
     cached = config_cache.get(("llm_config_list", user.id))
     if cached is not None:
         return cached
-    configs = await list_configs_by_user_async(db, user.id)
+    configs = await list_own_configs_by_user_async(db, user.id)
     rows = [
         {
             "id": c.id,
@@ -67,7 +83,7 @@ def save_config(db, user, model_name: str, api_key: str, api_url: str = None) ->
     model_name = normalize_model_name(model_name)
     api_url = default_api_url(model_name)
     encrypted_key = encrypt(api_key)
-    existing = get_config_by_user_and_model(db, user.id, model_name)
+    existing = get_own_config_by_user_and_model(db, user.id, model_name)
     if existing:
         update_config(
             db,existing,api_key = encrypted_key,api_url=api_url,
@@ -87,7 +103,7 @@ async def async_save_config(db, user, model_name: str, api_key: str, api_url: st
     model_name = normalize_model_name(model_name)
     api_url = default_api_url(model_name)
     encrypted_key = encrypt(api_key)
-    existing = await get_config_by_user_and_model_async(db, user.id, model_name)
+    existing = await get_own_config_by_user_and_model_async(db, user.id, model_name)
     if existing:
         await update_config_async(db, existing, api_key=encrypted_key, api_url=api_url)
         await db.commit()
@@ -128,7 +144,7 @@ async def async_quick_connect(
     encrypted_key = encrypt(api_key)
     for model_name in targets:
         api_url = default_api_url(model_name)
-        existing = await get_config_by_user_and_model_async(db, user.id, model_name)
+        existing = await get_own_config_by_user_and_model_async(db, user.id, model_name)
         if existing:
             await update_config_async(db, existing, api_key=encrypted_key, api_url=api_url)
         else:
@@ -149,7 +165,7 @@ async def async_quick_connect(
 
 def delete_config_by_model(db,user,model_name:str)->Dict[str, Any]:
     """删除模型配置"""
-    config = get_config_by_user_and_model(db, user.id, model_name)
+    config = get_own_config_by_user_and_model(db, user.id, model_name)
     if not config:
         return {"message": "配置不存在"}
     delete_config(db, config)
@@ -162,7 +178,7 @@ async def async_delete_config_by_model(db, user, model_name: str) -> Dict[str, A
     """异步删除模型配置。"""
 
     model_name = normalize_model_name(model_name)
-    config = await get_config_by_user_and_model_async(db, user.id, model_name)
+    config = await get_own_config_by_user_and_model_async(db, user.id, model_name)
     if not config:
         return {"message": "配置不存在"}
     await delete_config_async(db, config)
@@ -177,8 +193,9 @@ def get_api_key(db,user_id:int,model_name:str)->str:
         config = get_config_by_user_and_model(db, user_id, model_name)
         if not config or not config.is_active:
             return None
-        return decrypt(config.api_key)
-    return config_cache.get_or_set(("llm_api_key", user_id, model_name), load)
+        return config.api_key          # 密文；见 _reveal
+    cipher = config_cache.get_or_set(("llm_api_key", user_id, model_name), load)
+    return decrypt(cipher) if cipher else None
 
 def get_api_config(db, user_id: int, model_name: str):
     """获取当前用户某个模型的完整调用配置。"""
@@ -188,10 +205,10 @@ def get_api_config(db, user_id: int, model_name: str):
             return None
         return {
             "model_name": config.model_name,
-            "api_key": decrypt(config.api_key),
+            "api_key": config.api_key,
             "api_url": default_api_url(config.model_name),
         }
-    return config_cache.get_or_set(("llm_api_config", user_id, model_name), load)
+    return _reveal(config_cache.get_or_set(("llm_api_config", user_id, model_name), load))
 
 
 async def async_get_api_config(db, user_id: int, model_name: str):
@@ -200,17 +217,17 @@ async def async_get_api_config(db, user_id: int, model_name: str):
     model_name = normalize_model_name(model_name)
     cached = config_cache.get(("llm_api_config", user_id, model_name))
     if cached is not None:
-        return cached
+        return _reveal(cached)
     config = await get_config_by_user_and_model_async(db, user_id, model_name)
     if not config or not config.is_active:
         return None
     payload = {
         "model_name": config.model_name,
-        "api_key": decrypt(config.api_key),
+        "api_key": config.api_key,
         "api_url": default_api_url(config.model_name),
     }
     config_cache.set(("llm_api_config", user_id, model_name), payload)
-    return payload
+    return _reveal(payload)
 
 
 async def async_get_api_key(db, user_id: int, model_name: str) -> str:
@@ -218,18 +235,18 @@ async def async_get_api_key(db, user_id: int, model_name: str) -> str:
     model_name = normalize_model_name(model_name)
     cached = config_cache.get(("llm_api_key", user_id, model_name))
     if cached is not None:
-        return cached
+        return decrypt(cached)
     config = await get_config_by_user_and_model_async(db, user_id, model_name)
-    value = decrypt(config.api_key) if (config and config.is_active) else None
-    config_cache.set(("llm_api_key", user_id, model_name), value)
-    return value
+    cipher = config.api_key if (config and config.is_active) else None
+    config_cache.set(("llm_api_key", user_id, model_name), cipher)
+    return decrypt(cipher) if cipher else None
 
 
 async def async_get_first_embedding_config(db, user_id: int):
     """`get_first_embedding_config` 的 async 版（缓存键一致）。"""
     cached = config_cache.get(("embedding_api_config", user_id))
     if cached is not None:
-        return cached
+        return _reveal(cached)
     priority = [
         "embedding-3", "embedding-2",
         "text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002",
@@ -243,7 +260,7 @@ async def async_get_first_embedding_config(db, user_id: int):
         if config:
             payload = {
                 "model_name": config.model_name,
-                "api_key": decrypt(config.api_key),
+                "api_key": config.api_key,
                 "api_url": default_api_url(config.model_name),
             }
             break
@@ -252,11 +269,11 @@ async def async_get_first_embedding_config(db, user_id: int):
         if glm_config:
             payload = {
                 "model_name": "embedding-3",
-                "api_key": decrypt(glm_config.api_key),
+                "api_key": glm_config.api_key,
                 "api_url": default_api_url("embedding-3"),
             }
     config_cache.set(("embedding_api_config", user_id), payload)
-    return payload
+    return _reveal(payload)
 
 
 def get_first_embedding_config(db, user_id: int):
@@ -279,18 +296,18 @@ def get_first_embedding_config(db, user_id: int):
             if config:
                 return {
                     "model_name": config.model_name,
-                    "api_key": decrypt(config.api_key),
+                    "api_key": config.api_key,
                     "api_url": default_api_url(config.model_name),
                 }
         glm_config = active.get("glm-4")
         if glm_config:
             return {
                 "model_name": "embedding-3",
-                "api_key": decrypt(glm_config.api_key),
+                "api_key": glm_config.api_key,
                 "api_url": default_api_url("embedding-3"),
             }
         return None
-    return config_cache.get_or_set(("embedding_api_config", user_id), load)
+    return _reveal(config_cache.get_or_set(("embedding_api_config", user_id), load))
 
 
 def test_config(db, user, model_name: str) -> Dict[str, Any]:
@@ -362,9 +379,6 @@ def test_config(db, user, model_name: str) -> Dict[str, Any]:
 
 async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
     """异步测试当前用户已保存的模型配置是否可用。"""
-
-    import time
-
     model_name = normalize_model_name(model_name)
     api_config = await async_get_api_config(db, user.id, model_name)
     if not api_config:
@@ -374,6 +388,14 @@ async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
             "message": "配置不存在或已停用",
         }
 
+    return await probe_model(model_name, api_config)
+
+
+async def probe_model(model_name: str, api_config: Dict[str, Any]) -> Dict[str, Any]:
+    """用给定的调用配置真的调一次模型，返回连通性测试结果（个人配置和企业统一连接共用）。"""
+    import time
+
+    model_name = normalize_model_name(model_name)
     started = time.time()
     kind = model_type(model_name)
     try:
@@ -426,3 +448,5 @@ async def async_test_config(db, user, model_name: str) -> Dict[str, Any]:
             "elapsed_ms": elapsed_ms,
             "error": str(e)[:500],
         }
+
+

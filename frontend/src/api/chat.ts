@@ -1,7 +1,9 @@
 import request from '../utils/request'
+import { csrfHeaders } from '../utils/session'
 
 // SSE 事件类型（与 react_engine.py 中 sse_events.make_* 生成的一致）
 export type SseEventType =
+  | 'route'      // 中央 Agent 的转交决定 RouteInfo
   | 'ready'      // { run_id }
   | 'retrieval'  // { hit_count, content_preview, stats? }
   | 'citations'  // { citations: [{ index, knowledge_id, file_name, space_id, space_name }] }
@@ -33,7 +35,18 @@ export interface RagSavings {
   est_tokens_saved: number
 }
 
-export interface SseEvent {
+export interface RouteAlternative { agent_id: number; name: string; department_code: string; matched_keywords: string[] }
+export interface RouteInfo {
+  reason: 'routed' | 'no_match' | 'no_usable_agent'
+  department_code: string | null
+  target_agent_id: number
+  target_name: string | null
+  matched_keywords: string[]
+  alternatives: RouteAlternative[]
+  unavailable: { department_code: string; matched_keywords: string[] }[]
+}
+
+export interface SseEvent extends Partial<RouteInfo> {
   type: SseEventType
   run_id?: number
   hit_count?: number
@@ -74,13 +87,13 @@ export interface SendStreamOptions {
  */
 export async function sendStream(opts: SendStreamOptions): Promise<void> {
   const { agentId, conversationId, message, attachmentIds, onEvent, signal } = opts
-  const token = localStorage.getItem('token') || ''
 
   const resp = await fetch(`/api/chat/${agentId}/stream`, {
     method: 'POST',
+    credentials: 'include', // 登录令牌在 HttpOnly Cookie 里
     headers: {
       'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...csrfHeaders('POST'),
     },
     body: JSON.stringify({
       message,
@@ -206,4 +219,18 @@ export async function confirmToolCall(token: string): Promise<{ tool_name: strin
 /** 用户点击取消：这次高风险工具调用不会被执行 */
 export async function rejectToolCall(token: string): Promise<void> {
   await request.post(`/chat/tool-confirmations/${token}/reject`)
+}
+
+export interface PendingToolConfirmation {
+  token: string
+  tool_name: string
+  tool_args: Record<string, any>
+  created_at: string
+  expires_at: string
+}
+
+/** 我还没处理、也没过期的确认单（飞书 / 钉钉里没法点按钮时，到网页“待确认操作”里处理） */
+export async function listToolConfirmations(): Promise<PendingToolConfirmation[]> {
+  const { data } = await request.get('/chat/tool-confirmations')
+  return data
 }

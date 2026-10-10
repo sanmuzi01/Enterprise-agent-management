@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from models.init_db import get_db, User
 from models.async_db import get_async_db
 from service.dependencies import get_current_user_async
-from service.exceptions import InvalidInput, NotFound
+from service.exceptions import AppError, InvalidInput, NotFound
 from service.rag.search_entry import search_scoped_async
 from service.knowledge_space.space_service import ensure_default_space_for_agent
 from service import knowledge_async_service, knowledge_diagnostics_async_service, knowledge_service
@@ -16,6 +16,7 @@ from service.web_crawler_service import CrawlerError
 from service.web_crawler_async_service import async_crawl_url_to_markdown
 from service.rag.rag_service import SUPPORTED_FILE_TYPES
 from utils.rate_limit import LimitExceeded, concurrency_guard, require_limit
+from utils.upload_limits import spooled_uploads
 
 router = APIRouter(prefix="/knowledge", tags=["知识库管理"])
 
@@ -119,28 +120,27 @@ async def upload_document(
     file_name = file.filename
     file_type = _validate_upload_file_name(file_name)
 
-    # 2. 读取文件内容
-    content = await file.read()
-
-    # 3. 调用RAG服务上传入库
-    try:
-        _sid = ensure_default_space_for_agent(db, current_user.id, agent_id)
-        item = knowledge_service.create_upload_task(
-            db, background_tasks, current_user.id, agent_id, file_name, content, file_type,
-            space_id=_sid, chunk_size=chunk_size,
-        )
-        return {
-            "message": "已创建后台入库任务",
-            "knowledge_id": item["knowledge_id"],
-            "task_id": item["task_id"],
-            "status": item["status"],
-        }
-    except ValueError as e:
-        db.rollback()
-        raise InvalidInput(str(e))
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传失败: {str(e)}")
+    # 2. 流式写进临时文件（分块 1MB，超过单文件上限立即 413；同一个用户同时上传的个数也有上限），不把文件读进内存
+    async with spooled_uploads(current_user.id, [file]) as (content,):
+        # 3. 调用RAG服务上传入库（入库时把临时文件直接移到最终位置）
+        try:
+            _sid = ensure_default_space_for_agent(db, current_user.id, agent_id)
+            item = knowledge_service.create_upload_task(
+                db, background_tasks, current_user.id, agent_id, file_name, content, file_type,
+                space_id=_sid, chunk_size=chunk_size,
+            )
+            return {
+                "message": "已创建后台入库任务",
+                "knowledge_id": item["knowledge_id"],
+                "task_id": item["task_id"],
+                "status": item["status"],
+            }
+        except ValueError as e:
+            db.rollback()
+            raise InvalidInput(str(e))
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"上传失败: {str(e)}")
 
 
 @router.post("/{agent_id}/upload-batch", summary="批量上传文档并入库")
@@ -171,23 +171,24 @@ async def upload_documents(
 
     created = []
     try:
-        prepared_files = []
-        for file in files:
-            file_name = file.filename
-            file_type = _validate_upload_file_name(file_name)
-            content = await file.read()
-            prepared_files.append({"file_name": file_name, "file_type": file_type, "content": content})
-        _sid = ensure_default_space_for_agent(db, current_user.id, agent_id)
-        created = knowledge_service.create_upload_tasks(
-            db, background_tasks, current_user.id, agent_id, prepared_files,
-            space_id=_sid, chunk_size=chunk_size,
-        )
+        names_and_types = []
+        for file in files:                      # 先把所有文件名都校验完，再开始写临时文件：有一个不合法就一个字节都不收
+            names_and_types.append((file.filename, _validate_upload_file_name(file.filename)))
+        # 个数、每个文件、累计大小三个上限 + 用户级上传并发；超限整批拒绝并清掉临时文件
+        async with spooled_uploads(current_user.id, files) as contents:
+            prepared_files = [{"file_name": name, "file_type": ftype, "content": content}
+                              for (name, ftype), content in zip(names_and_types, contents)]
+            _sid = ensure_default_space_for_agent(db, current_user.id, agent_id)
+            created = knowledge_service.create_upload_tasks(
+                db, background_tasks, current_user.id, agent_id, prepared_files,
+                space_id=_sid, chunk_size=chunk_size,
+            )
         return {
             "message": f"已创建{len(created)}个后台入库任务",
             "count": len(created),
             "items": created,
         }
-    except HTTPException:
+    except (HTTPException, AppError):      # 用户输入的问题（文件类型、大小）原样返回，不能被下面的兜底变成 500 / 问题中心里的假故障
         db.rollback()
         raise
     except ValueError as e:

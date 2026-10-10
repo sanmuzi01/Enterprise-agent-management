@@ -37,8 +37,48 @@ def _cleanup_user(name: str) -> None:
         db.close()
 
 
+class _DefaultOrg:
+    """保证“默认企业”存在：本地开发库跑过回填脚本所以有，全新的库（CI）没有——没有它，注册时的自动入会是静默跳过的，这些测试就测不到东西。
+    只有这里建了它才会在 close() 里删掉，不动本来就存在的。"""
+
+    def __init__(self):
+        from models.enterprise_dao import DEFAULT_ORG_NAME
+        self.created_id = None
+        self.owner = None
+        db = SessionLocal()
+        try:
+            if db.execute(text("SELECT id FROM organizations ORDER BY id LIMIT 1")).scalar() is None:
+                self.owner = rc.create_user("enroll-owner")
+                db.execute(text("INSERT INTO organizations (name, owner_user_id, status, created_at) VALUES (:n, :o, 'active', NOW())"),
+                           {"n": DEFAULT_ORG_NAME, "o": self.owner["id"]})
+                db.commit()
+                self.created_id = db.execute(text("SELECT id FROM organizations WHERE name=:n ORDER BY id DESC LIMIT 1"), {"n": DEFAULT_ORG_NAME}).scalar()
+        finally:
+            db.close()
+
+    def close(self):
+        if self.created_id is None:
+            return
+        db = SessionLocal()
+        try:
+            db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": self.created_id})
+            db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": self.created_id})
+            db.commit()
+        finally:
+            db.close()
+        rc.cleanup()
+
+
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
 class RegisterEnrollsDefaultOrganizationTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.default_org = _DefaultOrg()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.default_org.close()
+
     def test_sync_register_adds_organization_members_row(self):
         name = f"rt_enroll_{uuid.uuid4().hex[:10]}"
         phone = f"138{uuid.uuid4().int % 10**8:08d}"
@@ -104,10 +144,12 @@ class EnrollInDefaultOrganizationDirectTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.default_org = _DefaultOrg()
         cls.user = rc.create_user("enroll-direct")
 
     @classmethod
     def tearDownClass(cls):
+        cls.default_org.close()
         rc.cleanup()
 
     def test_missing_default_org_is_a_silent_noop_not_an_error(self):
@@ -115,7 +157,7 @@ class EnrollInDefaultOrganizationDirectTest(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            with patch("models.enterprise_dao.DEFAULT_ORG_NAME", "这个名字的企业不会存在-探测用"):
+            with patch("models.enterprise_dao._ENTERPRISE_ID_SQL", "SELECT id FROM organizations WHERE 1 = 0"):
                 enroll_in_default_organization(db, self.user["id"])  # 不应该抛异常
             row = db.execute(
                 text("SELECT 1 FROM organization_members WHERE user_id=:u"), {"u": self.user["id"]}

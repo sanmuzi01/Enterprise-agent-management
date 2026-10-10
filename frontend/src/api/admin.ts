@@ -24,6 +24,10 @@ export interface AdminUser {
   task_count: number
   counts?: Record<string, number>
   plan_name?: string | null
+  org_role_code?: string | null
+  org_role_name?: string | null
+  org_status?: string | null
+  departments?: { id: number; name: string; status: string; role_code: string; role_name: string }[]
 }
 
 export interface AdminTask {
@@ -166,7 +170,11 @@ export interface AdminKnowledgeSpace {
   owner_user_id: number
   owner_name: string
   organization_id: number | null
-  team_id: number | null
+  /** personal = 未划分；department = 划分给了若干部门；enterprise = 划分给全企业 */
+  scope_type: 'personal' | 'department' | 'enterprise' | string
+  departments: { id: number; name: string }[]
+  sensitivity: string
+  sensitivity_label: string
   status: string
   is_enabled: boolean
   purpose: string | null
@@ -179,18 +187,53 @@ export interface AdminKnowledgeSpace {
   updated_at: string | null
 }
 
+export interface AdminSpaceDepartment {
+  id: number
+  name: string
+  space_count: number
+}
+
 export interface AdminKnowledgeSpacePage {
   items: AdminKnowledgeSpace[]
   total: number
   limit: number
   offset: number
+  /** 所有启用中的部门（含还没有空间的），以及全企业、未划分和全部的数量 */
+  departments: AdminSpaceDepartment[]
+  enterprise_count: number
+  unassigned_count: number
+  all_count: number
 }
+
+export type SpaceAssignScope = 'unassigned' | 'departments' | 'enterprise'
 
 export async function listAdminKnowledgeSpaces(params: {
   limit?: number
   offset?: number
+  /** all / unassigned / enterprise / team:<部门编号> */
+  scope?: string
 } = {}): Promise<AdminKnowledgeSpacePage> {
   const { data } = await request.get('/admin/knowledge-spaces', { params })
+  return data
+}
+
+export async function createAdminSpace(payload: {
+  name: string
+  description?: string
+  scope: SpaceAssignScope
+  team_ids: number[]
+  sensitivity: string
+}): Promise<{ id: number; name: string; team_id: number | null; sensitivity: string }> {
+  const { data } = await request.post('/admin/knowledge-spaces', payload)
+  return data
+}
+
+/** 划分：未划分 / 指定部门（可多个）/ 全企业，以及密级 */
+export async function updateAdminSpace(
+  spaceId: number,
+  patch: { scope: SpaceAssignScope; team_ids: number[]; sensitivity: string },
+): Promise<{ id: number; name: string }> {
+  const { data } = await request.patch(`/admin/knowledge-spaces/${spaceId}`, patch)
   return data
 }
 

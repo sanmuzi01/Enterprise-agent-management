@@ -1,6 +1,7 @@
 from utils.timeutil import utcnow
 from typing import List
 from typing import Generator
+from utils.db_probe import connect_args
 from sqlalchemy import create_engine, Column, Integer, String, DateTime, Text, ForeignKey, Table, Index, Float, UniqueConstraint
 from sqlalchemy.dialects.mysql import LONGTEXT
 from sqlalchemy.engine import URL
@@ -72,7 +73,7 @@ engine = create_engine(
     pool_recycle=DB_POOL_RECYCLE,
     pool_pre_ping=DB_POOL_PRE_PING,
     pool_use_lifo=True,
-    connect_args={"charset": "utf8mb4"},
+    connect_args=connect_args(),      # 含 connect_timeout：数据库“半通不通”时连接线程不会无限卡住（见 utils/db_probe.py）
 )
 
 # ORM基类
@@ -182,18 +183,17 @@ class Agent(Base):
     # 不在这里加 CHECK——跟 EnterpriseRole 的 role_id 校验放在 service 层是同一个理由。
     agent_type = Column(String(20), nullable=False, default="personal")
     department_code = Column(String(20), nullable=True)
-    # P1 并发/正确性修复（docs/enterprise-rbac-plan.md 相关记录）：同一个
-    # department_code 同时只能有一个 published 的部门 Agent——不然
-    # central_router._find_department_agent 查出多条 published 的候选，选哪个
-    # 是未定义行为（没有唯一约束/优先级/稳定排序），路由结果撞运气，可能出现
-    # "同一个部门有两个 Agent 都在抢着回答"。这一列由
-    # service/agent_admin_service.py 显式维护：agent_type='department' 且
-    # lifecycle_status='published' 时写成 department_code 本身，其余任何状态
-    # （draft/reviewing/retired）都清成 NULL。MySQL 唯一索引允许多个 NULL
-    # 共存，只在非 NULL 值之间强制唯一，天然适合"只对已发布的那一个做唯一
-    # 约束"——一旦约束生效，同一个部门永远最多只有一条 published 记录，
-    # _find_department_agent 也就不再需要纠结"选哪个"，因为根本不会有多个候选。
+    # 同一个部门（team）同时只能有一个 published 的部门 Agent。由
+    # service/agent_admin_service.py 维护：published 时写成 "t{team_id}"，其余状态清成 NULL；
+    # MySQL 唯一索引允许多个 NULL，只对已发布的那一个做唯一约束。不同部门可以各自发布
+    # 同一业务方向的 Agent（销售一部、二部各有 CRM Agent），见迁移 20261002_0001。
     department_publish_key = Column(String(20), nullable=True)
+    # 运行方式：builtin = 平台自带的运行循环（提示词 + 工具 + 知识库）；
+    # external = 把对话转发给企业自己部署的 Agent 服务（地址等配置在 agent_external_endpoint）。
+    runtime_type = Column(String(20), nullable=False, default="builtin", server_default="builtin")
+    # 企业智能体的“档案”：它能做什么（给管理员和使用者看）、由谁维护（出了问题找谁）。
+    description = Column(String(500), nullable=True)
+    maintainer = Column(String(100), nullable=True)
     skills: Mapped[List["Skill"]] = relationship(
         secondary="agent_skill", lazy=False, back_populates="agents"
     )
@@ -208,6 +208,326 @@ class Role(Base):
     #1对1的关系
     #user = relationship("User",lazy=False,back_populates="role")
 #llm的apikey
+class AutomationWork(Base):
+    """Persisted AI work products. Business writes remain in the Java service."""
+    __tablename__ = "automation_work"
+    __table_args__ = (
+        UniqueConstraint("user_id", "request_key", name="uq_automation_request"),
+        Index("idx_automation_owner_team", "user_id", "team_id", "created_at"),
+        Index("idx_automation_batch", "batch_id"),
+    )
+    id = Column(String(36), primary_key=True)
+    user_id = Column(Integer, ForeignKey("user.id"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id"), nullable=False)
+    request_key = Column(String(36), nullable=False)
+    kind = Column(String(30), nullable=False)
+    model_name = Column(String(100), nullable=False)
+    sensitivity = Column(String(20), nullable=False, default="internal")
+    source_text = Column(Text, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="processing")
+    proposal_json = Column(Text, nullable=True)
+    accepted_json = Column(Text, nullable=True)
+    business_result_json = Column(Text, nullable=True)
+    business_checks_json = Column(Text, nullable=True)
+    completed_tasks_json = Column(Text, nullable=False, default="[]")
+    error_message = Column(String(300), nullable=True)
+    elapsed_ms = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=True)
+    edited = Column(Integer, nullable=False, default=0)
+    applied_at = Column(DateTime, nullable=True)
+    apply_attempts = Column(Integer, nullable=False, default=0)
+    batch_id = Column(String(36), nullable=True)       # 批量整理：同一批次的材料共用，None = 单份整理
+    batch_index = Column(Integer, nullable=True)                   # 在批次里的顺序（从 0 开始）
+    batch_name = Column(String(255), nullable=True)                # 批次里这份材料的名称（通常是文件名）
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AgentHandoff(Base):
+    """中央 Agent 的转交记录：转给了谁、为什么（含"没转出去"的原因）、输入摘要、备选部门。"""
+    __tablename__ = "agent_handoff"
+    __table_args__ = (
+        Index("idx_agent_handoff_created", "created_at"),
+        Index("idx_agent_handoff_user", "user_id", "created_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_agent_handoff_user"), nullable=False)
+    central_agent_id = Column(Integer, nullable=True)
+    target_agent_id = Column(Integer, nullable=True)
+    reason = Column(String(24), nullable=False)       # routed / no_match / no_usable_agent
+    department_code = Column(String(20), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    message_excerpt = Column(String(500), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class SystemIssue(Base):
+    """问题中心：同一种故障（按 fingerprint 聚合）只有一条，发生多少次累计多少次。不放用户、请求内容等会让同一问题被拆散的信息。"""
+    __tablename__ = "system_issue"
+    __table_args__ = (
+        UniqueConstraint("fingerprint", name="uq_system_issue_fingerprint"),
+        Index("idx_system_issue_status", "status", "last_seen_at"),
+        Index("idx_system_issue_dept", "department_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_no = Column(String(40), nullable=True)
+    fingerprint = Column(String(64), nullable=False)
+    title = Column(String(255), nullable=False)
+    severity = Column(String(10), nullable=False, default="medium")      # low / medium / high / critical
+    category = Column(String(20), nullable=False, default="code")        # code / dependency / security / data / task
+    status = Column(String(20), nullable=False, default="OPEN")          # OPEN / ACKNOWLEDGED / INVESTIGATING / MITIGATED / RESOLVED / REGRESSED
+    service = Column(String(40), nullable=False)
+    operation = Column(String(200), nullable=True)
+    error_code = Column(String(60), nullable=False)
+    department_id = Column(Integer, nullable=True)
+    responsible_user_id = Column(Integer, nullable=True)
+    last_trace_id = Column(String(64), nullable=True)
+    sentry_event_id = Column(String(64), nullable=True)
+    affected_resource_type = Column(String(40), nullable=True)
+    affected_resource_id = Column(String(64), nullable=True)
+    occurrence_count = Column(Integer, nullable=False, default=1)
+    retryable = Column(Integer, nullable=False, default=0)
+    first_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    acknowledged_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    root_cause = Column(Text, nullable=True)
+    resolution = Column(Text, nullable=True)
+    fix_version = Column(String(80), nullable=True)
+    resolved_by = Column(Integer, nullable=True)
+    verified_by = Column(Integer, nullable=True)
+    verified_at = Column(DateTime, nullable=True)
+    regress_count = Column(Integer, nullable=False, default=0)
+
+
+class IssueOccurrence(Base):
+    """某个问题的单次发生（只保留最近一批，用来看 trace_id 和上下文）。detail 已脱敏。"""
+    __tablename__ = "issue_occurrence"
+    __table_args__ = (Index("idx_issue_occ_issue", "issue_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_id = Column(Integer, nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    release = Column(String(80), nullable=True)
+    http_status = Column(Integer, nullable=True)
+    message = Column(String(500), nullable=True)
+    detail_json = Column(Text, nullable=True)
+    occurred_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class IssueEvent(Base):
+    """问题的处理记录：谁、何时、做了什么（确认、指派、备注、解决、验收、回归）。只追加。"""
+    __tablename__ = "issue_event"
+    __table_args__ = (Index("idx_issue_event_issue", "issue_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    issue_id = Column(Integer, nullable=False)
+    actor_user_id = Column(Integer, nullable=True)      # 空 = 系统（自动回归、依赖恢复）
+    action = Column(String(30), nullable=False)
+    note = Column(String(1000), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class AttendanceRule(Base):
+    """考勤规则：企业默认（team_id 为空）或某个部门自己的上下班时间与迟到宽限。"""
+    __tablename__ = "attendance_rule"
+    __table_args__ = (UniqueConstraint("organization_id", "team_key", name="uq_attendance_rule"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    team_key = Column(Integer, nullable=False, default=0)       # team_id 或 0（企业默认），用来做唯一约束
+    work_start = Column(String(5), nullable=False, default="09:00")
+    work_end = Column(String(5), nullable=False, default="18:00")
+    grace_minutes = Column(Integer, nullable=False, default=5)
+    flex_minutes = Column(Integer, nullable=False, default=0, server_default="0")   # 弹性上班：上班时间之后多少分钟内到岗都不算迟到，晚到多少晚走多少
+    updated_by = Column(Integer, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class AttendanceCalendar(Base):
+    """工作日历：法定节假日和调休上班日每年都不一样，由人事按国务院公布的安排录入；没有记录的日期按周一到周五上班、周末休息。"""
+    __tablename__ = "attendance_calendar"
+    __table_args__ = (UniqueConstraint("organization_id", "day", name="uq_attendance_calendar"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    day = Column(DateTime, nullable=False)
+    kind = Column(String(10), nullable=False)       # workday（含调休上班）/ rest（休息日）/ holiday（法定节假日）
+    note = Column(String(60), nullable=True)
+
+
+class AttendanceAlias(Base):
+    """打卡机/考勤系统里的名字（姓名、工号）与平台账号的对应：现实里两边的叫法经常不一样，人事确认一次就记住。"""
+    __tablename__ = "attendance_alias"
+    __table_args__ = (UniqueConstraint("organization_id", "alias", name="uq_attendance_alias"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    alias = Column(String(80), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    created_by = Column(Integer, nullable=True)
+
+
+class AttendanceImport(Base):
+    """一次考勤文件导入（打卡机/钉钉/企业微信导出的 Excel 或 CSV）：只记录文件名、格式、区间、条数，不保存文件本身。"""
+    __tablename__ = "attendance_import"
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    uploaded_by = Column(Integer, nullable=False)
+    file_name = Column(String(255), nullable=False)
+    source_format = Column(String(20), nullable=False)       # punch_rows 逐条打卡 / daily_summary 每日汇总
+    period_start = Column(DateTime, nullable=True)
+    period_end = Column(DateTime, nullable=True)
+    row_count = Column(Integer, nullable=False, default=0)
+    punch_count = Column(Integer, nullable=False, default=0)
+    new_punch_count = Column(Integer, nullable=False, default=0)
+    unmatched_json = Column(Text, nullable=True)
+    skipped_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class AttendancePunch(Base):
+    __tablename__ = "attendance_punch"
+    __table_args__ = (UniqueConstraint("user_id", "punch_at", name="uq_attendance_punch"), Index("idx_attendance_punch_org_day", "organization_id", "punch_at"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    punch_at = Column(DateTime, nullable=False)             # 北京时间的本地时间（打卡机导出的就是这个）
+    import_id = Column(Integer, nullable=True)
+
+
+class AttendanceAnomaly(Base):
+    """考勤异常：由规则判断（不涉及模型），员工说明，人事/部门负责人认定。同一个人同一天同一类型只有一条。"""
+    __tablename__ = "attendance_anomaly"
+    __table_args__ = (UniqueConstraint("user_id", "work_date", "type", name="uq_attendance_anomaly"),
+                      Index("idx_attendance_anomaly_team", "team_id", "status", "work_date"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, nullable=False)
+    work_date = Column(DateTime, nullable=False)
+    type = Column(String(20), nullable=False)               # late / early_leave / missing_in / missing_out / absent / rest_day_work / overlong / leave_conflict
+    severity = Column(String(8), nullable=False, default="medium")
+    detail_json = Column(Text, nullable=False)
+    status = Column(String(12), nullable=False, default="open")   # open / explained / confirmed / dismissed / cleared
+    explanation = Column(String(500), nullable=True)
+    explained_at = Column(DateTime, nullable=True)
+    decided_by = Column(Integer, nullable=True)
+    decision_note = Column(String(500), nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class OutboxEvent(Base):
+    """事务性发件箱：业务数据和事件在同一个数据库事务里写入，之后由发布器可靠地送出（至少一次）。payload 已脱敏，不含正文。"""
+    __tablename__ = "outbox_event"
+    __table_args__ = (
+        UniqueConstraint("event_id", name="uq_outbox_event_id"),
+        Index("idx_outbox_publish", "published_at", "next_publish_at"),
+        Index("idx_outbox_topic", "topic", "id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    topic = Column(String(80), nullable=False)
+    event_key = Column(String(64), nullable=True)
+    event_type = Column(String(60), nullable=False)
+    schema_version = Column(Integer, nullable=False, default=1)
+    aggregate_type = Column(String(40), nullable=False)
+    aggregate_id = Column(String(64), nullable=False)
+    organization_id = Column(Integer, nullable=True)
+    department_id = Column(Integer, nullable=True)
+    trace_id = Column(String(64), nullable=True)
+    producer = Column(String(40), nullable=False)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    published_at = Column(DateTime, nullable=True)
+    publish_attempts = Column(Integer, nullable=False, default=0)
+    next_publish_at = Column(DateTime, nullable=True)
+    last_error = Column(String(300), nullable=True)
+
+
+class ConsumerInbox(Base):
+    """消费者收件箱：某个消费者已经成功处理过的事件。重复投递同一事件时据此跳过，保证幂等。"""
+    __tablename__ = "consumer_inbox"
+    __table_args__ = (UniqueConstraint("event_id", "consumer", name="uq_inbox_event_consumer"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    processed_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ConsumerRetry(Base):
+    """某个消费者对某个事件的处理租约与重试状态：领取时占位（防止多个进程重复处理），失败后记录次数与下次重试时间。"""
+    __tablename__ = "consumer_retry"
+    __table_args__ = (UniqueConstraint("event_id", "consumer", name="uq_retry_event_consumer"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=False)
+    last_error = Column(String(300), nullable=True)
+
+
+class DeadLetter(Base):
+    """死信：重试用尽的事件，等待人工处理（修复后重新投递，或写明原因后丢弃）。"""
+    __tablename__ = "dead_letter"
+    __table_args__ = (Index("idx_dead_letter_status", "status", "id"), Index("idx_dead_letter_event", "event_id", "consumer"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    event_id = Column(String(36), nullable=False)
+    consumer = Column(String(60), nullable=False)
+    topic = Column(String(80), nullable=False)
+    event_type = Column(String(60), nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    payload_json = Column(Text, nullable=False)
+    error = Column(String(500), nullable=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    status = Column(String(12), nullable=False, default="pending")      # pending / redelivered / discarded
+    discard_reason = Column(String(500), nullable=True)
+    handled_by = Column(Integer, nullable=True)
+    handled_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class OrchestrationPlan(Base):
+    """跨部门协同办理：一段话拆成的多个部门步骤。只是计划，业务数据都由各步骤关联的 AI 工作成果经人工核对后写入。"""
+    __tablename__ = "orchestration_plan"
+    __table_args__ = (Index("idx_orch_plan_user", "user_id", "created_at"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_orch_plan_user"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_orch_plan_team"), nullable=False)
+    source_text = Column(Text, nullable=False)
+    status = Column(String(20), nullable=False, default="open")   # open / closed
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class OrchestrationStep(Base):
+    """协同计划的一步：交给哪个工作流/部门、依据哪段原文、关联哪份 AI 工作成果。"""
+    __tablename__ = "orchestration_step"
+    __table_args__ = (Index("idx_orch_step_plan", "plan_id", "seq"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    plan_id = Column(Integer, ForeignKey("orchestration_plan.id", name="fk_orch_step_plan"), nullable=False)
+    seq = Column(Integer, nullable=False)
+    kind = Column(String(30), nullable=True)               # 工作流 ID；人事事项等没有工作流的为 None
+    department_code = Column(String(20), nullable=True)    # 由哪类部门负责
+    clause = Column(Text, nullable=False)
+    reason = Column(String(300), nullable=False)
+    state = Column(String(20), nullable=False, default="pending")  # pending / handoff / skipped / linked
+    automation_work_id = Column(String(36), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class EnterpriseLlmConnection(Base):
+    """企业统一的模型连接：管理员按模型服务商（智谱 / OpenAI / DeepSeek …）配置一次 API Key，全公司共用。
+
+    用户自己在“连接 AI 服务”里填的个人密钥优先；没有个人密钥时才用这里的。密钥加密保存，只写不读。"""
+    __tablename__ = "enterprise_llm_connection"
+    provider = Column(String(30), primary_key=True)
+    api_key = Column(Text, nullable=False)              # Fernet 密文
+    is_active = Column(Integer, nullable=False, default=1)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
 class LLMConfig(Base):
     __tablename__ = "llm_config"
     __table_args__ = (
@@ -309,6 +629,24 @@ class KnowledgeSpace(Base):
     row_version = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class KnowledgeSpaceDepartment(Base):
+    """知识库空间 ↔ 部门：管理员把一个知识库“划分”给哪些部门（多对多）。
+
+    scope_type = department 的空间，被划分到的部门的在职成员自动只读，部门负责人可编辑文档；
+    scope_type = enterprise 的空间对全企业在职成员只读，不需要这张表；
+    scope_type = personal 的空间还没有划分，只有所有者和被加入的成员能看到。
+    “绝密”密级的空间不继承任何部门 / 全企业身份。"""
+    __tablename__ = "knowledge_space_departments"
+    __table_args__ = (
+        Index("uq_kspace_department", "space_id", "team_id", unique=True),
+        Index("idx_kspace_department_team", "team_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    space_id = Column(Integer, ForeignKey("knowledge_spaces.id", name="fk_ksd_space", ondelete="CASCADE"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_ksd_team", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
 
 
 class AgentKnowledgeSpace(Base):
@@ -436,6 +774,10 @@ class Team(Base):
     name = Column(String(120), nullable=False)
     owner_user_id = Column(Integer, nullable=False)
     status = Column(String(20), nullable=False, default="active", server_default="active")  # active/disabled
+    # 部门业务类型（hr/procurement/sales/finance/it，见 service/runtime/central_router.py
+    # 的 VALID_DEPARTMENT_CODES）——部门工作台用这个字段决定显示哪个业务模块，不再靠
+    # "这个部门有没有已发布的对应 Agent"反推，两者是独立的可用性判断。
+    department_code = Column(String(20), nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
 
@@ -478,11 +820,11 @@ class OrganizationMember(Base):
 
 
 class TeamMember(Base):
-    """部门成员。role_id 必须指向 scope="team" 的 EnterpriseRole 行（同上，应用层校验）。"""
+    """部门成员。一名用户只能属于一个部门；role_id 必须指向 scope="team" 的 EnterpriseRole 行。"""
     __tablename__ = "team_members"
     __table_args__ = (
-        Index("uq_team_member", "team_id", "user_id", unique=True),
-        Index("idx_team_member_user", "user_id"),
+        Index("uq_team_member_user", "user_id", unique=True),
+        Index("idx_team_member_team", "team_id"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_tm_team"), nullable=False)
@@ -624,6 +966,30 @@ class AgentApiConnector(Base):
     created_at = Column(DateTime, default=utcnow, nullable=False)
 
 
+class AgentExternalEndpoint(Base):
+    """外部 Agent 服务的接入配置（Agent.runtime_type = external 时使用）。
+
+    平台把对话按固定协议（docs/external-agent-protocol.md）转发到 url；每次请求都用
+    secret_encrypted 里的密钥做 HMAC 签名，对方据此确认请求确实来自平台。
+    地址、密钥、附加请求头都由管理员预先配置，模型和用户输入无法改变它们。"""
+    __tablename__ = "agent_external_endpoint"
+    __table_args__ = (
+        UniqueConstraint("agent_id", name="uq_agent_external_endpoint_agent"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    agent_id = Column(Integer, ForeignKey("agent.id", name="fk_agent_external_endpoint_agent"), nullable=False)
+    url = Column(String(1000), nullable=False)
+    secret_encrypted = Column(Text, nullable=False)       # Fernet 加密的签名密钥
+    headers_encrypted = Column(Text, nullable=True)       # Fernet 加密的附加请求头（可能含 Authorization）
+    timeout_seconds = Column(Integer, nullable=False, default=60)
+    send_knowledge = Column(Integer, nullable=False, default=0)   # 1 = 把检索到的资料片段一并发给对方（受密级策略约束）
+    last_test_at = Column(DateTime, nullable=True)
+    last_test_ok = Column(Integer, nullable=True)
+    last_test_message = Column(String(300), nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class EvalSet(Base):
     """固定评估集：一份可重复回归跑的问题集（question + 期望命中/答案），
     绑定某个 Agent 私有库或某个知识库空间。之前评估只能"这次请求带 cases 现算现返回"，
@@ -667,6 +1033,7 @@ class AgentRun(Base):
         Index("idx_agent_run_agent_started", "agent_id", "started_at"),
         Index("idx_agent_run_agent_conversation_started", "agent_id", "conversation_id", "started_at"),
         Index("idx_agent_run_status_started", "status", "started_at"),
+        Index("idx_agent_run_agent_status", "agent_id", "status", "started_at"),       # 与迁移 20261007_0004 一致：按助手 + 状态看最近的运行
     )
     id  = Column(Integer ,primary_key=True,autoincrement=True)
     user_id = Column(Integer,ForeignKey("user.id",name="fk_run_user"),nullable=False)
@@ -681,6 +1048,9 @@ class AgentRun(Base):
     started_at = Column(DateTime, default=utcnow, nullable=False)
     finished_at = Column(DateTime, nullable=True)          # 结束时间（结束时回填）
     conversation_id = Column(Integer, ForeignKey("conversation.id", name="fk_run_conv", ondelete="SET NULL"),nullable=True)
+    trace_id = Column(String(64), nullable=True)           # 链路追踪编号：和日志、Java 业务服务、问题中心是同一个
+    error_code = Column(String(60), nullable=True)         # 失败时的统一错误码（MODEL_TIMEOUT、JAVA_SERVICE_UNAVAILABLE…）
+    issue_no = Column(String(40), nullable=True)           # 失败进入问题中心时的问题编号
 
 # Agent运行步骤表（每一步的思考/工具/结果）
 class AgentStep(Base):
@@ -943,6 +1313,527 @@ class NotificationChannel(Base):
     last_error = Column(String(500), nullable=True)
     created_at = Column(DateTime, default=utcnow, nullable=False)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class WorkItem(Base):
+    """统一待办：提醒规则生成的、AI 工作成果里的后续事项、以及用户自己记的待办。
+    source_key 在同一负责人下唯一，规则重复运行不会重复创建；条件不再成立时由规则自动关闭。"""
+    __tablename__ = "work_item"
+    __table_args__ = (
+        UniqueConstraint("user_id", "source_key", name="uq_work_item_source"),
+        Index("idx_work_item_owner_status", "user_id", "status", "due_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_work_item_user"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", name="fk_work_item_team"), nullable=True)
+    source_type = Column(String(30), nullable=False)        # reminder / automation / manual
+    source_key = Column(String(120), nullable=False)
+    rule = Column(String(40), nullable=True)                # 生成它的提醒规则
+    title = Column(String(200), nullable=False)
+    detail = Column(String(500), nullable=True)
+    link = Column(String(200), nullable=True)
+    priority = Column(String(10), nullable=False, default="normal")  # low/normal/high
+    status = Column(String(12), nullable=False, default="open")      # open/done/dismissed
+    due_at = Column(DateTime, nullable=True)
+    resolved_by = Column(String(12), nullable=True)         # user / rule
+    completed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class Notification(Base):
+    """站内通知。dedupe_key 在同一用户下唯一，同一件事只通知一次。"""
+    __tablename__ = "notification"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dedupe_key", name="uq_notification_dedupe"),
+        Index("idx_notification_user_read", "user_id", "read_at", "created_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_notification_user"), nullable=False)
+    category = Column(String(30), nullable=False)
+    title = Column(String(200), nullable=False)
+    body = Column(String(500), nullable=True)
+    link = Column(String(200), nullable=True)
+    dedupe_key = Column(String(160), nullable=False)
+    read_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=utcnow, nullable=False)
+
+
+class NotificationPreference(Base):
+    """通知偏好：静音的类别（不再产生站内通知和外部推送）、免打扰时段（只影响外部推送）。"""
+    __tablename__ = "notification_preference"
+    user_id = Column(Integer, ForeignKey("user.id", name="fk_notification_pref_user"), primary_key=True)
+    muted_categories = Column(Text, nullable=False, default="[]")
+    quiet_start = Column(String(5), nullable=True)   # "22:00"（北京时间）
+    quiet_end = Column(String(5), nullable=True)     # "08:00"
+    push_external = Column(Integer, nullable=False, default=0)
+    updated_at = Column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ReminderRun(Base):
+    """每条提醒规则的运行租约与健康状态：多个 Worker 同时运行时只有拿到租约的那个执行。"""
+    __tablename__ = "reminder_run"
+    rule = Column(String(40), primary_key=True)
+    lease_until = Column(DateTime, nullable=True)
+    next_run_at = Column(DateTime, nullable=True)
+    last_started_at = Column(DateTime, nullable=True)
+    last_finished_at = Column(DateTime, nullable=True)
+    last_status = Column(String(12), nullable=True)   # ok / failed
+    last_error = Column(String(500), nullable=True)
+    last_created = Column(Integer, nullable=False, default=0)
+    last_resolved = Column(Integer, nullable=False, default=0)
+    consecutive_failures = Column(Integer, nullable=False, default=0)
+
+
+class BootstrapMarker(Base):
+    """一次性初始化的哨兵：某件事（如“自动建企业”）做过就留一行。主键保证多个进程同时初始化时只有一个能写进去，
+    其余的撞主键后回滚（命名锁之外数据库层面的兜底，见 service/enterprise_bootstrap.py）。"""
+    __tablename__ = "bootstrap_marker"
+    name = Column(String(60), primary_key=True)
+    done_at = Column(DateTime, nullable=False, default=utcnow)
+    detail = Column(String(200), nullable=True)
+
+
+class CollaborationApp(Base):
+    """企业在飞书 / 钉钉上建的自建应用（机器人）。密钥、加密 Key 只存密文，页面和接口都不回显。"""
+    __tablename__ = "collaboration_app"
+    __table_args__ = (UniqueConstraint("organization_id", "provider", name="uq_collaboration_app"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)                 # feishu / dingtalk
+    app_id = Column(String(120), nullable=False)                  # 飞书 App ID；钉钉 AppKey（ClientId）
+    encrypted_app_secret = Column(Text, nullable=False)
+    # 以 Fernet 密文保存。历史版本曾经明文保存；service/integrations/apps.py 在首次读取时会自动迁移。
+    verification_token = Column(Text, nullable=True)              # 飞书 Verification Token；钉钉事件订阅的签名 token
+    encrypted_encrypt_key = Column(Text, nullable=True)           # 飞书 Encrypt Key；钉钉事件订阅的 aes_key
+    robot_code = Column(String(120), nullable=True)               # 钉钉机器人 robotCode（主动发消息用）
+    card_template_id = Column(String(120), nullable=True)         # 钉钉互动卡片模板（按钮回调需要）
+    enabled = Column(Integer, nullable=False, default=0)
+    last_health_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ExternalUserBinding(Base):
+    """外部平台的人 ↔ 平台账号。只有绑定了、状态是 active 的人，才能在飞书 / 钉钉里用助手。"""
+    __tablename__ = "external_user_binding"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_tenant_id", "external_user_id", name="uq_external_user"),
+        Index("idx_external_user_local", "local_user_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)
+    external_tenant_id = Column(String(120), nullable=False)      # 飞书 tenant_key；钉钉 corpId
+    external_user_id = Column(String(120), nullable=False)        # 飞书 open_id；钉钉 userid（staffId）
+    external_union_id = Column(String(120), nullable=True)
+    external_name = Column(String(120), nullable=True)
+    local_user_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active")  # active / disabled（离职、被管理员停用）/ unmatched（同步到了但没对上账号）
+    last_synced_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ExternalDepartmentBinding(Base):
+    """外部平台的部门 ↔ 平台部门。同步组织架构时按名称对上，对不上的留给管理员处理。"""
+    __tablename__ = "external_department_binding"
+    __table_args__ = (UniqueConstraint("provider", "external_tenant_id", "external_department_id", name="uq_external_department"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)
+    external_tenant_id = Column(String(120), nullable=False)
+    external_department_id = Column(String(120), nullable=False)
+    external_name = Column(String(200), nullable=True)
+    external_parent_id = Column(String(120), nullable=True)
+    local_team_id = Column(Integer, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+
+
+class ExternalBindCode(Base):
+    """员工自助绑定飞书 / 钉钉账号用的一次性绑定码：员工在平台设置里领取，在飞书 / 钉钉里发给机器人“绑定 123456”。
+    只存 HMAC 摘要（code_hash），不存明文；10 分钟过期，只能用一次；同一员工同一平台领新码时旧码作废。"""
+    __tablename__ = "external_bind_code"
+    __table_args__ = (
+        Index("idx_external_bind_code_hash", "provider", "code_hash"),
+        Index("idx_external_bind_code_user", "user_id", "provider"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    used_by_external_id = Column(String(120), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ExternalEventInbox(Base):
+    """收到的外部回调：(provider, tenant_id, event_id) 唯一，飞书 / 钉钉重复推送同一个事件只处理一次，
+    不会因为重试建出两张单子、两条跟进或两次报销。"""
+    __tablename__ = "external_event_inbox"
+    __table_args__ = (
+        UniqueConstraint("provider", "tenant_id", "event_id", name="uq_external_event"),
+        Index("idx_external_event_status", "status", "received_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    tenant_id = Column(String(120), nullable=False)
+    event_id = Column(String(120), nullable=False)
+    event_type = Column(String(80), nullable=False)
+    status = Column(String(20), nullable=False, default="received")   # received / processing / done / ignored / failed
+    received_at = Column(DateTime, nullable=False, default=utcnow)
+    processed_at = Column(DateTime, nullable=True)
+    trace_id = Column(String(64), nullable=True)
+    last_error = Column(String(500), nullable=True)
+
+
+class CustomerActivity(Base):
+    """CRM 客户活动：邮件、会议、群聊、电话纪要、人工跟进、报价、待办……统一放一张表，客户时间线按时间展示。
+
+    (source_provider, external_source_id) 唯一：同一封邮件（Message-ID）、同一个会议（UID）、同一条飞书 / 钉钉消息
+    只会生成一条活动。customer_id 为空表示还没对上客户（match_status=pending 等销售选择，unmatched 没有候选）。"""
+    __tablename__ = "customer_activity"
+    __table_args__ = (
+        UniqueConstraint("source_provider", "external_source_id", name="uq_customer_activity_source"),
+        Index("idx_customer_activity_customer", "customer_id", "occurred_at"),
+        Index("idx_customer_activity_team_match", "team_id", "match_status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    activity_type = Column(String(20), nullable=False)        # email / meeting / chat / call / followup / quote / todo
+    source_provider = Column(String(20), nullable=False)      # email / imap / calendar / feishu / dingtalk / manual
+    external_source_id = Column(String(255), nullable=False)
+    occurred_at = Column(DateTime, nullable=False)
+    participants_json = Column(Text, nullable=True)
+    title = Column(String(300), nullable=True)
+    content = Column(LONGTEXT, nullable=True)
+    summary = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    match_status = Column(String(20), nullable=False, default="auto")   # explicit / auto / manual / pending / unmatched / ignored
+    match_confidence = Column(Float, nullable=True)
+    match_method = Column(String(30), nullable=True)
+    match_candidates_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmCustomerAlias(Base):
+    """销售手动指定“这封邮件 / 这个人属于哪个客户”后记下的对应关系（邮箱、手机号、邮箱域名、公司别名），
+    下次同样的来源直接对上，越用越准。按部门隔离。"""
+    __tablename__ = "crm_customer_alias"
+    __table_args__ = (UniqueConstraint("team_id", "alias_type", "alias_value", name="uq_crm_customer_alias"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    alias_type = Column(String(20), nullable=False)           # email / phone / domain / name
+    alias_value = Column(String(255), nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    created_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CustomerSummarySnapshot(Base):
+    """客户摘要（增量生成：上一版摘要 + 之后的新活动 → 新摘要，不把全部历史再送一遍模型）。保留历史版本。"""
+    __tablename__ = "customer_summary_snapshot"
+    __table_args__ = (Index("idx_customer_summary_customer", "team_id", "customer_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    summary = Column(Text, nullable=False)
+    needs_json = Column(Text, nullable=True)
+    stakeholders_json = Column(Text, nullable=True)
+    risks_json = Column(Text, nullable=True)
+    next_actions_json = Column(Text, nullable=True)
+    based_on_activity_id = Column(Integer, nullable=True)     # 摘要已经看过的最后一条活动
+    generated_at = Column(DateTime, nullable=False, default=utcnow)
+    model_name = Column(String(100), nullable=True)
+    generated_by = Column(Integer, nullable=True)
+
+
+class CrmOpportunitySnapshot(Base):
+    """商机变化记录（阶段、金额、预计成交日期）：只在发生变化时记一条，用来判断金额下降、多次延期、阶段变化。"""
+    __tablename__ = "crm_opportunity_snapshot"
+    __table_args__ = (Index("idx_crm_opp_snapshot", "opportunity_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=False)
+    stage = Column(String(20), nullable=False)
+    amount = Column(String(40), nullable=False)
+    expected_close_date = Column(String(10), nullable=True)
+    captured_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmRiskFinding(Base):
+    """商机 / 客户风险。每条必须带证据（evidence）。同一客户、同一商机、同一风险只有一条：
+    再次扫描仍存在就更新 last_seen_at，消失了就标 resolved，不会重复生成。"""
+    __tablename__ = "crm_risk_finding"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_crm_risk_dedupe"),
+        Index("idx_crm_risk_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=True)
+    risk_code = Column(String(40), nullable=False)
+    level = Column(String(10), nullable=False)               # high / medium / low
+    evidence = Column(Text, nullable=False)
+    suggested_action = Column(String(500), nullable=True)
+    source = Column(String(10), nullable=False, default="rule")   # rule / model
+    source_activity_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="open")   # open / resolved
+    dedupe_key = Column(String(200), nullable=False)
+    first_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class CrmActionSuggestion(Base):
+    """Agent 给出的下一步建议。只是建议：销售选择“确认创建任务 / 修改后创建 / 忽略 / 稍后提醒”，
+    确认后才进待办中心；不会自动改商机、不会自动联系客户。同一个来源（同一条风险）只生成一条建议。"""
+    __tablename__ = "crm_action_suggestion"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_crm_action_dedupe"),
+        Index("idx_crm_action_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=True)
+    risk_finding_id = Column(Integer, nullable=True)
+    title = Column(String(300), nullable=False)
+    detail = Column(Text, nullable=True)
+    due_date = Column(String(10), nullable=True)
+    status = Column(String(20), nullable=False, default="suggested")   # suggested / created / ignored / snoozed
+    remind_at = Column(DateTime, nullable=True)
+    work_item_key = Column(String(120), nullable=True)
+    decision = Column(String(20), nullable=True)             # create / edit_create / ignore / snooze（统计“原样采纳”用）
+    dedupe_key = Column(String(200), nullable=False)
+    decided_by = Column(Integer, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmMailAccount(Base):
+    """员工连接的邮箱（IMAP，Microsoft 365 / Gmail / 企业邮箱都支持）。只读取指定的文件夹（默认“CRM”）：
+    员工把要进 CRM 的邮件转发或移动到这个文件夹，不读收件箱里的其他邮件。密码 / 授权码加密保存。"""
+    __tablename__ = "crm_mail_account"
+    __table_args__ = (UniqueConstraint("user_id", "team_id", name="uq_crm_mail_account"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=False)
+    imap_host = Column(String(200), nullable=False)
+    imap_port = Column(Integer, nullable=False, default=993)
+    username = Column(String(200), nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    folder = Column(String(100), nullable=False, default="CRM")
+    last_uid = Column(Integer, nullable=False, default=0)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    enabled = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmChatGroup(Base):
+    """开启了“群消息记录到 CRM”的飞书群。只有销售部门负责人或群主能在群里 @机器人 开启 / 关闭，开启时机器人在群里公告；
+    没开启的群，平台不保存任何消息。一个群同时只归一个销售部门；customer_id 不为空时，群消息直接记到这个客户。"""
+    __tablename__ = "crm_chat_group"
+    __table_args__ = (
+        UniqueConstraint("provider", "tenant_id", "chat_id", name="uq_crm_chat_group"),
+        Index("idx_crm_chat_group_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    tenant_id = Column(String(120), nullable=False)
+    chat_id = Column(String(120), nullable=False)
+    chat_name = Column(String(200), nullable=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    customer_name = Column(String(200), nullable=True)
+    status = Column(String(20), nullable=False, default="active")      # active / closed
+    enabled_by = Column(Integer, nullable=False)
+    enabled_at = Column(DateTime, nullable=False, default=utcnow)
+    closed_by = Column(Integer, nullable=True)
+    closed_at = Column(DateTime, nullable=True)
+    close_reason = Column(String(200), nullable=True)
+    message_count = Column(Integer, nullable=False, default=0)          # 开启以来记录的消息数
+    last_message_at = Column(DateTime, nullable=True)
+
+
+class CrmChatMessage(Base):
+    """已开启记录的群里收到、还没整理成客户活动的消息（暂存）。一段对话停下 30 分钟后由定时任务整理成一条
+    “群聊”客户活动，随后删除暂存。撤回的消息在整理前从这里删掉，不会进 CRM。"""
+    __tablename__ = "crm_chat_message"
+    __table_args__ = (
+        UniqueConstraint("group_id", "message_id", name="uq_crm_chat_message"),
+        Index("idx_crm_chat_message_sent", "group_id", "sent_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    group_id = Column(Integer, nullable=False)
+    message_id = Column(String(120), nullable=False)
+    sender_id = Column(String(120), nullable=True)
+    sender_name = Column(String(120), nullable=True)
+    content = Column(Text, nullable=False)
+    sent_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class InvoiceExtraction(Base):
+    """发票识别结果（图片 / PDF → 结构化字段）。每个字段都有置信度（field_confidence_json）；
+    低于阈值的字段必须员工逐项确认后才能用于报销（status: needs_review → confirmed）。
+    file_sha256 用来发现同一个文件重复上传；invoice_number 用来发现同一张发票重复报销。"""
+    __tablename__ = "invoice_extraction"
+    __table_args__ = (
+        Index("idx_invoice_extraction_user", "user_id", "id"),
+        Index("idx_invoice_extraction_hash", "file_sha256"),
+        Index("idx_invoice_extraction_number", "invoice_number"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=False)
+    file_name = Column(String(255), nullable=True)
+    file_sha256 = Column(String(64), nullable=False)
+    invoice_type = Column(String(40), nullable=True)
+    invoice_code = Column(String(20), nullable=True)
+    invoice_number = Column(String(30), nullable=True)
+    issued_at = Column(String(10), nullable=True)
+    seller_name = Column(String(200), nullable=True)
+    seller_tax_id = Column(String(30), nullable=True)
+    buyer_name = Column(String(200), nullable=True)
+    buyer_tax_id = Column(String(30), nullable=True)
+    amount_without_tax = Column(String(20), nullable=True)
+    tax_amount = Column(String(20), nullable=True)
+    total_amount = Column(String(20), nullable=True)
+    currency = Column(String(10), nullable=True, default="CNY")
+    confidence = Column(Float, nullable=True)                 # 整体置信度（最低的那个字段）
+    field_confidence_json = Column(Text, nullable=True)       # {字段: 置信度}
+    checks_json = Column(Text, nullable=True)                 # 校验结果 [{level, code, text}]
+    corrected_fields_json = Column(Text, nullable=True)       # 员工改过的字段
+    raw_reference = Column(Text, nullable=True)               # 识别依据的原文片段
+    method = Column(String(20), nullable=True)                # text / ocr / model
+    status = Column(String(20), nullable=False, default="needs_review")   # needs_review / confirmed / used / discarded
+    claim_id = Column(Integer, nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ExpensePolicyRule(Base):
+    """费用标准（结构化，不写进提示词）：某类费用在某级城市、某职级的单笔上限、是否必须有发票、超标后谁审批。
+    字段为空表示“不限”。生效区间内、条件最具体的一条生效。"""
+    __tablename__ = "expense_policy_rule"
+    __table_args__ = (Index("idx_expense_policy_org", "organization_id", "category"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    category = Column(String(20), nullable=False)             # TRAVEL / MEAL / OFFICE_SUPPLY / TRANSPORT / OTHER
+    city_level = Column(String(10), nullable=True)            # tier1 / tier2 / other；空 = 不限
+    employee_level = Column(String(20), nullable=True)        # staff / manager；空 = 不限
+    amount_limit = Column(String(20), nullable=True)          # 单笔上限；空 = 不限额
+    receipt_required = Column(Integer, nullable=False, default=1)
+    approval_level = Column(String(20), nullable=False, default="team_admin")   # 超标后需要的审批：team_admin / finance / org_admin
+    effective_from = Column(String(10), nullable=True)
+    effective_to = Column(String(10), nullable=True)
+    note = Column(String(300), nullable=True)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ErpExport(Base):
+    """记账凭证推送到 ERP 的记录。voucher_id 唯一：同一张凭证不管点几次、重试几次，ERP 只会收到同一个幂等键，
+    推送成功后不再重复推送。"""
+    __tablename__ = "erp_export"
+    __table_args__ = (UniqueConstraint("voucher_id", name="uq_erp_export_voucher"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    voucher_id = Column(Integer, nullable=False)
+    idempotency_key = Column(String(80), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")   # pending / sent / failed
+    attempts = Column(Integer, nullable=False, default=0)
+    erp_document_id = Column(String(120), nullable=True)
+    last_error = Column(String(500), nullable=True)
+    requested_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    sent_at = Column(DateTime, nullable=True)
+
+
+class ItSelfServiceSession(Base):
+    """IT 自助：员工描述问题 → 推荐知识文章 → 员工明确点“已解决”或“没有解决，创建工单”。
+    只看了文章不算解决；只有 confirmed_solved=1 才计入自助解决率。转成工单的记下工单号；
+    解决后 7 天内同一问题又来报修、或转出的工单被重开，记为重新打开（影响文章质量指标）。"""
+    __tablename__ = "it_self_service_session"
+    __table_args__ = (
+        Index("idx_it_session_user", "user_id", "started_at"),
+        Index("idx_it_session_ticket", "converted_ticket_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    question = Column(Text, nullable=False)
+    classification = Column(String(30), nullable=True)
+    article_ids_json = Column(Text, nullable=True)
+    suggestion = Column(Text, nullable=True)
+    confirmed_solved = Column(Integer, nullable=True)         # null 未反馈 / 1 已解决 / 0 没解决
+    solved_article_id = Column(Integer, nullable=True)
+    converted_ticket_id = Column(Integer, nullable=True)
+    reopened = Column(Integer, nullable=False, default=0)
+    reopened_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=utcnow)
+    feedback_at = Column(DateTime, nullable=True)
+
+
+class ItArticleFeedback(Base):
+    """员工对推荐文章的操作：打开看过（viewed_at）和评价（helpful 1 有用 / 0 没用）。每个会话每篇文章一条。"""
+    __tablename__ = "it_article_feedback"
+    __table_args__ = (UniqueConstraint("session_id", "article_id", name="uq_it_article_feedback"),
+                      Index("idx_it_article_feedback_article", "article_id"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, nullable=False)
+    article_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    viewed_at = Column(DateTime, nullable=True)
+    helpful = Column(Integer, nullable=True)
+    rated_at = Column(DateTime, nullable=True)
+
+
+class ProductivityFact(Base):
+    """统一提效事实：每件经过 AI 的工作（整理成果、助手办理的业务、发票识别、CRM 建议、IT 自助）和每次 Agent 运行一条。
+    由 service/productivity_service.py 从各来源表整理而来，source_key 唯一（重复整理不重复计数）。
+    三种时间分开存：saved_minutes 是按基准估算的节省；agent_seconds + review_seconds 是实测用时；
+    reported_saved_minutes 是员工自己反馈的节省（整理时不会被覆盖）。"""
+    __tablename__ = "productivity_fact"
+    __table_args__ = (
+        UniqueConstraint("source_key", name="uq_productivity_fact_source"),
+        Index("idx_productivity_fact_team", "team_id", "started_at"),
+        Index("idx_productivity_fact_org", "organization_id", "started_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(String(120), nullable=False)
+    organization_id = Column(Integer, nullable=True)
+    team_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, nullable=True)
+    agent_id = Column(Integer, nullable=True)
+    workflow_type = Column(String(60), nullable=False)
+    business_object_type = Column(String(40), nullable=True)
+    business_object_id = Column(String(120), nullable=True)
+    source_type = Column(String(30), nullable=False)          # automation / tool_confirm / invoice / crm_suggestion / it_self_service / agent_run
+    baseline_minutes = Column(Float, nullable=False, default=0)
+    agent_seconds = Column(Float, nullable=False, default=0)
+    review_seconds = Column(Float, nullable=False, default=0)
+    saved_minutes = Column(Float, nullable=False, default=0)
+    reported_saved_minutes = Column(Float, nullable=True)
+    draft_created = Column(Integer, nullable=False, default=0)
+    draft_adopted = Column(Integer, nullable=False, default=0)
+    adopted_as_is = Column(Integer, nullable=False, default=0)
+    business_initiated = Column(Integer, nullable=False, default=0)
+    completed = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    failure_code = Column(String(60), nullable=True)
+    fields_changed_json = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 
 class AgentPipeline(Base):

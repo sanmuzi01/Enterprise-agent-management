@@ -37,14 +37,19 @@ class RouteIsolationTest(unittest.TestCase):
     # ---- 登录 / 鉴权门槛 ----
 
     def test_login_success_and_wrong_password(self):
+        self.addCleanup(self.client.cookies.clear)      # 登录会下发会话 Cookie；别让它留在共享客户端里变成后面用例的“已登录”
         ok = self.client.post("/user/login", json={"name": self.alice["name"], "password": self.alice["password"]})
         self.assertEqual(ok.status_code, 200, ok.text)
-        self.assertIn("access_token", ok.json())
+        self.assertNotIn("access_token", ok.json(), "浏览器登录接口不返回 JWT（令牌只在 HttpOnly Cookie 里）")
+        token = self.client.post("/auth/token", json={"name": self.alice["name"], "password": self.alice["password"]})
+        self.assertEqual(token.status_code, 200, token.text)
+        self.assertIn("access_token", token.json())
 
         bad = self.client.post("/user/login", json={"name": self.alice["name"], "password": "wrong-password"})
         self.assertEqual(bad.status_code, 401)
 
     def test_protected_route_requires_token(self):
+        self.client.cookies.clear()                     # 真正的“没登录”：既没有 Authorization 头，也没有会话 Cookie
         self.assertIn(self.client.get("/user/widgets").status_code, (401, 403))
         self.assertEqual(self.client.get("/user/widgets", headers=self.alice["headers"]).status_code, 200)
 
@@ -261,14 +266,23 @@ class RouteIsolationTest(unittest.TestCase):
         能把它绑到自己的 Agent 上（校验路径跟上面一样，走 access_control.user_space_ids，
         这条走的是它新加的第三个来源）。没有现成的路由能设置 team_id，直接建库行。
         """
-        from models.init_db import EnterpriseRole, KnowledgeSpace, SessionLocal, Team, TeamMember
+        from models.init_db import (EnterpriseRole, KnowledgeSpace, Organization, OrganizationMember, SessionLocal,
+                                    Team, TeamMember)
 
         db = SessionLocal()
         try:
-            team = Team(name=f"rt-bind-team-{self.alice['id']}", owner_user_id=self.bob["id"])
+            org = Organization(name=f"rt-bind-org-{self.alice['id']}", owner_user_id=self.bob["id"])
+            db.add(org)
+            db.commit()
+            org_id = org.id
+            team = Team(name=f"rt-bind-team-{self.alice['id']}", owner_user_id=self.bob["id"], organization_id=org_id)
             db.add(team)
             db.commit()
             team_id = team.id
+            db.add(OrganizationMember(
+                organization_id=org_id, user_id=self.alice["id"], status="active",
+                role_id=db.query(EnterpriseRole.id).filter_by(scope="organization", code="member").scalar()))
+            db.commit()
             admin_role_id = db.query(EnterpriseRole.id).filter_by(scope="team", code="admin").scalar()
             db.add(TeamMember(team_id=team_id, user_id=self.alice["id"], role_id=admin_role_id, status="active"))
             db.commit()
@@ -300,6 +314,8 @@ class RouteIsolationTest(unittest.TestCase):
                 db.execute(text("DELETE FROM knowledge_spaces WHERE id=:i"), {"i": dept_space_id})
                 db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
                 db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": team_id})
+                db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": org_id})
+                db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": org_id})
                 db.commit()
             except Exception:
                 db.rollback()
@@ -687,6 +703,11 @@ class RouteIsolationTest(unittest.TestCase):
         self.assertEqual(created.status_code, 200, created.text)
         team_id = created.json()["id"]
         try:
+            # 建部门即自动生成草稿状态的部门办公助手（未设业务类型）。
+            status = created.json()["agent_status"]
+            self.assertEqual((status["state"], status["template_id"]), ("pending_publish", "office"))
+            self.assertEqual(self.client.get(f"/admin/org/teams/{team_id}/agent-status", headers=h).json()["state"],
+                             "pending_publish")
             listed = self.client.get("/admin/org/teams", headers=h)
             self.assertIn(team_id, [t["id"] for t in listed.json()])
 
@@ -709,8 +730,10 @@ class RouteIsolationTest(unittest.TestCase):
         finally:
             from sqlalchemy import text as _sql
             from models.init_db import SessionLocal
+            from tests._dept_agent_cleanup import purge_team_agents
             db = SessionLocal()
             try:
+                purge_team_agents(db, [team_id])
                 db.execute(_sql("DELETE FROM team_members WHERE team_id=:t"), {"t": team_id})
                 db.execute(_sql("DELETE FROM teams WHERE id=:t"), {"t": team_id})
                 db.commit()

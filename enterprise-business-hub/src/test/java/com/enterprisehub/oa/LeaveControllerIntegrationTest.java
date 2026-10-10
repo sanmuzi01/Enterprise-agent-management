@@ -103,6 +103,9 @@ class LeaveControllerIntegrationTest {
     }
 
     /** {@code bodyJson} 为 null 表示这次请求没有请求体（GET/无参数的 POST）。 */
+    /** 非 null 时覆盖签进上下文的 org_team_ids（模拟别的企业的企业管理员）。 */
+    private java.util.List<Long> orgTeamIdsOverride;
+
     private HttpHeaders signedHeaders(HttpMethod method, String path, String bodyJson, long uid,
                                        List<String> scopes, String operation) {
         return signedHeaders(method, path, bodyJson, uid, teamId, scopes, operation, false, false);
@@ -119,6 +122,10 @@ class LeaveControllerIntegrationTest {
             context.put("scopes", scopes);
             context.put("operation", operation);
             context.put("is_org_admin", isOrgAdmin);
+            // 企业管理员只管本企业的部门：签进 org_team_ids（测试里用到的部门编号）；orgTeamIdsOverride 用来模拟“别的企业的管理员”
+            context.put("org_team_ids", orgTeamIdsOverride != null ? orgTeamIdsOverride : (isOrgAdmin
+                    ? java.util.stream.Stream.of(headerTeamId, (Long) teamId, (Long) (teamId + 100), (Long) (teamId + 200)).filter(java.util.Objects::nonNull).distinct().toList()
+                    : java.util.List.<Long>of()));
             context.put("is_team_admin", isTeamAdmin);
             context.put("trace_id", UUID.randomUUID().toString());
             context.put("timestamp", Instant.now().getEpochSecond());
@@ -323,7 +330,7 @@ class LeaveControllerIntegrationTest {
         // P1 并发修复的真实验证（第四轮审计）：两个请求用同一个 Idempotency-Key
         // 真正并发打进来（两个线程同时发，用 CountDownLatch 卡住让它们尽量同时
         // 起跑，不是顺序调用），必须只有一个真正执行了业务逻辑创建请假单，
-        // 另一个必须拿到 409（重复提交，不是悄悄跟着再建一条）。
+        // 另一个要么 409（并发中），要么拿到同一张单据的缓存重放，绝不能再建一条。
         String requestsPath = "/oa/leave/requests";
         String key = UUID.randomUUID().toString();
         String draftBodyJson = writeJson(Map.of(
@@ -363,10 +370,14 @@ class LeaveControllerIntegrationTest {
 
             List<HttpStatus> statuses = List.of(
                     HttpStatus.valueOf(r1.getStatusCode().value()), HttpStatus.valueOf(r2.getStatusCode().value()));
-            long successCount = statuses.stream().filter(s -> s == HttpStatus.OK).count();
-            long conflictCount = statuses.stream().filter(s -> s == HttpStatus.CONFLICT).count();
-            assertThat(successCount).isEqualTo(1);
-            assertThat(conflictCount).isEqualTo(1);
+            // 不变式：只创建一条草稿，没有 5xx。两个请求的先后是不确定的：同时到达时后者拿 409；
+            // 后者晚于前者完成时拿到的是同一个 key 缓存的 200（幂等重放，返回同一张单据），
+            // 这是正确行为而不是重复执行——所以不能断言"恰好一个 200 一个 409"。
+            assertThat(statuses).allMatch(st -> st == HttpStatus.OK || st == HttpStatus.CONFLICT);
+            assertThat(statuses).contains(HttpStatus.OK);
+            if (statuses.stream().filter(st -> st == HttpStatus.OK).count() == 2) {
+                assertThat(r1.getBody().get("id")).isEqualTo(r2.getBody().get("id"));
+            }
         } finally {
             pool.shutdown();
         }
@@ -476,6 +487,53 @@ class LeaveControllerIntegrationTest {
         ResponseEntity<String> resp = rest.exchange(url(approvePath),
                 HttpMethod.POST, new HttpEntity<>(bodyJson, otherDeptHeaders), String.class);
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+    }
+
+    @Test
+    void orgAdminOfAnotherOrganization_cannotApproveOrView_returns404() {
+        long requestId = createAndSubmit(userId);                      // 申请单属于 teamId 这个部门
+        orgTeamIdsOverride = List.of(teamId + 9000, teamId + 9001);     // 别的企业的管理员：org_team_ids 里没有这个部门
+        try {
+            String approvePath = "/oa/leave/requests/" + requestId + "/approve";
+            String bodyJson = writeJson(Map.of("note", "跨企业越权审批"));
+            HttpHeaders foreign = signedHeaders(HttpMethod.POST, approvePath, bodyJson, approverId, teamId + 9000,
+                    List.of("oa.leave.approve"), "approve_leave_request", true, false);
+            foreign.set("Idempotency-Key", UUID.randomUUID().toString());
+            assertThat(rest.exchange(url(approvePath), HttpMethod.POST, new HttpEntity<>(bodyJson, foreign), String.class).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND);
+
+            String statusPath = "/oa/leave/requests/" + requestId;
+            HttpHeaders view = signedHeaders(HttpMethod.GET, statusPath, null, approverId, teamId + 9000,
+                    List.of("oa.leave.read"), "get_leave_status", true, false);
+            assertThat(rest.exchange(url(statusPath), HttpMethod.GET, new HttpEntity<>(view), String.class).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND);
+
+            String pendingPath = "/oa/leave/requests/team-pending?teamId=" + teamId;
+            HttpHeaders list = signedHeaders(HttpMethod.GET, pendingPath, null, approverId, teamId + 9000,
+                    List.of("oa.leave.read"), "get_team_pending_leave_requests", true, false);
+            assertThat(rest.exchange(url(pendingPath), HttpMethod.GET, new HttpEntity<>(list), String.class).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND);
+        } finally {
+            orgTeamIdsOverride = null;
+        }
+    }
+
+    @Test
+    void orgAdminWithoutOrgTeamIds_isTreatedAsNoAccess_returns404() {
+        // 旧版客户端只签了 is_org_admin、没有 org_team_ids：宁可拒绝，也不能退回“任何企业管理员通吃”
+        long requestId = createAndSubmit(userId);
+        orgTeamIdsOverride = java.util.Collections.emptyList();
+        try {
+            String approvePath = "/oa/leave/requests/" + requestId + "/approve";
+            String bodyJson = writeJson(Map.of("note", "没有范围"));
+            HttpHeaders headers = signedHeaders(HttpMethod.POST, approvePath, bodyJson, approverId, null,
+                    List.of("oa.leave.approve"), "approve_leave_request", true, false);
+            headers.set("Idempotency-Key", UUID.randomUUID().toString());
+            assertThat(rest.exchange(url(approvePath), HttpMethod.POST, new HttpEntity<>(bodyJson, headers), String.class).getStatusCode())
+                    .isEqualTo(HttpStatus.NOT_FOUND);
+        } finally {
+            orgTeamIdsOverride = null;
+        }
     }
 
     @Test

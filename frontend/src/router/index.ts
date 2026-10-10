@@ -1,4 +1,5 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { hasSession } from '../utils/session'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -11,6 +12,11 @@ const router = createRouter({
       path: '/login',
       name: 'Login',
       component: () => import('../views/Login.vue'),
+    },
+    {
+      // 登录后的落脚点：属于某个部门的员工进部门工作台，否则进个人工作台（见下方守卫）
+      path: '/home',
+      component: () => import('../views/AgentList.vue'),
     },
     {
       path: '/agents',
@@ -28,6 +34,23 @@ const router = createRouter({
       component: () => import('../views/Settings.vue'),
     },
     {
+      // 员工绑定自己的飞书 / 钉钉账号（一键授权回调也跳回这里）
+      path: '/settings/integrations',
+      name: 'IntegrationSettings',
+      component: () => import('../views/IntegrationSettings.vue'),
+    },
+    {
+      path: '/department/productivity',
+      name: 'DepartmentProductivity',
+      component: () => import('../views/DepartmentProductivity.vue'),
+    },
+    {
+      // 助手要执行的高风险操作（飞书 / 钉钉卡片里的“在网页中查看”也指向这里）
+      path: '/confirmations',
+      name: 'Confirmations',
+      component: () => import('../views/Confirmations.vue'),
+    },
+    {
       path: '/admin',
       component: () => import('../views/admin/AdminLayout.vue'),
       children: [
@@ -38,11 +61,27 @@ const router = createRouter({
         { path: 'usage', name: 'AdminUsage', component: () => import('../views/admin/AdminUsage.vue') },
         { path: 'logs', name: 'AdminLogs', component: () => import('../views/admin/AdminLogs.vue') },
         { path: 'knowledge-spaces', name: 'AdminKnowledgeSpaces', component: () => import('../views/admin/AdminKnowledgeSpaces.vue') },
+        { path: 'llm', name: 'AdminLlm', component: () => import('../views/admin/AdminLlm.vue') },
+        { path: 'agents', name: 'AdminAgents', component: () => import('../views/admin/AdminAgents.vue') },
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
+        { path: 'integrations', name: 'AdminIntegrations', component: () => import('../views/admin/AdminIntegrations.vue') },
+        { path: 'expense-policies', name: 'AdminExpensePolicies', component: () => import('../views/admin/AdminExpensePolicies.vue') },
+        { path: 'productivity', name: 'AdminProductivity', component: () => import('../views/admin/AdminProductivity.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },
+        { path: 'issues', name: 'AdminIssues', component: () => import('../views/admin/AdminIssues.vue') },
         { path: 'diagnose', name: 'AdminDiagnose', component: () => import('../views/admin/AdminDiagnose.vue') },
       ],
+    },
+    {
+      path: '/department',
+      name: 'DepartmentWorkstation',
+      component: () => import('../views/DepartmentWorkstation.vue'),
+    },
+    {
+      path: '/todos',
+      name: 'TodoCenter',
+      component: () => import('../views/TodoCenter.vue'),
     },
     {
       path: '/skills',
@@ -131,20 +170,37 @@ const router = createRouter({
   ],
 })
 
+/** 当前用户是否属于至少一个部门（读不到时当作没有，退回个人工作台，不挡住登录）。 */
+async function hasDepartment(): Promise<boolean> {
+  try {
+    const { useCurrentDepartmentStore } = await import('../stores/currentDepartment')
+    const store = useCurrentDepartmentStore()
+    await store.load(true)
+    return store.departments.length > 0
+  } catch {
+    return false
+  }
+}
+
 // 路由守卫：未登录跳转登录页
-router.beforeEach((to, _from) => {
-  const token = localStorage.getItem('token')
+router.beforeEach(async (to, _from) => {
+  const token = hasSession()   // 令牌在 HttpOnly Cookie 里，这里只判断会话是否还在；真正的鉴权在后端
   if (to.path !== '/login' && !token) {
     return '/login'
   }
   const user = JSON.parse(localStorage.getItem('user') || 'null')
   if (token && to.path === '/login') {
-    return user?.is_admin ? '/admin' : '/agents'
+    return user?.is_admin ? '/admin' : '/home'
+  }
+  if (to.path === '/home') {
+    if (user?.is_admin) return '/admin'
+    return (await hasDepartment()) ? '/department' : '/agents'
   }
   if (to.path.startsWith('/admin')) {
     if (!user?.is_admin) return '/agents'
   }
-  if (user?.is_admin && !to.path.startsWith('/admin')) {
+  // 管理员发布完部门 Agent 之后自己也要能进部门工作台看看效果，不能被强制弹回 /admin。
+  if (user?.is_admin && !to.path.startsWith('/admin') && !['/department', '/todos'].includes(to.path)) {
     return '/admin'
   }
   return true

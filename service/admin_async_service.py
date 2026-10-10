@@ -9,6 +9,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import selectinload
 from starlette.concurrency import run_in_threadpool
 
+from service import organization_admin_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 
 from models.init_db import (
@@ -121,6 +122,7 @@ async def list_users(db, limit: int = 50, offset: int = 0, search: str = None) -
     knowledge_counts = await _count_by_user(db, Knowledge, user_ids)
     task_counts = await _count_by_user(db, BackgroundTask, user_ids)
     plan_names = await _plan_names_by_user(db, user_ids)
+    memberships = await organization_admin_service.member_overview(db, user_ids)
     items = []
     for user in users:
         item = _user_admin_payload(
@@ -131,6 +133,11 @@ async def list_users(db, limit: int = 50, offset: int = 0, search: str = None) -
             task_count=task_counts.get(user.id, 0),
         )
         item["plan_name"] = plan_names.get(user.id)
+        member = memberships.get(user.id) or {}
+        item["org_role_code"] = member.get("org_role_code")
+        item["org_role_name"] = member.get("org_role_name")
+        item["org_status"] = member.get("org_status")
+        item["departments"] = member.get("departments", [])
         items.append(item)
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
@@ -350,20 +357,69 @@ async def force_logout_user(db, user_id: int) -> bool:
     return await bump_auth_version_async(db, user_id)
 
 
-async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
-    """企业知识库视角：所有知识库空间 + 归属 / 规模 / 成员数 / 健康分。"""
+SCOPES = ("unassigned", "departments", "enterprise")
+
+
+def _space_scope_filter(scope: str | None):
+    """"unassigned"（兼容旧值 "personal"）= 还没划分；"enterprise" = 全企业；"team:<id>" = 划分给某个部门；其余 = 不过滤。"""
+    from models.init_db import KnowledgeSpace, KnowledgeSpaceDepartment
+
+    if scope in ("unassigned", "personal"):
+        return KnowledgeSpace.scope_type == "personal"
+    if scope == "enterprise":
+        return KnowledgeSpace.scope_type == "enterprise"
+    if scope and scope.startswith("team:"):
+        try:
+            team_id = int(scope[5:])
+        except ValueError:
+            raise InvalidInput("部门筛选条件不正确") from None
+        return (KnowledgeSpace.scope_type == "department") & KnowledgeSpace.id.in_(
+            select(KnowledgeSpaceDepartment.space_id).where(KnowledgeSpaceDepartment.team_id == team_id))
+    return None
+
+
+async def _space_department_overview(db) -> Dict:
+    """本企业每个部门下有多少知识库空间（含 0 个的部门）、全企业有多少、还没划分的有多少、一共多少。
+    平台只服务一个企业，部门清单不分企业。"""
+    from models.init_db import KnowledgeSpace, KnowledgeSpaceDepartment, Team
+    from service.organization_admin_service import find_default_organization
+
+    org = await find_default_organization(db)
+    # 企业还没初始化（全新部署）：知识库列表照常显示，只是还没有部门可划分
+    teams = [] if org is None else (await db.execute(
+        select(Team.id, Team.name).where(Team.status == "active", Team.organization_id == org.id).order_by(Team.id))).all()
+    counts = {row[0]: int(row[1]) for row in (await db.execute(
+        select(KnowledgeSpaceDepartment.team_id, func.count(func.distinct(KnowledgeSpaceDepartment.space_id)))
+        .group_by(KnowledgeSpaceDepartment.team_id))).all()}
+    by_scope = {row[0]: int(row[1]) for row in (await db.execute(
+        select(KnowledgeSpace.scope_type, func.count(KnowledgeSpace.id)).group_by(KnowledgeSpace.scope_type))).all()}
+    return {
+        "departments": [{"id": t[0], "name": t[1], "space_count": counts.get(t[0], 0)} for t in teams],
+        "enterprise_count": by_scope.get("enterprise", 0),
+        "unassigned_count": by_scope.get("personal", 0),
+        "all_count": sum(by_scope.values()),
+    }
+
+
+async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0, scope: str | None = None) -> Dict:
+    """企业知识库视角：所有知识库空间 + 划分情况 / 规模 / 成员数 / 健康分，可按部门筛选。"""
+    from models.enterprise_dao import get_space_departments_async
     from models.init_db import AgentKnowledgeSpace, KnowledgeSpace, SpaceMember
 
     limit = max(1, min(limit, 1000))
     offset = max(0, offset)
-    total = int((await db.execute(select(func.count(KnowledgeSpace.id)))).scalar() or 0)
+    scope_filter = _space_scope_filter(scope)
+    count_stmt = select(func.count(KnowledgeSpace.id))
+    list_stmt = select(KnowledgeSpace)
+    if scope_filter is not None:
+        count_stmt, list_stmt = count_stmt.where(scope_filter), list_stmt.where(scope_filter)
+    total = int((await db.execute(count_stmt)).scalar() or 0)
+    overview = await _space_department_overview(db)
 
-    res = await db.execute(
-        select(KnowledgeSpace).order_by(KnowledgeSpace.id.desc()).limit(limit).offset(offset)
-    )
+    res = await db.execute(list_stmt.order_by(KnowledgeSpace.id.desc()).limit(limit).offset(offset))
     spaces = list(res.scalars().all())
     if not spaces:
-        return {"items": [], "total": total, "limit": limit, "offset": offset}
+        return {"items": [], "total": total, "limit": limit, "offset": offset, **overview}
 
     owner_ids = {s.user_id for s in spaces}
     owners_res = await db.execute(select(User.id, User.name).where(User.id.in_(owner_ids)))
@@ -380,6 +436,8 @@ async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
         .where(AgentKnowledgeSpace.space_id.in_(space_ids)).group_by(AgentKnowledgeSpace.space_id)
     )
     bind_counts = {row[0]: int(row[1]) for row in bind_res.all()}
+    departments = await get_space_departments_async(db, space_ids)
+    sensitivity_labels = {"public": "公开", "internal": "内部", "confidential": "机密", "restricted": "绝密"}
 
     items = [
         {
@@ -388,7 +446,10 @@ async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
             "owner_user_id": s.user_id,
             "owner_name": owner_names.get(s.user_id, ""),
             "organization_id": s.organization_id,
-            "team_id": s.team_id,
+            "scope_type": s.scope_type,
+            "departments": departments.get(s.id, []),
+            "sensitivity": s.sensitivity,
+            "sensitivity_label": sensitivity_labels.get(s.sensitivity, "内部"),
             "status": s.status,
             "is_enabled": bool(s.is_enabled),
             "purpose": s.purpose,
@@ -402,11 +463,74 @@ async def list_knowledge_spaces(db, limit: int = 500, offset: int = 0) -> Dict:
         }
         for s in spaces
     ]
-    return {"items": items, "total": total, "limit": limit, "offset": offset}
+    return {"items": items, "total": total, "limit": limit, "offset": offset, **overview}
+
+
+async def _scope_fields(db, scope: str, team_ids) -> tuple[Dict, List[int]]:
+    """把「划分」翻译成要写入的字段和部门清单。
+
+    unassigned = 还没划分（只有所有者和被加入的成员能看到）；
+    departments = 划分给指定的一个或多个部门；enterprise = 划分给全企业。平台只服务一个企业，部门必须是这个企业里启用中的部门。"""
+    from models.init_db import Team
+
+    if scope not in SCOPES:
+        raise InvalidInput("划分方式不正确")
+    if scope == "unassigned":
+        return {"scope_type": "personal", "team_id": None}, []
+    if scope == "enterprise":
+        from service.organization_admin_service import _get_default_organization
+        org = await _get_default_organization(db)
+        return {"scope_type": "enterprise", "organization_id": org.id, "team_id": None}, []
+    ids = sorted({int(t) for t in (team_ids or [])})
+    if not ids:
+        raise InvalidInput("请至少选择一个部门")
+    from service.organization_admin_service import _get_default_organization
+    org = await _get_default_organization(db)
+    teams = (await db.execute(select(Team).where(Team.id.in_(ids), Team.organization_id == org.id))).scalars().all()
+    if len(teams) != len(ids) or any(t.status != "active" for t in teams):
+        raise InvalidInput("部门不存在或已停用")
+    return {"scope_type": "department", "organization_id": org.id}, ids
+
+
+async def _replace_grants(db, space_id: int, team_ids: List[int]) -> None:
+    from sqlalchemy import delete as sa_delete
+
+    from models.init_db import KnowledgeSpaceDepartment
+
+    await db.execute(sa_delete(KnowledgeSpaceDepartment).where(KnowledgeSpaceDepartment.space_id == space_id))
+    for team_id in team_ids:
+        db.add(KnowledgeSpaceDepartment(space_id=space_id, team_id=team_id))
+
+
+async def admin_create_space(db, admin_user_id: int, payload: Dict) -> Dict:
+    """管理员统一创建知识库空间（所有者是这位管理员），可以顺便划分，也可以先建后分。"""
+    from models import kb_audit_dao
+    from models.knowledge_space_async_dao import create_space_async
+    from service.knowledge_space import space_async_service as spaces
+
+    fields = spaces._clean_create(payload)
+    if payload.get("sensitivity") is not None:
+        fields["sensitivity"] = spaces._clean_sensitivity(payload["sensitivity"])
+    scope = payload.get("scope") or "unassigned"
+    scope_fields, team_ids = await _scope_fields(db, scope, payload.get("team_ids"))
+    fields.update(scope_fields)
+    space = await create_space_async(db, admin_user_id, fields)
+    if team_ids:
+        await _replace_grants(db, space.id, team_ids)
+        await db.commit()
+    try:
+        await kb_audit_dao.record_async(
+            db, admin_user_id, "admin.space.create", space_id=space.id, target_type="space", target_id=space.id,
+            detail={"scope": scope, "team_ids": team_ids, "sensitivity": space.sensitivity},
+        )
+    except Exception:  # noqa: BLE001 —— 审计失败不影响主流程
+        pass
+    return {"id": space.id, "name": space.name, "scope_type": space.scope_type, "team_ids": team_ids,
+            "sensitivity": space.sensitivity}
 
 
 async def admin_update_space(db, admin_user_id: int, space_id: int, patch: Dict) -> Dict:
-    """管理员直接改一个知识库空间的启停/归档状态——不要求管理员是该空间成员。
+    """管理员直接改一个知识库空间：启停 / 归档 / 密级 / 划分——不要求管理员是该空间成员。
 
     普通的 update_space（service/knowledge_space/space_async_service.py）要求调用者
     是空间的所有者/管理员成员；企业知识库总览页面向的是平台管理员，本来就该能管
@@ -414,6 +538,7 @@ async def admin_update_space(db, admin_user_id: int, space_id: int, patch: Dict)
     审计日志（kb_audit_dao），只是跳过成员权限校验，用 action 前缀区分是管理员操作。
     """
     from models import kb_audit_dao
+    from models.enterprise_dao import get_space_departments_async
     from models.knowledge_space_async_dao import get_space_by_id_async, update_space_async
 
     space = await get_space_by_id_async(db, space_id)
@@ -425,21 +550,42 @@ async def admin_update_space(db, admin_user_id: int, space_id: int, patch: Dict)
         fields["is_enabled"] = 1 if patch["is_enabled"] else 0
     if "status" in patch and patch["status"] in ("active", "archived"):
         fields["status"] = patch["status"]
+    if "sensitivity" in patch and patch["sensitivity"] is not None:
+        from service.knowledge_space.space_async_service import _clean_sensitivity
+        fields["sensitivity"] = _clean_sensitivity(patch["sensitivity"])
+    team_ids: List[int] | None = None
+    if patch.get("scope") is not None:
+        scope_fields, team_ids = await _scope_fields(db, patch["scope"], patch.get("team_ids"))
+        fields.update(scope_fields)
+        # 旧版“部门负责人=空间管理员”的 team_id：划分里不再包含那个部门时一并收回
+        if scope_fields["scope_type"] == "department" and space.team_id in team_ids:
+            fields.pop("team_id", None)
+        else:
+            fields["team_id"] = None
     if not fields:
         raise InvalidInput("没有需要更新的内容")
 
+    before = {"scope_type": space.scope_type, "sensitivity": space.sensitivity,
+              "team_ids": [d["id"] for d in (await get_space_departments_async(db, [space_id])).get(space_id, [])]}
+    if team_ids is not None:
+        await _replace_grants(db, space_id, team_ids)
     space = await update_space_async(db, space, fields)
+    after_departments = (await get_space_departments_async(db, [space_id])).get(space_id, [])
     try:
         await kb_audit_dao.record_async(
             db, admin_user_id, "admin.space.update", space_id=space_id,
-            target_type="space", target_id=space_id, detail={"fields": sorted(fields.keys())},
+            target_type="space", target_id=space_id,
+            detail={"fields": sorted(fields.keys()), "before": before,
+                    "after": {"scope_type": space.scope_type, "sensitivity": space.sensitivity,
+                              "team_ids": [d["id"] for d in after_departments]}},
         )
     except Exception:  # noqa: BLE001 —— 审计失败不影响主流程
         pass
 
     return {
         "id": space.id, "name": space.name, "is_enabled": bool(space.is_enabled),
-        "status": space.status,
+        "status": space.status, "scope_type": space.scope_type, "departments": after_departments,
+        "sensitivity": space.sensitivity,
     }
 
 

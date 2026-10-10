@@ -72,7 +72,7 @@
                   {{ template.editable ? '我的样板' : '内置' }}
                 </span>
               </div>
-              <p class="mt-3 truncate text-xs text-slate-400">{{ (template.tool_names || []).join(' / ') || '不需要额外工具' }}</p>
+              <p class="mt-3 truncate text-xs text-slate-400">{{ (template.tool_names || []).map(toolDisplayName).join(' / ') || '不需要额外工具' }}</p>
               <div class="mt-4 flex justify-end gap-2 border-t border-slate-100 pt-3">
                 <button
                   @click="createFromTemplate(template)"
@@ -122,6 +122,39 @@
           </div>
         </div>
 
+        <div
+          v-if="isAdmin && activeTab === 'mine' && mySkills.length"
+          class="mb-4 flex flex-wrap items-center gap-2 rounded-lg border border-sky-200/70 bg-white/70 px-3 py-2 text-sm backdrop-blur"
+        >
+          <span class="text-slate-700">已上架 <b>{{ onShelfCount }}</b> / {{ mySkills.length }}</span>
+          <span class="text-slate-300">|</span>
+          <span class="text-slate-600">已选 {{ selectedIds.length }} 个</span>
+          <button
+            v-if="notOnShelfCount"
+            @click="selectNotOnShelf"
+            class="rounded px-2 py-1 text-xs text-sky-700 hover:bg-sky-50"
+          >
+            选中所有未上架的（{{ notOnShelfCount }}）
+          </button>
+          <button v-if="selectedIds.length" @click="selectedIds = []" class="rounded px-2 py-1 text-xs text-slate-500 hover:bg-slate-100">清空选择</button>
+          <div class="ml-auto flex gap-2">
+            <button
+              @click="handleBatchShelf('unpublish')"
+              :disabled="!selectedIds.length || shelfBusy"
+              class="rounded border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 disabled:text-slate-300"
+            >
+              批量下架
+            </button>
+            <button
+              @click="handleBatchShelf('publish')"
+              :disabled="!selectedIds.length || shelfBusy"
+              class="ui-primary rounded px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+            >
+              {{ shelfBusy ? '处理中…' : '批量上架' }}
+            </button>
+          </div>
+        </div>
+
         <div v-if="shownSkills.length === 0" class="rounded-lg border border-dashed border-sky-300/70 bg-white/62 py-16 text-center text-sm text-slate-500 backdrop-blur">
           <template v-if="activeTab === 'mine'">
             平台还没有技能。可以
@@ -139,6 +172,17 @@
           >
             <div class="flex items-start justify-between gap-3">
               <div class="flex min-w-0 items-center gap-3">
+                <input
+                  v-if="isAdmin && activeTab === 'mine'"
+                  :id="`skill-select-${skill.id}`"
+                  type="checkbox"
+                  class="h-4 w-4 shrink-0 accent-sky-600 disabled:opacity-40"
+                  :checked="selectedIds.includes(skill.id)"
+                  :disabled="!canSelectForShelf(skill)"
+                  :aria-label="`选择「${skill.name}」`"
+                  :title="canSelectForShelf(skill) ? '选中后可批量上架 / 下架' : '部门助手专属技能，不能上架'"
+                  @change="toggleSelected(skill.id)"
+                />
                 <span class="inline-flex h-9 w-9 items-center justify-center rounded bg-violet-50 text-violet-700">
                   <Zap :size="18" />
                 </span>
@@ -166,6 +210,13 @@
             </div>
 
             <p class="mt-4 min-h-10 text-sm leading-relaxed text-slate-600">{{ skill.description || '暂无描述' }}</p>
+            <p
+              v-if="isAdmin && activeTab === 'mine'"
+              class="mt-2 text-xs"
+              :class="shelfStatus(skill).onShelf ? 'text-emerald-700' : 'text-amber-700'"
+            >
+              {{ shelfStatus(skill).text }}
+            </p>
             <div class="mt-3 rounded border px-3 py-2 text-xs" :class="validationBoxClass(skill.id)">
               <div class="flex items-center justify-between gap-2">
                 <span class="inline-flex min-w-0 items-center gap-1.5">
@@ -186,7 +237,7 @@
                   :key="toolName"
                   class="rounded bg-white/70 px-1.5 py-0.5 text-[11px]"
                 >
-                  {{ toolName }}
+                  {{ toolDisplayName(toolName) }}
                 </span>
               </div>
               <div class="mt-2 flex flex-wrap gap-1">
@@ -362,7 +413,7 @@
                 id="github-url"
                 v-model="githubUrl"
                 :disabled="importing"
-                @keydown.enter="handleGithubImport"
+                @keydown.enter="!isImeEnter($event) && handleGithubImport()"
                 class="h-10 min-w-0 flex-1 rounded border border-slate-300 px-3 text-sm outline-none focus:border-sky-500"
                 placeholder="https://github.com/anthropics/skills"
               />
@@ -480,7 +531,7 @@
             >
               <span class="block text-sm font-medium text-slate-900">{{ template.name }}</span>
               <span class="mt-1 line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ template.description || template.filename }}</span>
-              <span class="mt-2 block truncate text-xs text-slate-400">{{ (template.tool_names || []).join(' / ') || '不需要额外工具' }}</span>
+              <span class="mt-2 block truncate text-xs text-slate-400">{{ (template.tool_names || []).map(toolDisplayName).join(' / ') || '不需要额外工具' }}</span>
             </button>
           </div>
 
@@ -502,7 +553,7 @@
               >
                 <input v-model="form.tool_names" type="checkbox" :value="tool.name" class="mt-1 h-4 w-4" />
                 <span class="min-w-0">
-                  <span class="block text-sm font-medium text-slate-800">{{ tool.name }}</span>
+                  <span class="block text-sm font-medium text-slate-800">{{ toolDisplayName(tool.name) }}</span>
                   <span class="line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ tool.description }}</span>
                 </span>
               </label>
@@ -641,7 +692,7 @@
               <label v-for="tool in tools" :key="tool.name" class="flex items-start gap-2 rounded border border-slate-200 px-3 py-2">
                 <input v-model="templateForm.tool_names" type="checkbox" :value="tool.name" class="mt-1 h-4 w-4" />
                 <span class="min-w-0">
-                  <span class="block text-sm font-medium text-slate-800">{{ tool.name }}</span>
+                  <span class="block text-sm font-medium text-slate-800">{{ toolDisplayName(tool.name) }}</span>
                   <span class="line-clamp-2 block text-xs leading-relaxed text-slate-500">{{ tool.description }}</span>
                 </span>
               </label>
@@ -733,7 +784,7 @@
           <div>
             <p class="mb-2 text-xs font-medium text-slate-500">可使用的工具</p>
             <div class="flex flex-wrap gap-1.5">
-              <span v-for="toolName in previewValidation.tool_names" :key="toolName" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolName }}</span>
+              <span v-for="toolName in previewValidation.tool_names" :key="toolName" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolDisplayName(toolName) }}</span>
               <span v-if="previewValidation.tool_names.length === 0" class="text-xs text-slate-400">不需要额外工具</span>
             </div>
           </div>
@@ -781,6 +832,8 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
+import { toolDisplayName } from '../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlertTriangle, ArrowLeft, CheckCircle2, Clock3, Download, History, Pencil, Plus, RefreshCw, Trash2, Upload, X, Zap } from 'lucide-vue-next'
@@ -790,6 +843,7 @@ import { useUserStore } from '../stores/user'
 import type { Skill, SkillImportResult, SkillLifecycleStatus, SkillTemplate, SkillTool, SkillValidation, SkillVersion } from '../api/skill'
 import { toastError, toastSuccess } from '../utils/toast'
 import { getErrorMessage } from '../utils/request'
+import { canSelectForShelf, isOnShelf, notOnShelfIds, shelfStatus } from '../utils/skillShelf'
 
 const router = useRouter()
 const route = useRoute()
@@ -860,6 +914,43 @@ const templateForm = ref({
 const shownSkills = computed(() => activeTab.value === 'mine' ? mySkills.value : publicSkills.value)
 const mySkillIds = computed(() => new Set(mySkills.value.map((skill) => skill.id)))
 const isMySkill = (skill: Skill) => mySkillIds.value.has(skill.id)
+
+// 批量上架 / 下架（只在“全部技能”里）：上架 = 公开 + 已发布，用户的技能中心才看得到
+const selectedIds = ref<number[]>([])
+const shelfBusy = ref(false)
+const onShelfCount = computed(() => mySkills.value.filter(isOnShelf).length)
+const notOnShelfCount = computed(() => notOnShelfIds(mySkills.value).length)
+const toggleSelected = (id: number) => {
+  selectedIds.value = selectedIds.value.includes(id) ? selectedIds.value.filter((x) => x !== id) : [...selectedIds.value, id]
+}
+const selectNotOnShelf = () => { selectedIds.value = notOnShelfIds(mySkills.value) }
+
+const handleBatchShelf = async (action: 'publish' | 'unpublish') => {
+  const ids = [...selectedIds.value]
+  if (!ids.length || shelfBusy.value) return
+  const verb = action === 'publish' ? '上架' : '下架'
+  const effect = action === 'publish'
+    ? '上架后，所有用户都能在技能中心看到，并添加到自己的助手。'
+    : '下架后用户在技能中心看不到；其他人已经添加了它的助手会停止使用它。'
+  if (!confirm(`确认${verb}选中的 ${ids.length} 个技能？${effect}`)) return
+  shelfBusy.value = true
+  try {
+    const result = await skillApi.batchShelfSkills(ids, action)
+    selectedIds.value = []
+    const parts = [`已${verb} ${result.changed.length} 个`]
+    if (result.unchanged.length) parts.push(`${result.unchanged.length} 个本来就${action === 'publish' ? '已上架' : '未上架'}`)
+    if (result.skipped.length) {
+      const sample = result.skipped.slice(0, 3).map((s) => `${s.name || `#${s.id}`}：${s.reason}`).join('；')
+      parts.push(`跳过 ${result.skipped.length} 个（${sample}）`)
+    }
+    toastSuccess(parts.join('，'))
+    await reload()
+  } catch (err) {
+    toastError(getErrorMessage(err, `${verb}失败，请稍后重试`))
+  } finally {
+    shelfBusy.value = false
+  }
+}
 const isPublicBool = computed<boolean>({
   get: () => form.value.is_public === 1,
   set: (v) => { form.value.is_public = v ? 1 : 0 },

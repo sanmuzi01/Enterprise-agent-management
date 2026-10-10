@@ -4,6 +4,8 @@ import ipaddress
 import os
 import re
 import socket
+import threading
+import time
 from html.parser import HTMLParser
 from typing import Dict, Iterable, List, Tuple
 from urllib.parse import urljoin, urlparse
@@ -112,6 +114,54 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+# ---------------------------------------------------------------- DNS 固定（防重绑定）
+# 校验时解析一次，真正建连接时 HTTP 库又会解析一次：攻击者控制的域名可以让第二次返回 127.0.0.1（DNS rebinding）。
+# 校验通过后把解析结果在固定表里留 _PIN_SECONDS 秒，包装后的 getaddrinfo 对这些主机直接返回校验过的地址。
+# 固定表只含“已通过校验的地址”，所以跨线程共享是安全的（httpx/asyncio 的解析在线程池里跑，线程局部变量够不着）。
+_PIN_SECONDS = 30.0
+_pins: Dict[str, Tuple[float, List[str]]] = {}
+_pin_lock = threading.Lock()
+_orig_getaddrinfo = getattr(socket.getaddrinfo, "_original", socket.getaddrinfo)
+
+
+def _pin_key(host) -> str:
+    return host.strip().lower().rstrip(".") if isinstance(host, str) else ""
+
+
+def _pin(hostname: str, addresses) -> None:
+    now = time.monotonic()
+    with _pin_lock:
+        for key in [k for k, (expires, _) in _pins.items() if expires <= now]:
+            del _pins[key]
+        _pins[_pin_key(hostname)] = (now + _PIN_SECONDS, sorted(set(addresses)))
+
+
+def _pinned_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    entry = _pins.get(_pin_key(host))
+    if entry and entry[0] > time.monotonic():
+        try:
+            port_number = int(port) if port not in (None, "") else 0
+        except (TypeError, ValueError):
+            port_number = None
+        if port_number is not None:
+            results = []
+            for address in entry[1]:
+                v6 = ":" in address
+                if family not in (0, socket.AF_INET6 if v6 else socket.AF_INET):
+                    continue
+                results.append((socket.AF_INET6 if v6 else socket.AF_INET, type or socket.SOCK_STREAM, proto or 0, "",
+                                (address, port_number, 0, 0) if v6 else (address, port_number)))
+            if results:
+                return results
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+
+if getattr(socket.getaddrinfo, "_pinned", False) is not True:
+    _pinned_getaddrinfo._pinned = True
+    _pinned_getaddrinfo._original = _orig_getaddrinfo
+    socket.getaddrinfo = _pinned_getaddrinfo
+
+
 def _normalize_text(text: str) -> str:
     """压缩网页里的空白字符，让入库内容更适合切块和检索。"""
 
@@ -123,18 +173,69 @@ def _normalize_text(text: str) -> str:
     return text.strip()
 
 
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
+_FAKE_IP_NET = ipaddress.ip_network("198.18.0.0/15")     # 本地代理（Clash 等 fake-ip 模式）把外部域名解析到这里
+
+
+def _embedded_ipv4(ip):
+    """IPv6 里嵌入的 IPv4（::ffff:127.0.0.1、NAT64 64:ff9b::7f00:1）：必须按嵌入的 IPv4 判断，不能因为是 IPv6 就放过。"""
+    if ip.version != 6:
+        return None
+    if ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    if ip in _NAT64:
+        return ipaddress.IPv4Address(ip.packed[-4:])
+    return None
+
+
 def _is_blocked_ip(address: str) -> bool:
-    """判断 IP 是否属于生产爬虫不应访问的内网或保留地址。"""
+    """判断 IP 是否属于生产爬虫不应访问的地址。
+
+    只放行“全球可路由”的地址：内网、回环、链路本地（含 169.254.169.254 云元数据）、保留、未指定、多播，
+    以及共享地址空间 100.64.0.0/10（阿里云元数据 100.100.100.200 就在这里，`is_private` 不包含它）、
+    文档/基准测试网段都会被拒绝。
+    """
 
     ip = ipaddress.ip_address(address)
-    return (
-        ip.is_private
-        or ip.is_loopback
-        or ip.is_link_local
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_unspecified
-    )
+    embedded = _embedded_ipv4(ip)
+    if embedded is not None:
+        ip = embedded
+    return (not ip.is_global) or ip.is_multicast or ip.is_reserved or ip.is_unspecified or ip.is_loopback or ip.is_link_local
+
+
+def _legacy_ipv4(hostname: str):
+    """inet_aton 风格的 IPv4 写法：2130706433、0x7f000001、0177.0.0.1、127.1 ……
+
+    `ipaddress` 不认这些，但操作系统的解析器和大多数 HTTP 库认，所以攻击者会用它们绕过“字符串是不是内网 IP”的判断。
+    规则：1–4 段，每段十进制 / 0x 十六进制 / 0 开头八进制，最后一段补满剩余字节。解析不了返回 None。
+    """
+
+    parts = hostname.split(".")
+    if not 1 <= len(parts) <= 4 or not all(re.fullmatch(r"0[xX][0-9a-fA-F]+|[0-9]+", part) for part in parts):
+        return None
+    values = []
+    for part in parts:
+        try:
+            values.append(int(part, 16) if part[:2].lower() == "0x" else int(part, 8) if len(part) > 1 and part[0] == "0" else int(part, 10))
+        except ValueError:
+            return None
+    *head, last = values
+    if any(v > 255 for v in head) or last >= 256 ** (4 - len(head)):
+        return None
+    number = 0
+    for v in head:
+        number = (number << 8) | v
+    number = (number << (8 * (4 - len(head)))) | last
+    return str(ipaddress.IPv4Address(number))
+
+
+def _literal_ip(hostname: str):
+    """主机名本身是不是 IP（含上面的各种数字写法），是则返回规范形式。"""
+
+    try:
+        return str(ipaddress.ip_address(hostname))
+    except ValueError:
+        return _legacy_ipv4(hostname)
 
 
 def _is_development() -> bool:
@@ -178,7 +279,10 @@ def _resolve_host(hostname: str) -> Iterable[str]:
     """解析域名对应的所有 IP，避免只检查第一个地址造成 SSRF 漏洞。"""
 
     try:
-        infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+        resolver = socket.getaddrinfo
+        if getattr(resolver, "_pinned", False) is True:      # MagicMock 的任意属性都是真值，必须严格比较
+            resolver = _orig_getaddrinfo        # 校验必须是一次新的解析，不能读到固定表（被测试替换成假解析器时照常使用它）
+        infos = resolver(hostname, None, type=socket.SOCK_STREAM)
     except socket.gaierror as exc:
         raise CrawlerError("域名解析失败，无法抓取该 URL") from exc
     return {item[4][0] for item in infos}
@@ -189,6 +293,8 @@ def validate_crawl_url(url: str) -> str:
 
     生产环境默认禁止访问内网、localhost、链路本地地址和保留地址，防止 SSRF。
     本地调试如确实需要访问内网，可临时设置 CRAWLER_ALLOW_PRIVATE_NETWORK=1。
+    开发环境额外容忍的只有“域名被本地代理解析到 198.18.0.0/15”这一种情况，字面 IP 和其他内网解析结果照常拒绝。
+    校验通过的域名解析结果会被固定一小段时间（见 _pin），建连接时不再重新解析，防 DNS 重绑定。
     """
 
     raw_url = (url or "").strip()
@@ -199,25 +305,28 @@ def validate_crawl_url(url: str) -> str:
         raise CrawlerError("只支持 http/https URL")
     if not parsed.hostname:
         raise CrawlerError("URL 缺少域名")
-    if parsed.username or parsed.password:
+    if parsed.username or parsed.password or "@" in parsed.netloc or "\\" in parsed.netloc:
         raise CrawlerError("URL 不允许包含用户名或密码")
 
     allow_private = _env_bool("CRAWLER_ALLOW_PRIVATE_NETWORK", False)
     hostname = parsed.hostname
     if _is_blocked_hostname(hostname) and not allow_private:
         raise CrawlerError("不允许抓取 localhost 或云元数据地址")
-    try:
-        addresses = [str(ipaddress.ip_address(hostname))]
-        is_literal_ip = True
-    except ValueError:
-        addresses = list(_resolve_host(hostname))
-        is_literal_ip = False
+    literal = _literal_ip(hostname)
+    if literal is not None:
+        addresses, is_literal_ip = [literal], True
+    else:
+        addresses, is_literal_ip = list(_resolve_host(hostname)), False
 
     blocked_addresses = [address for address in addresses if _is_blocked_ip(address)]
     if not allow_private and blocked_addresses:
-        if not is_literal_ip and _allow_private_dns_resolution():
+        only_fake_ip = all(ipaddress.ip_address(a) in _FAKE_IP_NET for a in blocked_addresses)
+        if not is_literal_ip and only_fake_ip and _allow_private_dns_resolution():
+            _pin(hostname, addresses)
             return parsed.geturl()
         raise CrawlerError("不允许抓取内网、localhost 或保留地址")
+    if not is_literal_ip and not allow_private:
+        _pin(hostname, addresses)
     return parsed.geturl()
 
 
@@ -247,7 +356,9 @@ def _extract_jsonld_text(raw_text: str) -> str:
     )
     parts: List[str] = []
 
-    def collect(value):
+    def collect(value, depth=0):
+        if depth > 20:                                     # 正常的 JSON-LD 嵌套很浅；更深的当作恶意构造，直接忽略
+            return
         if isinstance(value, dict):
             for key in ("headline", "name", "description", "articleBody", "text"):
                 item = value.get(key)
@@ -256,16 +367,18 @@ def _extract_jsonld_text(raw_text: str) -> str:
             graph = value.get("@graph")
             if isinstance(graph, list):
                 for child in graph:
-                    collect(child)
+                    collect(child, depth + 1)
         elif isinstance(value, list):
             for child in value:
-                collect(child)
+                collect(child, depth + 1)
 
     for match in matches:
         payload = html.unescape(match).strip()
+        if len(payload) > 500_000:
+            continue
         try:
             collect(json.loads(payload))
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):
             continue
     return _normalize_text("\n\n".join(parts))
 

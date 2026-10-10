@@ -46,6 +46,7 @@ class ToolInvocationTest(unittest.TestCase):
         resp = MagicMock()
         resp.status_code = status
         resp.content = content
+        resp.iter_content.side_effect = lambda **kwargs: iter([content[i:i + 16384] for i in range(0, len(content), 16384)] or [b""])   # 现在流式读取并限制大小
         resp.encoding = encoding
         resp.raise_for_status.return_value = None
         return resp

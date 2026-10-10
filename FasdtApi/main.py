@@ -19,6 +19,7 @@ from sqlalchemy import text
 from service.exceptions import AppError
 from utils.logger_handler import get_logger
 from FasdtApi.login import router as login_router
+from FasdtApi.auth_token import router as auth_token_router
 from FasdtApi.agent import router as agent_router
 from FasdtApi.llm_config import router as llm_config_router
 from FasdtApi.chat import router as chat_router
@@ -32,6 +33,16 @@ from FasdtApi.memory import router as memory_router
 from FasdtApi.background_task import router as background_task_router
 from FasdtApi.admin import router as admin_router
 from FasdtApi.organization_admin import router as organization_admin_router
+from FasdtApi.enterprise_workspace import router as enterprise_workspace_router
+from FasdtApi.finance_vouchers import router as finance_vouchers_router
+from FasdtApi.it_service import router as it_service_router
+from FasdtApi.hr_cases import router as hr_cases_router
+from FasdtApi.orchestration import router as orchestration_router
+from FasdtApi.responsibility import router as responsibility_router
+from FasdtApi.attendance import router as attendance_router
+from FasdtApi.issues import admin_router as issues_admin_router, client_router as client_errors_router, dept_router as issues_dept_router, events_router
+from FasdtApi.automation_work import router as automation_work_router
+from FasdtApi.work_center import router as work_center_router
 from FasdtApi.evaluation import router as evaluation_router
 from FasdtApi.web_monitor import router as web_monitor_router
 from FasdtApi.user_widget import router as user_widget_router
@@ -39,14 +50,20 @@ from FasdtApi.notification_channel import router as notification_channel_router
 from FasdtApi.agent_pipeline import router as agent_pipeline_router
 from FasdtApi.attachment_route import router as attachment_router
 from FasdtApi.approval_route import router as approval_router
+from FasdtApi.integrations import admin_router as integrations_admin_router, me_router as integrations_me_router, public_router as integrations_public_router
+from FasdtApi.crm_copilot import router as crm_copilot_router
+from FasdtApi.finance_it_extras import router as finance_it_extras_router
+from FasdtApi.productivity import router as productivity_router
 from models.async_db import async_engine
 from models.init_db import SessionLocal, engine, bootstrap_database, User
 from service.operation_log_middleware import OperationLogMiddleware
 from service.background_task_service import task_execution_mode
 from service.http_resilience import circuit_breaker
+from service import health as health_probe
 from service.metrics_async_service import async_metrics_response
 from service.metrics_service import update_runtime_metrics
 from service.request_context_middleware import RequestContextMiddleware
+from service.session_renewal import SessionRenewalMiddleware
 from service.security_middleware import SecurityHeadersMiddleware
 from service.dependencies import get_current_user_async
 from utils.cache import config_cache, skill_cache, verification_cache
@@ -72,10 +89,23 @@ async def lifespan(app: FastAPI):
     # 建表 / 幂等迁移 / 内置管理员初始化：只在服务启动时执行，不在模块导入时执行。
     # DDL 是同步阻塞操作，放线程池避免占用事件循环。
     await run_in_threadpool(bootstrap_database)
+    # 全新部署第一次启动：自动建好平台服务的那家企业（已有就什么都不做；见 service/enterprise_bootstrap.py）
+    from service import enterprise_bootstrap
+    await run_in_threadpool(enterprise_bootstrap.ensure_on_startup)
+    from service.observability import otel
+    await run_in_threadpool(otel.init)       # 设置了 OTEL_EXPORTER_OTLP_ENDPOINT 才启用；失败只记警告
+    from service.events import handlers  # noqa: F401  —— 导入即注册所有事件消费者
+    from service.events.runner import Runner, enabled as event_runner_enabled
+    runner = Runner() if event_runner_enabled() else None
+    if runner:
+        runner.start()   # 第一轮会接着处理上次进程退出时遗留的事件
     try:
         yield
     finally:
+        if runner:
+            await runner.stop()
         await async_engine.dispose()
+        await run_in_threadpool(otel.shutdown)   # 退出前尽量送出队列里的遥测，Collector 不可用时最多等几秒
 
 
 app = FastAPI(lifespan=lifespan)
@@ -89,16 +119,18 @@ app.add_middleware(
     allow_origins=_env_list("CORS_ALLOW_ORIGINS", "http://127.0.0.1:5173,http://localhost:5173"),
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
-    expose_headers=["X-Request-ID", "X-Process-Time"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID", "X-CSRF-Token", "traceparent", "X-Background-Poll"],
+    expose_headers=["X-Request-ID", "X-Trace-ID", "X-Process-Time"],
 )
 app.add_middleware(OperationLogMiddleware)
+app.add_middleware(SessionRenewalMiddleware)   # 一直在用的浏览器会话自动续期（service/session_renewal.py）
 app.add_middleware(RequestContextMiddleware)
 
 # 用绝对路径挂载 static 目录，避免依赖启动时的工作目录
 BASE_DIR = Path(__file__).resolve().parent.parent
 app.mount('/static', StaticFiles(directory=str(BASE_DIR / 'static')), name='my_static')
 app.include_router(login_router)
+app.include_router(auth_token_router)
 app.include_router(agent_router)
 app.include_router(llm_config_router)
 app.include_router(chat_router)
@@ -112,6 +144,19 @@ app.include_router(memory_router)
 app.include_router(background_task_router)
 app.include_router(admin_router)
 app.include_router(organization_admin_router)
+app.include_router(enterprise_workspace_router)
+app.include_router(finance_vouchers_router)
+app.include_router(it_service_router)
+app.include_router(hr_cases_router)
+app.include_router(orchestration_router)
+app.include_router(responsibility_router)
+app.include_router(attendance_router)
+app.include_router(issues_admin_router)
+app.include_router(issues_dept_router)
+app.include_router(client_errors_router)
+app.include_router(events_router)
+app.include_router(automation_work_router)
+app.include_router(work_center_router)
 app.include_router(evaluation_router)
 app.include_router(web_monitor_router)
 app.include_router(user_widget_router)
@@ -119,17 +164,94 @@ app.include_router(notification_channel_router)
 app.include_router(agent_pipeline_router)
 app.include_router(attachment_router)
 app.include_router(approval_router)
+app.include_router(integrations_public_router)
+app.include_router(integrations_admin_router)
+app.include_router(integrations_me_router)
+app.include_router(crm_copilot_router)
+app.include_router(finance_it_extras_router)
+app.include_router(productivity_router)
 
 _error_logger = get_logger("app_error")
+
+from service.observability import dependency_events  # noqa: E402
+
+dependency_events.install()
+from service.observability import sentry_setup  # noqa: E402
+
+sentry_setup.init()
+
+
+def _trace_of(request: Request) -> str:
+    from service.observability import context as trace_context
+    return getattr(request.state, "trace_id", None) or trace_context.current_trace_id() or trace_context.new_trace_id()
+
+
+def _operation_of(request: Request) -> str:
+    route = request.scope.get("route")
+    return f"{request.method} {getattr(route, 'path', None) or request.url.path}"
+
+
+def _error_response(request: Request, *, http_status: int, code: str, detail: str | None = None, issue_no: str | None = None,
+                    retry_after: int | None = None) -> JSONResponse:
+    """统一错误结构。detail 保持兼容（前端一直读它）；其余字段给排障和重试用，永远不含内部堆栈。"""
+    from service.observability.error_codes import spec_for
+    spec = spec_for(code, http_status)
+    trace_id = _trace_of(request)
+    body = {"detail": detail or spec.message, "code": code, "message": detail or spec.message, "trace_id": trace_id,
+            "retryable": spec.retryable, "suggestion": spec.suggestion}
+    if issue_no:
+        body["issue_no"] = issue_no
+    wait = retry_after if retry_after is not None else spec.retry_after
+    headers = {"X-Trace-ID": trace_id, "X-Request-ID": getattr(request.state, "request_id", trace_id)}
+    if wait and spec.retryable:
+        body["retry_after"] = wait
+        headers["Retry-After"] = str(wait)
+    return JSONResponse(status_code=http_status, content=body, headers=headers)
+
+
+async def _report_issue(request: Request, *, code: str, http_status: int, exc: BaseException, message: str) -> str | None:
+    """5xx 与依赖故障进问题中心（同一种故障聚合成一条）；记录失败不影响响应。"""
+    from starlette.concurrency import run_in_threadpool
+    from service.observability.issues import record_occurrence
+    from service.observability import sentry_setup
+    team = request.query_params.get("team_id")
+    event_id = await run_in_threadpool(lambda: sentry_setup.capture(
+        exc, trace_id=_trace_of(request), operation=_operation_of(request), error_code=code,
+        department_id=int(team) if team and team.isdigit() else None))
+    result = await run_in_threadpool(
+        lambda: record_occurrence(sentry_event_id=event_id, error_code=code, http_status=http_status, operation=_operation_of(request), exc=exc, message=message,
+                                  trace_id=_trace_of(request), department_id=int(team) if team and team.isdigit() else None,
+                                  extra={"method": request.method, "path": str(request.url.path)}))
+    return result["issue_no"] if result else None
 
 
 @app.exception_handler(AppError)
 async def _handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-    """领域异常统一出口：按 code 记一行日志，按 http_status 返回 {detail, code}。"""
+    """领域异常统一出口：按 code 记一行日志，按 http_status 返回统一错误结构；依赖/系统故障（5xx）同时进问题中心。"""
+    from service.observability.error_codes import should_report
     log = _error_logger.warning if exc.http_status < 500 else _error_logger.error
     log(f"[{exc.code}] {request.method} {request.url.path} -> {exc.message}"
         + (f" | {exc.context}" if exc.context else ""))
-    return JSONResponse(status_code=exc.http_status, content={"detail": exc.message, "code": exc.code})
+    issue_no = None
+    if should_report(exc.code, exc.http_status):
+        issue_no = await _report_issue(request, code=exc.code, http_status=exc.http_status, exc=exc, message=exc.message)
+    return _error_response(request, http_status=exc.http_status, code=exc.code, detail=exc.message, issue_no=issue_no,
+                           retry_after=exc.context.get("retry_after") if exc.context else None)
+
+
+@app.exception_handler(Exception)
+async def _handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+    """未处理的异常：只在服务端记一份完整堆栈，用户拿到的是 trace_id 和问题编号，没有内部细节。
+    Java 业务服务不可用/熔断等依赖故障有明确的错误码，不当成代码缺陷。"""
+    from service.observability.dependency_errors import classify
+    code, status = classify(exc)
+    _error_logger.error(f"[{code}] {request.method} {request.url.path} trace={_trace_of(request)} {type(exc).__name__}: {exc}",
+                        exc_info=(status == 500))
+    issue_no = await _report_issue(request, code=code, http_status=status, exc=exc, message=f"{type(exc).__name__}: {exc}")
+    return _error_response(request, http_status=status, code=code, issue_no=issue_no)
+
+
+app.state.unhandled_handler = _handle_unexpected_error   # RequestContextMiddleware 就地使用，避免同一次故障被重复打印堆栈
 
 
 @app.get("/")
@@ -261,18 +383,40 @@ async def _build_health_payload() -> dict:
     }
 
 
-@app.get("/health", summary="服务健康检查（公开，仅返回是否正常）")
+@app.get("/live", summary="存活探针（公开，永远轻量）")
+async def live_probe():
+    """进程还活着就返回 200，不查任何依赖。"""
+    return health_probe.live()
+
+
+async def _ready_response():
+    result = await health_probe.ready()
+    return JSONResponse(result, status_code=200 if result["ok"] else 503)
+
+
+@app.get("/ready", summary="就绪探针（公开，依赖故障时返回 503）")
+async def ready_probe():
+    """数据库不可用（或 READY_REQUIRE_REDIS=1 时 Redis 不可用）返回 503，Docker healthcheck / 负载均衡据此摘掉实例。
+    只回布尔值（ok / degraded），详细诊断见 `/system/diagnose`（需要登录）。"""
+    return await _ready_response()
+
+
+@app.get("/health", summary="服务健康检查（公开；等同 /ready，依赖故障时返回 503）")
 async def health_check():
-    """给 Docker healthcheck / 负载均衡这类不带登录态的探活用。
-    只回布尔值，详细诊断数据见 `/system/diagnose`（需要登录）。"""
-    payload = await _build_health_payload()
-    return {"ok": payload["ok"]}
+    """沿用的旧地址：语义与 `/ready` 相同。以前不管依赖是否可用都返回 200，容器永远是 healthy。"""
+    return await _ready_response()
 
 
 @app.get("/system/diagnose", summary="详细运行诊断（需要登录）")
 async def system_diagnose(current_user: User = Depends(get_current_user_async)):
     """设置页 / 管理后台的诊断面板用，完整数据同旧版 `/health`。"""
     return await _build_health_payload()
+
+
+@app.get("/system/readiness", summary="运行就绪检查（需要登录）：数据库、迁移、企业业务服务、模型、提醒任务、演示数据")
+async def system_readiness(current_user: User = Depends(get_current_user_async)):
+    from service import readiness
+    return await readiness.collect()
 
 
 @app.get("/metrics", summary="Prometheus 指标")

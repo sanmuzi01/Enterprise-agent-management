@@ -29,7 +29,7 @@ OpenAI 兼容 API。
 
 - **后端**：FastAPI · SQLAlchemy 2.0（异步 `asyncmy`）· MySQL · Redis（可选，缺省回退进程内）· ChromaDB
 - **前端**：Vue 3 · Vite · TypeScript · Tailwind · ECharts（按需懒加载）
-- **测试**：`unittest`，880 条，含**真实路由级测试**（TestClient + 真 JWT + 真 DB + 跨用户隔离校验）
+- **测试**：Python `unittest`（含**真实路由级测试**：TestClient + 真 JWT + 真 DB + 跨用户隔离校验；真实 Redis 并发测试）、Java、前端 Vitest，数量见 [docs/testing.md 的统计块](docs/testing.md)（脚本统计，不手填）；CI 还跑迁移漂移检查和真实浏览器冒烟
 - **迁移**：Alembic + 启动幂等建表
 - **可观测**：Prometheus `/metrics`、请求耗时/状态码、连接池/缓存指标
 
@@ -82,7 +82,7 @@ npm --prefix frontend install
 ```bash
 npm run backend:dev      # API  → http://127.0.0.1:8011
 npm run backend:worker   # 定时调度 + 知识库入库
-npm run frontend:dev     # 前端 → http://localhost:5173
+npm run frontend:dev     # 前端 → http://127.0.0.1:5173（端口占用会直接报错，不会静默换端口）
 ```
 
 **塞一份演示数据**（可选，用本地向量模型，不需要任何 Key）：
@@ -91,18 +91,21 @@ npm run frontend:dev     # 前端 → http://localhost:5173
 npm run seed:demo        # 建 demo/demo12345 + 示例助手 + 一份已入库的知识库文档
 ```
 
-打开 `http://localhost:5173`，用 `demo / demo12345` 登录——知识库检索、调试台、健康分
+打开 `http://127.0.0.1:5173`，用 `demo / demo12345` 登录——知识库检索、调试台、健康分
 开箱即用；聊天再去「模型连接」填一个聊天模型 Key 即可。或直接注册新账号从零开始。
 
 详见 [`docs/startup-guide.md`](docs/startup-guide.md)。
+
+部门工作台的 AI 工作成果（CRM 跟进、报销、请假、采购四类材料整理 → 人工核对 → 业务草稿）与本地验收，见 [`docs/agent-productivity-workflows.md`](docs/agent-productivity-workflows.md)。
 
 ---
 
 ## 测试
 
 ```bash
-npm run test:unit          # 880 条；路由级测试需本机 MySQL
+npm run test:unit          # Python 全量；路由级测试需本机 MySQL（没有时会跳过，别误以为全绿——一条命令起测试用的 MySQL / Redis 见 docs/testing.md）
 npm run release:check      # 上线自检：关键文件 + 编译 + 单测 + 前端构建
+npm run hooks:install      # 克隆后执行一次：提交前自动跑和 CI 同样的代码规范检查（改了前端再跑类型检查），不通过就拦下提交
 ```
 
 ---

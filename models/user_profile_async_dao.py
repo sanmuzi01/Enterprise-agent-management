@@ -19,7 +19,7 @@ async def upsert_user_profile_async(db: AsyncSession, user_id: int, payload: dic
     profile = await get_user_profile_async(db, user_id)
     now = utcnow()
     if not profile:
-        profile = UserProfile(user_id=user_id, created_at=now)
+        profile = UserProfile(user_id=user_id)
         db.add(profile)
     for key, value in payload.items():
         if hasattr(profile, key):

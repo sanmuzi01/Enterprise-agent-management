@@ -9,9 +9,9 @@
   - Agent/Skill B：scope_type=department + team_id —— owner + 该部门在职成员能用；
     只是企业成员但不在这个部门的人不能用。
   - Agent/Skill C：scope_type=enterprise + organization_id —— owner + 任意在职企业成员
-    能用；只在部门里但不在企业成员表里的人不能用（故意不让 department_member 也加入
-    organization_members，用来确认企业范围判断真的只看 organization_members，不是从
-    team_members 推出来的）。
+    能用（部门成员同时也是企业成员，所以也能用）。
+  - stale_member：部门成员记录仍有效，但企业成员身份已被停用——部门权限和企业权限都失效
+    （部门成员资格以企业成员身份有效为前提）。
   - outsider：什么都不是，什么都不能用。
 """
 import unittest
@@ -40,6 +40,7 @@ class AgentSkillScopeTest(unittest.TestCase):
         cls.owner = rc.create_user("scope-owner")
         cls.dept_member = rc.create_user("scope-dept-member")
         cls.org_member = rc.create_user("scope-org-member")
+        cls.stale_member = rc.create_user("scope-stale-member")
         cls.outsider = rc.create_user("scope-outsider")
 
         db = SessionLocal()
@@ -61,6 +62,13 @@ class AgentSkillScopeTest(unittest.TestCase):
                                role_id=team_member_role_id, status="active"))
             db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.org_member["id"],
                                        role_id=org_member_role_id, status="active"))
+            # 部门成员必须同时是有效企业成员，部门权限才生效。
+            db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.dept_member["id"],
+                                       role_id=org_member_role_id, status="active"))
+            db.add(TeamMember(team_id=cls.team_id, user_id=cls.stale_member["id"],
+                               role_id=team_member_role_id, status="active"))
+            db.add(OrganizationMember(organization_id=cls.org_id, user_id=cls.stale_member["id"],
+                                       role_id=org_member_role_id, status="disabled"))
             db.commit()
 
             # 部门/企业共享的 Agent 必须是 published 才能被非作者使用（见
@@ -126,8 +134,8 @@ class AgentSkillScopeTest(unittest.TestCase):
         try:
             self.assertIsNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_personal_id))
             self.assertIsNotNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_dept_id))
-            # 部门成员没有被加进 organization_members，企业级不该放行
-            self.assertIsNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_org_id))
+            # 部门成员同时也是有效企业成员，企业级共享的 Agent 也能用
+            self.assertIsNotNone(access_control.get_usable_agent(db, self.dept_member["id"], self.agent_org_id))
         finally:
             db.close()
 
@@ -140,6 +148,23 @@ class AgentSkillScopeTest(unittest.TestCase):
             self.assertIsNotNone(access_control.get_usable_agent(db, self.org_member["id"], self.agent_org_id))
         finally:
             db.close()
+
+    def test_stale_member_with_disabled_org_membership_gets_nothing(self):
+        db = SessionLocal()
+        try:
+            for agent_id in (self.agent_personal_id, self.agent_dept_id, self.agent_org_id):
+                self.assertIsNone(access_control.get_usable_agent(db, self.stale_member["id"], agent_id))
+            skill_dept = __import__("models.skill_dao", fromlist=["get_skill_by_id"]).get_skill_by_id(db, self.skill_dept_id)
+            self.assertFalse(access_control.can_read_skill(skill_dept, self.stale_member["id"], db))
+        finally:
+            db.close()
+
+    def test_async_stale_member_blocked(self):
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                self.assertIsNone(await access_control.get_usable_agent_async(db, self.stale_member["id"], self.agent_dept_id))
+        _run(_do())
 
     def test_outsider_gets_nothing(self):
         db = SessionLocal()
@@ -214,6 +239,35 @@ class AgentSkillScopeTest(unittest.TestCase):
                     await access_control.get_usable_agent_async(db, self.outsider["id"], self.agent_org_id))
         _run(_do())
 
+    def test_agent_async_service_get_agent_uses_shared_scope_not_just_owner(self):
+        # 部门工作台里程碑1新增的"内嵌部门助手聊天面板"（EmbeddedAgentChatPanel.vue）
+        # 靠 GET /agent/{id}（FasdtApi/agent.py -> agent_async_service.get_agent）
+        # 查询部门 Agent 的信息——这个 Agent 的创建者是部门负责人/企业管理员，不是
+        # 每个来聊天的普通部门成员。改动前 get_agent 只认 `agent.user_id == user.id`，
+        # 部门成员会被直接拒绝，聊天面板根本打不开。这里直接测这个具体调用点
+        # （不是又测一遍 get_usable_agent_async 本身，那个矩阵在上面已经测过了），
+        # 确认它真的换成了共享范围判断，而不是漏接、还在用旧的 owner-only 逻辑。
+        import types
+
+        import service.agent_async_service as agent_async_service
+
+        async def _do():
+            from models.async_db import AsyncSessionLocal
+            async with AsyncSessionLocal() as db:
+                dept_member_user = types.SimpleNamespace(id=self.dept_member["id"], selected_agent_id=None)
+                result = await agent_async_service.get_agent(db, dept_member_user, self.agent_dept_id)
+                self.assertIsNotNone(result, "部门成员应该能查到本部门的共享 Agent")
+                self.assertEqual(result["id"], self.agent_dept_id)
+
+                org_member_user = types.SimpleNamespace(id=self.org_member["id"], selected_agent_id=None)
+                blocked = await agent_async_service.get_agent(db, org_member_user, self.agent_dept_id)
+                self.assertIsNone(blocked, "只是企业成员、不在这个部门的人不该看到部门 Agent")
+
+                outsider_user = types.SimpleNamespace(id=self.outsider["id"], selected_agent_id=None)
+                also_blocked = await agent_async_service.get_agent(db, outsider_user, self.agent_dept_id)
+                self.assertIsNone(also_blocked, "完全不相关的人更加不该看到")
+        _run(_do())
+
     # ---------------- Skill ----------------
 
     def test_can_read_skill_without_db_keeps_old_behavior(self):
@@ -237,7 +291,7 @@ class AgentSkillScopeTest(unittest.TestCase):
             self.assertTrue(access_control.can_read_skill(skill_dept, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_dept, self.org_member["id"], db))
             self.assertTrue(access_control.can_read_skill(skill_org, self.org_member["id"], db))
-            self.assertFalse(access_control.can_read_skill(skill_org, self.dept_member["id"], db))
+            self.assertTrue(access_control.can_read_skill(skill_org, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_personal, self.dept_member["id"], db))
             self.assertFalse(access_control.can_read_skill(skill_personal, self.outsider["id"], db))
         finally:

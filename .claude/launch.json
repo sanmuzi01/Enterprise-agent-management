@@ -12,6 +12,30 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "frontend:dev"],
       "port": 5173
+    },
+    {
+      "name": "frontend-e2e",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "frontend", "run", "dev", "--", "--host", "127.0.0.1", "--port", "5174", "--strictPort"],
+      "port": 5174
+    },
+    {
+      "name": "backend-alt",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "FasdtApi.main:app", "--host", "127.0.0.1", "--port", "8012"],
+      "port": 8012
+    },
+    {
+      "name": "frontend-alt",
+      "runtimeExecutable": "cmd",
+      "runtimeArgs": ["/c", "set VITE_API_PROXY_TARGET=http://127.0.0.1:8012&& npm --prefix frontend run dev -- --host 127.0.0.1 --port 5175 --strictPort"],
+      "port": 5175
+    },
+    {
+      "name": "hub",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": ["-NoProfile", "-Command", "Get-Content .env | Where-Object { $_ -match '^(DB_USER|DB_PASSWORD)=' } | ForEach-Object { $k, $v = $_ -split '=', 2; Set-Item -Path ('env:ENTERPRISE_' + $k) -Value $v.Trim().Trim([char]34) }; mvn -q -f enterprise-business-hub/pom.xml spring-boot:run"],
+      "port": 8090
     }
   ]
 }

@@ -18,7 +18,8 @@ _MANAGE_MEMBERS = {"owner", "admin"}
 
 
 def resolve_role(
-    user_id: int, space, member_role: str | None = None, *, is_team_admin: bool = False
+    user_id: int, space, member_role: str | None = None, *, is_team_admin: bool = False,
+    inherited_role: str | None = None,
 ) -> str | None:
     """当前用户对该空间的角色；无权返回 None。
 
@@ -29,9 +30,15 @@ def resolve_role(
         return None
     if getattr(space, "user_id", None) == user_id:
         return "owner"
+    # 多个来源时取最高的：显式成员角色、旧版部门负责人（admin）、被划分到部门 / 全企业带来的角色（viewer / editor）
+    candidates = []
     if member_role in ROLES:
-        return member_role
-    return "admin" if is_team_admin else None
+        candidates.append(member_role)
+    if is_team_admin:
+        candidates.append("admin")
+    if inherited_role in ROLES:
+        candidates.append(inherited_role)
+    return max(candidates, key=ROLE_RANK.get) if candidates else None
 
 
 def at_least(role: str | None, minimum: str) -> bool:

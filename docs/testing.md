@@ -1,6 +1,10 @@
 # Testing
 
-项目当前使用 Python `unittest`，880 条（2026-09-28 更新）。纯逻辑单测（TTL 缓存、重试熔断、
+<!-- test-counts:start -->
+**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2138** 条、前端 Vitest **129** 条、Java **145** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
+<!-- test-counts:end -->
+
+项目使用 Python `unittest`、前端 Vitest（含部门助手组件交互测试）、Java JUnit，数量以上面的统计块为准（其他文档只链接到这里，不各写一个数）。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -31,10 +35,31 @@ npm run frontend:build
 npm run load:test -- --base-url http://127.0.0.1 --scenario health --requests 200 --concurrency 20
 ```
 
+## 测试用的 MySQL 和 Redis（一条命令）
+
+没有 MySQL / Redis 时，依赖它们的用例会自动**跳过**——本地容易误以为“全绿”。起一套测试用的：
+
+```powershell
+docker compose -f deploy/test-services/docker-compose.yml up -d
+$env:DB_HOST='127.0.0.1'; $env:DB_PORT='3307'; $env:DB_USER='root'; $env:DB_PASSWORD='ci-root-password'; $env:DB_NAME='agent_sql'
+.venv\Scripts\python.exe -m alembic upgrade head
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+# 真实 Redis 的并发配额 / 缓存安全测试（单独跑；全量测试不要设 REDIS_URL，否则所有测试都会走 Redis）
+$env:REDIS_URL='redis://127.0.0.1:6390/0'; .venv\Scripts\python.exe -m unittest tests.test_redis_concurrency
+docker compose -f deploy/test-services/docker-compose.yml down -v
+```
+
+`tests/test_redis_concurrency.py` 在真实 Redis 上验证：很多线程 / 多个进程（模拟多个 API 实例）同时抢同一个并发名额，放行的数量必须恰好等于上限；
+固定窗口限流计数准确且 key 一定带过期时间；Redis 里被塞进 pickle 载荷不会被执行。
+
 ## CI 质量门禁
 
-每次 push / PR，GitHub Actions（`.github/workflows/ci.yml`）依次跑：编译检查 → ruff → 依赖漏洞扫描 →
-单元测试 + 覆盖率 → （前端）依赖漏洞扫描 → 类型检查 + 构建。任意一步失败，PR 不能合。
+每次 push / PR，GitHub Actions（`.github/workflows/ci.yml`）依次跑：编译检查 → ruff → 依赖漏洞扫描 → 漏洞豁免登记表核对 →
+空库跑 Alembic + 模型漂移检查 → 单元测试 + 覆盖率 → （前端）依赖漏洞扫描 → Vitest → 类型检查 + 构建 → Java 测试 → 浏览器冒烟。任意一步失败，PR 不能合。
+
+**漏洞豁免**：CI 里 `pip-audit` 忽略的每一条“暂时没有修复版本”的漏洞，都要登记在 `.github/vuln-exceptions.json`
+（负责人、为什么不影响本项目、复查办法、到期日，最长 180 天）；`scripts/check_vuln_exceptions.py` 核对它和 `ci.yml` 一一对应，到期没复查就失败。
+`.github/dependabot.yml` 每周为 pip / npm / Maven / GitHub Actions / Docker 开升级 PR，上游出了修复版本会自动提醒。
 
 ### 覆盖率
 
@@ -57,136 +82,26 @@ npm run test:coverage
    覆盖率过 70% 后把 `--fail-under` 提到 70，之后同样的方法继续提到 75。
 3. 不要为了凑数字给不常用的代码加空测试，也不要为了让数字好看把活跃代码加进 `omit`。
 
-## 已知的无害噪音：Windows 下的 asyncmy teardown ResourceWarning
+## 测试输出里的噪音（已定位并修复）
 
-本机（Windows + ProactorEventLoop）跑全量测试，进程退出前偶尔会打印几行
-`ResourceWarning: unclosed transport` / `unclosed socket`。已经确认过不是真的连接泄漏
-（`tests/_async_helpers.py` 顶部注释记录过根因和第一版修复：`asyncio.run()` 每次新建/
-关闭事件循环，但 `models/async_db.py` 的 `async_engine` 连接池是进程级单例，个别连接的
-关闭动作会落到已经关闭的事件循环之外——真正的 bug 是这会报 `AttributeError`，那部分已经
-用 `run_async`/`run_async_factory` helper 修好了）。这几行 `ResourceWarning` 是
-Windows 专属的、GC 时机相关的诊断噪音，不代表测试结果不可信：
-- 全量测试结果始终是 `OK`（880 个测试全绿），这几行出现在测试统计之后，不影响任何用例的
-  成功/失败判定。
-- CI（`.github/workflows/ci.yml`）跑在 `ubuntu-latest` 上，Linux 用的是 epoll 事件循环，
-  没有 `ProactorEventLoop`，这个噪音在 CI 里根本不会出现。
-- 评估过用 `atexit` 在进程退出前统一 `dispose()` 一次连接池，但那时候原来创建这些连接的
-  事件循环已经关闭，再 dispose 一次只是把同样的告警挪到另一个时间点，不能真正消除，还多
-  引入一个"进程退出阶段跑异步代码"的新脆弱点——收益不确定、风险不低，评估后决定不做，
-  留档说明原因，而不是硬塞一个治标不治本的修复。
+全量测试结束后，Windows 本机曾在统计行之后打印两行 `ResourceWarning: unclosed <socket.socket ... laddr=('127.0.0.1', 5xxxx)>`。
+旧版本文档把它归因于 asyncmy 连接池 teardown，并决定不处理；这个结论是错的：
 
-### Lint（ruff）
+- 用 `socket.socketpair` 探针逐个排查后确认：**真正的来源是 `tests/test_sandbox_gateway.py`**。它启动了两个本地
+  `ThreadingHTTPServer`，tearDown 只调了 `shutdown()`（停止服务循环），没有 `server_close()`（关闭监听 socket），
+  所以两个监听 socket（只有 `laddr`、端口号相邻，正是警告里那两行）一直开到进程退出。已补上 `server_close()`。
+  探针同时证明全量运行创建的 2700 多对事件循环自通知 socket 全部正常关闭——asyncmy 和事件循环都不是来源。
+- 顺带修了一个真实的小问题：`service/background_worker.py` 常驻的 widget 事件循环从不关闭，会在解释器退出时报
+  `unclosed event loop`；现在 `close_widget_loop()` 通过 `atexit` 关闭（循环正在别的线程运行时放弃）。
+- 全量运行（`-W default`）现在没有任何 `ResourceWarning` 和弃用警告：`datetime.utcfromtimestamp()`
+  已改为 `datetime.fromtimestamp(ts, timezone.utc)`；pydantic 的 `class Config` 已改为 `model_config = ConfigDict(...)`；starlette 的“TestClient 将改用 httpx2”提示是第三方库的升级通知，
+  项目代码无可修改，只在 `tests/_route_client.py` 里按这一条消息精确过滤，其他弃用警告照常显示。
 
-```powershell
-npm run lint:py
-```
-
-`pyproject.toml` 里 `select = ["E9", "F"]`：只挡语法错误和 pyflakes（未使用的导入/变量、用到没定义的名字等）——
-大概率是 bug，不是风格问题。**没有**开 ruff 默认更大的规则集（pyupgrade / bugbear / bandit 等），
-现状代码库全量跑一遍有约 2900 条，绝大多数是"能跑但不够新"的风格建议，不是缺陷，硬开只会把 CI 变成没人看的噪音。
-想扩大检查范围：先加一类规则跑一遍看有多少违规，评估要不要一次清干净，再加进 `select`。
-
-### 依赖漏洞扫描
-
-```powershell
-npm run audit:py    # 后端，pip-audit
-npm run audit:npm   # 前端，npm audit（只挡 high/critical）
-```
-
-`pip-audit` 的输出没有统一的严重度字段（不像 npm audit 有 severity），所以后端这边按"能不能修"分类，
-不是按"严重度"分类：**有修复版本却没升级** → 阻断 CI，逼着升级；**上游还没出修复版本** → 记录在
-CI 配置里、写清楚原因，不阻断（阻断了也没用，只会让 CI 一直红）。当前免检名单（`.github/workflows/ci.yml`
-的 `--ignore-vuln` 参数，定期复查，上游出新版本就把对应这条删掉）：
-
-| 依赖 | 漏洞 | 为什么先不阻断 |
-|---|---|---|
-| `asyncmy` 0.2.10 | PYSEC-2026-286，SQL 注入（"通过精心构造的 dict key"） | 上游到最新版 0.2.11 仍未修复；本项目原生 SQL 只在极少数地方用固定参数名的 `text()`，不会把用户输入当 dict key 传给驱动，可利用面很小 |
-| `chromadb` 1.5.9 | PYSEC-2026-311/3813/3814/3815，未授权访问、代码注入、跨租户越权 | 1.5.9 已是最新版，上游未修复；`docker-compose.prod.yml` 里 `chroma` 服务没有 `ports:` 映射，只有 api/worker 能从容器内网访问，不对公网暴露 |
-| `ecdsa` 0.19.2 | PYSEC-2026-1325，Minerva 时序攻击（侧信道泄露私钥） | `python-jose` 的间接依赖；项目 JWT 固定用 `HS256`（对称算法），根本不会走到 `ecdsa` 的签名代码路径；上游明确表示侧信道防护不在其修复范围内 |
-
-前端目前有 1 条 moderate（`echarts` XSS，`GHSA-fgmj-fm8m-jvvx`，修复需升到 6.x 大版本，有破坏性变更，
-未安排）；`--audit-level=high` 不会拦它，`npm audit` 手动跑能看到。
-
-发布前想看完整报告（含以上免检项，不只是阻断的那部分）：
-```powershell
-npm run audit:py
-```
-不带 `--ignore-vuln` 直接跑，看到的就是全部已知漏洞。
-
-## 浏览器冒烟测试（7 个核心流程）
-
-```powershell
-.venv\Scripts\python.exe scripts\e2e_smoke.py                  # 无头跑一遍
-.venv\Scripts\python.exe scripts\e2e_smoke.py --headed          # 弹出浏览器窗口，方便看
-.venv\Scripts\python.exe scripts\e2e_smoke.py --keep-services   # 结束后不关前后端，方便手动排查
-```
-
-真实前端（`vite dev`）+ 真实后端（真实 FastAPI 路由、真实 MySQL、内嵌 ChromaDB）+ 真实浏览器
-（Playwright + Chromium），串起：登录、创建 Agent、绑定知识库空间、发起 SSE 聊天并等回答生成完整、
-查看 RAG 引用来源、普通用户绑定公开 Skill、管理员编辑并回滚 Skill——七个环节共用一套数据，
-一次跑通就是对"这些功能真的接得上"最直接的证据。
-
-**两处换成假实现**（`tests_e2e/fakes.py`），别的都走真实链路：
-
-- 大模型：`service.tools.executor.create_langchain_llm` 换成 LangChain 官方自带的测试替身
-  `FakeListChatModel`（固定回一句话），不发真实网络请求，不花钱。手写一个假 HTTP 服务器去精确
-  模仿 LangChain `ChatOpenAI` 的流式协议试过，细节太容易对不上，改用官方测试替身后完全没有这个问题。
-- 向量化：`service.rag.embedding_service._get_client[_async]` 换成本地哈希词袋 Embedding
-  （中文按单字切、英文数字按连续串切，是词袋能匹配上的关键——整句当一个 token 切，两句几乎永远
-  零重合）。ChromaDB 本身、检索排序、相似度阈值全部走真实逻辑。
-
-后台任务（知识库文档入库）用 `TASK_EXECUTION_MODE=worker` + 进程内一个轮询线程跑
-`service.background_worker.run_once()`——和真的独立 Worker 进程做一样的事，只是不用另开进程
-（ChromaDB 内嵌 PersistentClient 要求全程只有一个进程碰它）。**踩过的坑**：一开始图省事用
-`TASK_EXECUTION_MODE=inline`（FastAPI `BackgroundTasks` 直接在本次请求里跑），实测在这个项目的
-中间件链下背景任务从来不执行，任务永远停在 `queued`——这条路径本来就只有"本地开发"在用、
-生产和大多数本地开发也是起独立 Worker 进程，几乎没有真正被走过。
-
-**这条测试顺手挖出的两个真实生产 bug**（不是测试环境特有的，已经在 `FasdtApi/chat.py` 修掉）：
-
-1. 聊天接口（同步 / 流式两个路由）在收尾阶段重复访问 `current_user.id`。`AsyncSession` 默认
-   `expire_on_commit=True`，本次请求中途只要有一次提交，`current_user` 这个 ORM 对象的所有属性
-   就被标记为"过期"；流式响应收尾（生成器 `finally` 块）时才第一次真正触发这次过期后的隐式懒加载，
-   如果这次访问发生在请求本来的 greenlet 上下文之外，SQLAlchemy 找不到桥接会直接
-   `MissingGreenlet` 崩掉，前端看到"发送失败：服务暂时异常"。修法是在路由最开头把
-   `user_id = current_user.id` 存成普通 int，后面全用这个值，不再重复读那个属性。
-2. `agent_runtime.py` 的异常日志只打了 `error={e}`，遇到消息本身是空字符串的异常（比如这次的
-   `NotImplementedError`）日志里什么都看不出来。顺手加上了异常类型和完整堆栈
-   （`logger.error(..., exc_info=True)`），后续再出问题排查会快很多。
-
-CI 里独立一个 `e2e` job（`.github/workflows/ci.yml`），失败时把失败截图和页面 DOM 快照
-（`tests_e2e/.e2e_data/fail_*.png` / `.html`）打包成 artifact 方便下载查看。
-
-## 企业化改造前的安全收口（Step 0）
-
-在把项目往"单企业私有化部署"方向改造前，先核对了一遍现有能力开关的默认状态，
-只发现一处真实缺口，已修：
-
-- **Skill 导入/创建/编辑/删除/模板/版本回滚**：路由层已经全部是
-  `get_current_admin_user`（[FasdtApi/skill_route.py](../FasdtApi/skill_route.py)），
-  普通用户拿不到这些接口。不需要新增改动。
-- **Skill 脚本目录越界**：[service/skills/loader.py](../service/skills/loader.py) 的
-  `_ensure_managed_dir` 已经用 `realpath` 把 `resource_root`/`scripts_root` 限制在
-  `skills/`、`skills_packages/` 下，同时挡 `../` 和符号链接逃逸；回归测试见
-  `tests/test_skill_script_policy.py` 的
-  `test_loader_refuses_scripts_root_outside_skills_packages` /
-  `test_loader_refuses_resource_root_outside_managed_dirs`。这条是已修复的历史问题，
-  不是仍然存在的漏洞。
-- **脚本沙箱**：生产默认关闭的开关叫 `SANDBOX_ENABLED`（不是 `SANDBOX_ALLOW_USER_SCRIPTS`
-  ——这只是命名，行为一致），`.env.production.example` 里已经是 `false`。
-- **企业接口连接器（真正的缺口）**：`POST /agent/{agent_id}/api-connectors`
-  （[FasdtApi/agent.py](../FasdtApi/agent.py)）原来只要求 `get_current_user`——任何
-  普通用户都能给自己的 Agent 配任意（过 SSRF 校验的）外部 HTTP 接口。单企业部署下，
-  "能不能接入外部系统"应该是管理员审核后统一配置的能力。新增
-  [service/feature_flags.py](../service/feature_flags.py) 统一收口这类开关，
-  `create_api_connector` 现在默认要求管理员，设
-  `FEATURE_USER_API_CONNECTORS=true` 才放开给普通用户自助配置；前端
-  [AgentApiConnectors.vue](../frontend/src/views/AgentApiConnectors.vue) 同步隐藏了
-  非管理员看到的"新增接口工具"表单。回归测试：
-  `tests/test_agent_api_connector_routes.py` 的
-  `test_normal_user_cannot_create_connector_by_default`（默认 403）和
-  `test_feature_flag_lets_normal_user_create_connector`（开关生效）；
-  `tests/test_feature_flags.py` 覆盖开关本身的取值解析。
+**测试日志**：此前一次全量运行有约 1100 行应用日志和 80 行工具注册打印，预期内的故障日志淹没了真正的失败。
+- 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
+- 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
+  文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
+- 全量结果始终看最后的 `Ran N tests ... OK`，数量见文首统计块（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 
@@ -228,6 +143,95 @@ CI 里独立一个 `e2e` job（`.github/workflows/ci.yml`），失败时把失�
 
 `scripts/e2e_smoke.py` 建的是 `e2e_*` 用户（同一套级联清理逻辑，见 `tests_e2e/fixtures.py::purge_e2e_data`，
 内部直接复用这里的 `_purge_users`），每次跑完（不管流程成不成功）都会自动清一遍，不需要额外操心。
+
+## 测试怎么做到“在哪都能复现”
+
+- **数据库探测只做一次，并且很快**：每个路由测试模块导入时都会问一遍“数据库能不能用”。以前每次都等操作系统级的连接超时（Windows 上约 20 秒 × 60 多个模块），MySQL 没起来时看起来就像测试卡死了。
+  现在整个进程只探测一次，先用 1.5 秒的端口探测，失败信息里直接给出“一条命令起测试用的 MySQL”。
+- **数据库“半通不通”也不会卡住测试**：探测用独立短连接并带连接 / 读 / 写超时（`utils/db_probe.py`）；`tests/test_db_timeouts.py` 用一个“接受连接但从不发握手包”的本机黑洞服务验证
+  就绪探针按时返回 503、探针线程不残留、四个数据库引擎（同步 / 异步 / 审计）都带超时参数。
+- **Vitest 不依赖磁盘上的临时文件**：`npm test` 带 `--configLoader runner`（在内存里处理 vite.config.ts，不写打包后的临时配置）和 `--no-cache`（不写结果缓存）。Windows 上的 `ENOENT` 都出在往磁盘写临时 / 缓存文件这一步。
+- **TestClient 的弃用警告**：Starlette 的 TestClient 要求安装 `httpx2`（`requirements-dev.txt` 已经包含）。不再用过滤器把这条警告藏起来；缺了会直接看到。
+- **Vitest 串行跑**（`fileParallelism: false`、`pool: 'forks'`）：几个 worker 同时写临时 / 缓存文件，在 Windows 和一些沙箱里会出现临时文件 ENOENT。CI 里还有一个 `frontend-windows` 任务在 Windows 上跑前端单测。
+- **CI 里 Linux 才出现的问题**：OTel SDK 在 Linux 上给批处理器注册了 fork 回调，批处理器被回收后，之后任何一次 fork 都会报 `'NoneType' object is not callable`
+  （`otel.shutdown()` 现在会保留已关闭的 provider）；新增的文件被 `.gitignore` 的 `.env.*` 静默排除（本地测试通过、CI 里找不到）。Windows 本地全绿不代表 Linux CI 全绿，两边都要看。
+
+## 空库测试：推送前在本地复现 CI 的起点
+
+```powershell
+.venv\Scripts\python.exe scripts\test_fresh_db.py          # 和“空库”最相关的一组（约 1 分钟）
+.venv\Scripts\python.exe scripts\test_fresh_db.py --all    # 全量，和 CI 一样
+```
+
+建一个临时库 `agent_sql_fresh_<时间戳>` → `alembic upgrade head` → 所有表的自增起点抬到 9 亿 → 跑两次 `bootstrap_database`（验证幂等）→ 把 `DB_NAME` 指向它跑测试 → 删库（`--keep` 保留排查）。
+抬自增起点是因为提示词、专业技能配置等文件按 id 命名、和开发库共用目录：空库里的 1 号助手会覆盖并在清理时删掉开发库 1 号助手的文件（踩过一次，已从 git 恢复）。
+已经接进 `npm run release:check`（账号没有建库权限时加 `--skip-fresh-db`）。
+
+## 测试问题复盘（2026-10）
+
+| 问题 | 为什么本地没发现 | 改了什么 |
+|---|---|---|
+| CI 的 backend 连续几轮失败：库里还没有企业记录时，用户管理、企业知识库、企业智能体列表直接报错 | 本地开发库一直有企业记录，跑多少遍都绿；CI 每次是空库 | 列表在没有企业时返回空（`find_default_organization`），写操作才要求企业存在；加 `tests/test_no_enterprise_yet.py`；加空库测试脚本并接进发布自检；首次启动自动建企业 |
+| 空库上 `rc.create_user(..., admin=True)` 建的不是管理员 | 开发库里测试账号恰好有别的管理员兜底 | 测试统一用 `rc.admin_env(name)`；这是测试写法问题，不是产品问题 |
+| 删除企业助手后留下没有主人的技能记录和 `skills/enterprise/agent_<id>.yml` | 没有任何页面会列出“孤儿”，只有数据体检查出来（开发库里 50 个文件） | `agent_service.delete` 连同专属技能一起删；测试清理也删文件；体检常驻这两项检查 |
+| 发布前端后部分浏览器白屏，换浏览器才能进 | 本地开发服务器不缓存；只在 nginx + 旧标签页上出现 | `/assets/` 找不到返回 404 而不是 `index.html`，`index.html` 不缓存，前端加载旧文件失败时自动刷新；`tests/test_nginx_delivery.py` 用正则核对三份配置，并在真实 nginx 容器里验证过响应头 |
+| 用着用着被登出 | 测试会话都很短 | 滑动续期 + 最长时限；后台轮询不算“在用”；`tests/test_session_renewal.py` 走真实 HTTP 验证续期后带新 CSRF 的写请求能成功 |
+| 中文输入法选词按回车直接把半句话发出去 | 自动化测试不会触发输入法组合事件 | `isImeEnter` 守卫 + 一条扫描所有输入框的测试 |
+| 第一次跑空库测试后，`prompt/prompts/1.yaml`、`5.yaml` 被删了 | 空库的 id 从 1 开始，按 id 命名的文件和开发库共用目录 | 从 git 恢复；空库建表后把自增起点抬到 9 亿；跑完看一眼 `git status` |
+| 修完“空库列表报错”后，本地全量有 9 条失败（CI 是绿的） | 列表改用 `find_default_organization`，但这几个测试只替换了 `_get_default_organization`；CI 空库里测试自己建的企业恰好 id 最小，所以碰巧对 | 测试改为替换最底层的 `find_default_organization`（另一个也调它）；教训：改了“取数的入口”，要搜一遍测试里替换的是哪个入口 |
+| 首次启动自动建企业：`GET_LOCK` 没检查返回值（评审发现） | 单进程测试永远拿得到锁 | 没拿到锁就跳过；数据库哨兵行主键兜底；6 线程并发测试（去掉兜底时建出 6 家企业） |
+| 部门助手卡片：一次办理超过 5 张单子时卡片超过上限（评审发现） | 只测了“长列表”和“办理优先”，没测“办理本身超过 5 张” | 上限对任何组合都成立，超出的计入“没展开”数量 |
+| 旧页面自动刷新：sessionStorage 不可用时每次都刷新，可能死循环（评审发现） | 测试里存储总是可用 | 依次记在 sessionStorage → window.name → 内存；哪儿都记不下就不自动刷新 |
+| 每跑一次全量，`skills/enterprise/` 就多两个孤儿配置文件 | 文件不在数据库里，测试断言看不到；数据体检的数量在涨才发现 | 逐个模块跑定位到 `test_agent_config`、`test_agent_routes` 按名字删助手没删文件；抽出 `tests/_dept_agent_cleanup.py::purge_agents`（连同专属技能和文件），今天跑测试留下的 21 个已清理 |
+| 在 Windows 上导入的技能，部署到 Linux 容器后全部“资源不存在” | 开发和测试都在同一台 Windows 上，路径永远存在 | `tests/test_skill_portable_roots.py` 直接写别的机器的 Windows / Linux 绝对路径验证能换算，并验证越权路径仍被拒绝；另外在容器里对 76 个真实技能做了新旧对比（13 → 76 可用） |
+| 跑完测试，`prompt/prompts/1.yaml`、`5.yaml` 又被删了（这次没走空库脚本） | 直接在空的测试库（`deploy/test-services`）上跑全量，助手编号从 1 开始，抬自增起点的办法管不到 | 测试一律用临时提示词目录（`tests/_route_client.py` 导入时切换），`tests/test_prompt_isolation.py` 守护；以前测试留下的 3009 个孤儿提示词和 41 个孤儿技能配置用 `scripts/archive_orphan_agent_files.py` 归档 |
+| `test_organization_admin_service` 单独在空库上跑全挂 | 全量跑时前面的测试顺带建了企业，掩盖了它依赖“库里已有企业” | 模块级 `setUpModule` 没有企业就临时建一家，跑完删掉 |
+| 数据体检的断言在开发库上失败：自己造的孤儿文件不在前 5 条样例里 | 开发库里本来就有别的孤儿 | 测试里放开样例数再断言；体检本身只给 5 条样例是对的 |
+
+几条规律：**开发库里的“现成数据”会掩盖问题**（空库测试解决）；**部署层的问题测不到代码里**（直接解析 nginx 配置 + 真实容器验证）；
+**每个修复都做反向验证**——把修复去掉，对应测试必须失败，否则测试没有测到点子上。
+
+## 本机跑全量测试前：先停掉 Worker
+
+需要数据库的测试和本机开发共用同一个库。本机的后台 Worker 在跑时，会抢走测试里刚写入的事件和批量任务（`test_outbox`、`test_automation_batch`），
+这几条在没有任何改动的基础提交上也会失败。
+CI 用全新数据库，不受影响；本机想看到全绿，先停掉 `npm run backend:worker`，并用测试专用库（`deploy/test-services/docker-compose.yml`）。
+
+## 前端单元测试（Vitest）
+
+```powershell
+npm --prefix frontend test
+```
+
+覆盖：登录会话（令牌在 HttpOnly Cookie 里，页面只看得到 `csrf_token`）、请求拦截器（带 Cookie、改数据的请求带 `X-CSRF-Token`、从不发 Authorization、401 回登录页）、
+user store（登录不保存令牌、`isLoggedIn()` 不被缓存、退出登录先让后端清 Cookie）、Markdown 安全渲染（脚本 / 事件处理器 / 钓鱼表单 / 外链图片等载荷）。
+更完整的浏览器级验证见 `scripts/check_session_browser.py`（登录 Cookie、CSRF、CSP 真的拦截）和 `scripts/check_xss_browser.py`。
+
+### 部门助手的组件交互测试
+
+用 `@vue/test-utils` 挂载真实组件，接口用替身按真实事件顺序推送（不需要模型和业务服务）：
+
+- `frontend/src/components/EmbeddedAgentChatPanel.test.ts`：确认高风险操作后卡片立刻从草稿变为待审批、步骤打勾、小结写“已办成”；
+  确认后执行失败 / 取消的显示；流里返回错误、连接中断、工具返回错误时步骤标红而不是“完成”；切换部门清空对话并开新会话；中文输入法选词的回车不发送。
+- `frontend/src/components/department/DepartmentAgentHub.test.ts`：今日发现的数量与风险；一键生成凭证草稿全部成功 / 部分失败（逐笔写原因）/ 全部失败（标红、不刷新不跳转）、
+  处理期间不能重复点；接最急的一张工单（接队列第一张并打开）、没有可接的、服务端拒绝；切换部门（包括同为销售类型的“销售一部 → 销售二部”）清空材料和一键处理结果；
+  一键处理途中切走部门，旧任务作废（不再对旧部门继续调用、不把结果显示到新部门）。
+- `frontend/src/utils/agentCards.test.ts`：整次回答最多 5 张卡片（多个列表累计计算），办理产生的单子优先显示不被列表挤掉。
+- `frontend/src/utils/ime.test.ts`：守卫——所有回车提交的输入框都必须先判断输入法（`isImeEnter`），不能用 `keyup.enter`；新加输入框忘了判断会失败并指出文件。
+
+这几组测试加的时候都做过反向验证：把对应的修复去掉，测试会失败。
+
+### 界面上不出现代码里的名字
+
+页面上不显示函数名、工具名、枚举值、模型标识、部门代码、事件名、配置项名字。所有“内部名字 → 中文”的转换都集中在 `frontend/src/utils/displayNames.ts`，
+不认识的值用通用说法兜底（“自定义工具”“后台任务”“配置检查”），绝不原样显示。两道守门：
+
+- `frontend/src/utils/displayNames.test.ts`（Vitest）：每个转换函数、兜底说法、中文名本身都不像代码。
+- `tests/test_frontend_display_names.py`（unittest）：后端每注册一个内置工具 / 内置模型 / 诊断检查项，前端名表里必须有对应的中文名；
+  页面模板不能把 `tool_name`、`task_type`、`department_code`、`event_type` 等内部字段直接打印出来；写死的 `placeholder` / `title` / `aria-label` 里不能带 snake_case。
+
+新增内置工具、模型或诊断检查项而忘了加中文名，后端单测会直接失败。
+另外，应用外壳是 `h-dvh` + `main overflow-hidden`，每个页面必须自带滚动容器；页面模板根节点前不能有 HTML 注释（会变成多根片段，路由过渡会卡住并留下空白的 `<main>`）。
 
 ## 后续应补充
 

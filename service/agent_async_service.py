@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 
 from prompt.prompt_manager import read_prompt_file
 from models.agent_async_dao import (
-    get_agent_by_id_async,
     get_selected_agent_by_user_async,
     list_agents_by_user_async,
     skill_to_dict,
@@ -50,8 +49,9 @@ async def list_agent(db, user) -> List[Dict[str, Any]]:
 async def get_agent(db, user, agent_id: int) -> Optional[Dict[str, Any]]:
     """异步查询单个助手，自动校验归属。"""
 
-    agent = await get_agent_by_id_async(db, agent_id)
-    if not agent or agent.user_id != user.id:
+    from service.access_control import get_usable_agent_async
+    agent = await get_usable_agent_async(db, user.id, agent_id)
+    if not agent:
         return None
     space_ids = await list_space_ids_by_agent_async(db, agent_id)
     return _agent_payload(agent, user.selected_agent_id, space_ids)

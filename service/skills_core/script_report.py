@@ -166,7 +166,7 @@ def reanalyze_config(config_file: str) -> Dict[str, Any]:
     """
     import yaml
 
-    from service.skills.loader import _get_yml_path, invalidate_skill_config
+    from service.skills.loader import _get_yml_path, invalidate_skill_config, localize_root
 
     path = _get_yml_path(config_file)
     with open(path, "r", encoding="utf-8") as f:
@@ -174,7 +174,8 @@ def reanalyze_config(config_file: str) -> Dict[str, Any]:
     if not isinstance(cfg, dict) or not cfg.get("scripts_root") or not cfg.get("scripts"):
         return {"skipped": True}
 
-    report = analyze_bundle(cfg["scripts_root"], list(cfg["scripts"]))
+    # 配置可能是在别的机器上导入的（Windows 路径带到 Linux 容器），先换算成本机路径
+    report = analyze_bundle(localize_root(cfg["scripts_root"]), list(cfg["scripts"]))
     before = (cfg.get("script_report") or {}).get("status", "unknown")
     new_report = {k: report[k] for k in ("status", "total", "missing_packages", "network", "system", "problems")}
     changed = cfg.get("runnable_scripts") != report["runnable"] or cfg.get("script_report") != new_report

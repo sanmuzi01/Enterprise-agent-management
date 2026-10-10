@@ -20,6 +20,7 @@ def run(command: List[str]) -> None:
 # 上线关键文件（非容器部署）
 REQUIRED_FILES = [
     ".env.production.example",
+    ".env.production.docker.example",
     "scripts/load_test.py",
     "scripts/crawl_check.py",
     "alembic.ini",
@@ -33,8 +34,37 @@ REQUIRED_FILES = [
     "docs/deployment.md",
     "docs/release-checklist.md",
     "docs/load-testing.md",
+    "docs/observability-integration.md",
+    "service/observability/otel.py",
+    "scripts/e2e_observability.py",
+    "scripts/e2e_kafka.py",
+    "service/session_cookie.py",
+    "utils/upload_limits.py",
+    "frontend/src/utils/session.ts",
+    "frontend/public/theme-init.js",
+    "scripts/check_session_browser.py",
+    "scripts/check_vuln_exceptions.py",
+    ".github/vuln-exceptions.json",
+    ".github/dependabot.yml",
+    "deploy/test-services/docker-compose.yml",
+    "tests/test_redis_concurrency.py",
+    "service/health.py",
+    "FasdtApi/auth_token.py",
+    "utils/limiter_metrics.py",
+    "utils/db_probe.py",
+    "tests/test_db_timeouts.py",
     "docs/database-migrations.md",
     "docs/testing.md",
+    # 交付与数据治理：会话续期、首次启动建企业、空库测试、数据体检、数据保留
+    "service/session_renewal.py",
+    "service/enterprise_bootstrap.py",
+    "scripts/test_fresh_db.py",
+    "scripts/test_counts.py",
+    "scripts/archive_orphan_agent_files.py",
+    "service/data_health.py",
+    "scripts/data_health_check.py",
+    "service/data_retention.py",
+    "scripts/data_retention.py",
     # 知识库空间（阶段1）
     "FasdtApi/knowledge_space.py",
     "service/knowledge_space/space_async_service.py",
@@ -102,6 +132,154 @@ WIDGET_FILES = [
     "docs/widget-platform.md",
 ]
 
+# 部门工作台 AI 工作成果（材料整理 → 人工核对 → 业务草稿）
+AUTOMATION_FILES = [
+    "FasdtApi/automation_work.py",
+    "service/automation_spec.py",
+    "service/automation_work_service.py",
+    "service/workflows/__init__.py",
+    "service/workflows/base.py",
+    "frontend/src/components/WorkflowForm.vue",
+    "frontend/src/components/WorkflowField.vue",
+    "migrations/versions/20261001_0002_automation_work.py",
+    "frontend/src/api/automationWork.ts",
+    "frontend/src/components/AutomationWorkPanel.vue",
+    "scripts/check_automation_browser.py",
+    "scripts/e2e_automation_workflows.py",
+    "docs/agent-productivity-workflows.md",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/web/ApiExceptionHandler.java",
+    # 待办中心与主动提醒
+    "FasdtApi/work_center.py",
+    "service/work_item_service.py",
+    "service/notification_center.py",
+    "service/reminders/__init__.py",
+    "service/reminders/rules.py",
+    "service/handoff_service.py",
+    "service/department_access.py",
+    "migrations/versions/20261003_0002_agent_handoff.py",
+    "migrations/versions/20261003_0001_automation_metrics.py",
+    "frontend/src/views/admin/AdminAutomation.vue",
+    "migrations/versions/20261002_0003_work_items_notifications.py",
+    "frontend/src/views/TodoCenter.vue",
+    "frontend/src/components/NotificationBell.vue",
+    # 财务自动记账
+    "FasdtApi/finance_vouchers.py",
+    "service/finance_voucher_service.py",
+    "service/tools/finance_voucher.py",
+    "frontend/src/api/financeVouchers.ts",
+    "frontend/src/components/FinanceVoucherModule.vue",
+    "scripts/e2e_finance_vouchers.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V6__finance_vouchers.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/finance/VoucherService.java",
+    # IT 服务台
+    "FasdtApi/it_service.py",
+    "service/it_service.py",
+    "service/hub_gateway.py",
+    "service/workflows/ticket.py",
+    "service/tools/it_service.py",
+    "frontend/src/api/itService.ts",
+    "frontend/src/components/TicketModule.vue",
+    "frontend/src/components/ItDeskModule.vue",
+    "scripts/e2e_it_service.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V7__it_service_desk.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/it/ItTicketService.java",
+    # 人事入转调离
+    "FasdtApi/hr_cases.py",
+    "service/hr_service.py",
+    "service/tools/hr_cases.py",
+    "frontend/src/api/hrCases.ts",
+    "frontend/src/components/HrCaseModule.vue",
+    "scripts/e2e_hr_cases.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V8__hr_lifecycle.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/hr/HrCaseService.java",
+    "service/department_home.py",
+    "service/orchestration_service.py",
+    "FasdtApi/orchestration.py",
+    "frontend/src/components/OrchestrationPanel.vue",
+    "migrations/versions/20261006_0001_orchestration.py",
+    # 可观测性与问题中心
+    "service/observability/context.py",
+    "service/observability/redact.py",
+    "service/observability/error_codes.py",
+    "service/observability/issues.py",
+    "service/observability/sentry_setup.py",
+    "FasdtApi/issues.py",
+    "frontend/src/views/admin/AdminIssues.vue",
+    "migrations/versions/20261007_0002_system_issue.py",
+    "scripts/drill_java_down.py",
+    # 可靠事件
+    "service/events/outbox.py",
+    "service/events/runner.py",
+    "service/events/handlers.py",
+    "migrations/versions/20261007_0003_outbox.py",
+    "scripts/drill_batch_restart.py",
+    "migrations/versions/20261007_0005_pilot.py",
+    "service/observability/agent_runs.py",
+    "migrations/versions/20261007_0004_agent_run_trace.py",
+    # 文件导入
+    "service/document_intake.py",
+    "service/automation_batch_service.py",
+    "frontend/src/components/AutomationBatchPanel.vue",
+    "migrations/versions/20261007_0001_automation_batch.py",
+    "scripts/e2e_batch_browser.py",
+    "tests/test_document_intake.py",
+    # 部门责任执行
+    "FasdtApi/responsibility.py",
+    "service/responsibility_service.py",
+    "service/tools/responsibility.py",
+    "service/workflows/responsibility.py",
+    "service/workflows/date_text.py",
+    "service/reminders/responsibility_rules.py",
+    "frontend/src/api/responsibility.ts",
+    "frontend/src/components/ResponsibilityModule.vue",
+    "frontend/src/components/ResponsibilityPlanPanel.vue",
+    "frontend/src/components/ResponsibilityTaskPanel.vue",
+    "scripts/e2e_responsibility.py",
+    "scripts/e2e_responsibility_browser.py",
+    "enterprise-business-hub/src/main/resources/db/migration/V9__responsibility.sql",
+    "enterprise-business-hub/src/main/java/com/enterprisehub/responsibility/ResponsibilityService.java",
+    "docs/demo-backup/responsibility/index.html",
+    # 考勤异常发现
+    "FasdtApi/attendance.py",
+    "service/attendance_import.py",
+    "service/attendance_rules.py",
+    "service/attendance_service.py",
+    "service/tools/attendance.py",
+    "service/reminders/attendance_reminders.py",
+    "frontend/src/api/attendance.ts",
+    "frontend/src/components/AttendanceModule.vue",
+    "frontend/src/utils/errorReporter.ts",
+    "service/observability/client_errors.py",
+    "tests/test_client_errors.py",
+    "migrations/versions/20261007_0006_attendance.py",
+    "scripts/e2e_attendance.py",
+    # 安全专项
+    "docs/security-testing.md",
+    "service/archive_guard.py",
+    "service/prompt_guard.py",
+    "utils/http_headers.py",
+    "scripts/check_xss_browser.py",
+    "scripts/e2e_security.py",
+    "tests/test_security_ssrf.py",
+    "tests/test_security_files.py",
+    "tests/test_security_sql_injection.py",
+    "tests/test_security_xss_backend.py",
+    "tests/test_security_agent_tools.py",
+    "tests/test_security_prompt_injection.py",
+    "tests/test_org_admin_scope.py",
+    "tests/test_approval_org_scope.py",
+    "tests/test_user_profile_route.py",
+    "enterprise-business-hub/src/test/java/com/enterprisehub/oa/LeaveApprovedEndpointIntegrationTest.java",
+    # 演示包装
+    "scripts/demo.py",
+    "scripts/seed_enterprise_demo.py",
+    "scripts/demo_walkthrough.py",
+    "service/llm/offline_demo.py",
+    "service/readiness.py",
+    "docs/demo-script.md",
+    "docs/demo-backup/index.html",
+]
+
 YAML_CONFIGS = [
     "deploy/prometheus.yml",
     "deploy/prometheus-rules.yml",
@@ -115,7 +293,7 @@ JSON_CONFIGS = [
 
 def check_required_files() -> None:
     print("\n检查上线关键文件...")
-    required = REQUIRED_FILES + WIDGET_FILES
+    required = REQUIRED_FILES + WIDGET_FILES + AUTOMATION_FILES
     missing = [name for name in required if not (ROOT / name).exists()]
     if missing:
         raise SystemExit("缺少上线关键文件: " + ", ".join(missing))
@@ -155,17 +333,74 @@ def check_widget_scheduler_wired() -> None:
     if "_run_widget_scheduler_tick" not in worker or "run_due_widgets" not in worker:
         raise SystemExit("service/background_worker.py 未接入组件定时调度")
     print("OK 组件调度已接入 background_worker")
+    if "_run_reminder_tick" not in worker or "run_due_rules" not in worker:
+        raise SystemExit("service/background_worker.py 未接入业务提醒规则")
+    print("OK 业务提醒规则已接入 background_worker")
+
+
+def check_automation_wired() -> None:
+    """工作成果接口必须挂到主应用；注册的每个工作流都要有完整声明（前端表单由声明驱动）。"""
+    print("\n检查 AI 工作成果接口已接入...")
+    main_py = (ROOT / "FasdtApi/main.py").read_text(encoding="utf-8")
+    if "app.include_router(automation_work_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/automation 路由")
+    if "app.include_router(finance_vouchers_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/finance/vouchers 路由")
+    if "app.include_router(hr_cases_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/hr 路由")
+    if "app.include_router(responsibility_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/responsibility 路由")
+    if "app.include_router(it_service_router)" not in main_py:
+        raise SystemExit("FasdtApi/main.py 未挂载 /enterprise/it 路由")
+    if "getWorkflows" not in (ROOT / "frontend/src/api/automationWork.ts").read_text(encoding="utf-8"):
+        raise SystemExit("前端未从工作流目录接口加载工作类型")
+    sys.path.insert(0, str(ROOT))
+    from service.workflows import all_workflows
+    incomplete = [w.id for w in all_workflows()
+                  if not (w.form and w.instructions and w.source_label and callable(w.write) and callable(w.evidence))]
+    if incomplete:
+        raise SystemExit("工作流声明不完整: " + ", ".join(incomplete))
+    if "responsibility" not in {w.id for w in all_workflows()}:
+        raise SystemExit("责任计划整理工作流没有注册")
+    print(f"OK 已挂载，已注册工作流 {[w.id for w in all_workflows()]}")
+
+
+def check_clean_worktree() -> None:
+    """发布的必须是提交过的代码：有未提交的改动或没纳入版本管理的文件，换台机器就复现不出来。"""
+    print("\n检查工作区是否干净...")
+    if "--allow-dirty" in sys.argv[1:]:
+        print("跳过（--allow-dirty）：只在本机自检时用，正式发布不要加")
+        return
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, capture_output=True, text=True, encoding="utf-8")
+    if result.returncode != 0:
+        raise SystemExit("git status 失败：" + result.stderr.strip())
+    dirty = [line for line in result.stdout.splitlines() if line.strip()]
+    if dirty:
+        listing = "\n  ".join(dirty[:20]) + ("\n  ……" if len(dirty) > 20 else "")
+        raise SystemExit(f"工作区不干净（{len(dirty)} 项）：先提交、还原，或把本机产物加进 .gitignore；"
+                         f"只是本机自检可以加 --allow-dirty\n  {listing}")
+    print("OK 工作区干净")
 
 
 def main() -> None:
     python = sys.executable
+    check_clean_worktree()
     check_required_files()
     parse_configs()
     check_no_container_hostnames()
     check_widget_scheduler_wired()
+    check_automation_wired()
     run([python, "-m", "compileall", "FasdtApi", "service", "models", "utils", "scripts", "tests"])
     run([python, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
+    # 再在一个全新的空库上跑一遍和“空库”最相关的测试：开发库里有现成数据，有些问题只在空库（CI、客户第一次部署）上出现。
+    # 数据库账号没有建库权限时加 --skip-fresh-db，并在 CI 上确认 backend 任务是绿的。
+    if "--skip-fresh-db" in sys.argv[1:]:
+        print("\n跳过空库测试（--skip-fresh-db）")
+    else:
+        run([python, "scripts/test_fresh_db.py"])
     run(["npm.cmd" if sys.platform.startswith("win") else "npm", "run", "frontend:build"])
+    # 文档里的测试数量必须是统计出来的最新值（只记在 docs/testing.md 一处），不能是哪天手填的旧数
+    run([python, "scripts/test_counts.py", "--check"])
     print("\n发布自检完成")
 
 

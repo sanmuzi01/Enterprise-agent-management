@@ -5,6 +5,7 @@ from models.agent_dao import get_agent_by_id, list_agents_by_user, create_agent,
 from models.user_dao import update_selected_agent
 from models.init_db import Agent
 from sqlalchemy.exc import SQLAlchemyError
+from service.prompt_guard import UNTRUSTED_RULE
 from utils.logger_handler import get_logger
 from fastapi import HTTPException, status
 logger = get_logger("agent_service")
@@ -276,6 +277,19 @@ def delete_preview(db, user, agent_id: int) -> Optional[Dict[str, Any]]:
         "total_impacted": conversation_count + message_count + knowledge_count + run_count + task_count,
     }
 ## 5. 删除智能体（只能删自己的，按顺序显式级联）
+def _remove_private_skill_file(config_file: str) -> None:
+    """数据库提交成功后再删磁盘文件；文件删不掉只记日志（数据体检会把它列成孤儿文件，可以事后清理）。"""
+    import os
+    from service.skills import loader as skill_loader
+    path = skill_loader._get_yml_path(config_file)
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+        skill_loader.invalidate_skill_config(config_file)
+    except OSError as exc:
+        logger.warning(f"删除专业技能配置文件失败: {path}: {exc}")
+
+
 def delete(db, user, agent_id: int) -> Dict[str, Any]:
     """删除顺序：会话 → 运行轨迹 → 后台任务 → 知识库块/向量 → 记忆/工具/旧聊天 → 提示词 → Agent"""
     from models.agent_dao import get_agent_by_id, delete_agent as dao_delete_agent
@@ -340,8 +354,18 @@ def delete(db, user, agent_id: int) -> Dict[str, Any]:
         # 9. 最后删 Agent（Skill 绑定 agent_skill 由 Agent 的 relationship cascade 自动删）
         dao_delete_agent(db, agent)
 
+        # 10. 企业助手自己那份“专业业务技能”（每个助手单独一份，见 agent_admin_service.bind_template_skill）：
+        #     只解绑不删，会留下没有主人的技能记录和 skills/enterprise/agent_<id>.yml——数据体检在开发库里查出过几十个。
+        private_config = f"enterprise/agent_{agent_id}.yml"
+        private_skills = [r[0] for r in db.execute(text("SELECT id FROM skill WHERE config_file = :f"), {"f": private_config}).all()]
+        for skill_id in private_skills:
+            db.execute(text("DELETE FROM skill_version WHERE skill_id = :s"), {"s": skill_id})
+            db.execute(text("DELETE FROM agent_skill WHERE skill_id = :s"), {"s": skill_id})
+            db.execute(text("DELETE FROM skill WHERE id = :s"), {"s": skill_id})
+
         # ========== 关键：成功路径一定要 commit ==========
         db.commit()
+        _remove_private_skill_file(private_config)
         logger.info(f"删除 Agent 成功: agent_id={agent_id}, user_id={user.id}")
         return {"message": "删除成功", "agent_id": agent_id}
 
@@ -512,7 +536,7 @@ def dry_run_agent(db, user, agent_id: int, user_message: str, conversation_id: i
                 full_prompt = (
                     f"{full_prompt}\n\n"
                     f"=== 知识库参考资料（按编号）===\n{rag_context}\n=== 参考资料结束 ===\n"
-                    f"若参考资料不足以回答，请如实说明，不要编造。"
+                    f"若参考资料不足以回答，请如实说明，不要编造。{UNTRUSTED_RULE}"
                 )
         except Exception as e:
             rag["ok"] = False

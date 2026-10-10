@@ -45,6 +45,12 @@ CHAT_MODELS: Dict[str, Dict[str, str]] = {
     "gpt-4o-mini-search-preview": {"provider": "openai", "api_url": "https://api.openai.com/v1"},
 }
 
+# 离线演示模型：只在 OFFLINE_DEMO_MODEL=1 且非生产环境时出现（见 service/llm/offline_demo.py）
+from service.llm import offline_demo  # noqa: E402
+
+if offline_demo.enabled():
+    CHAT_MODELS[offline_demo.MODEL_NAME] = {"provider": "local", "api_url": ""}
+
 EMBEDDING_MODELS: Dict[str, Dict[str, str]] = {
     "embedding-3": {"provider": "zhipu", "api_url": "https://open.bigmodel.cn/api/paas/v4/embeddings"},
     "embedding-2": {"provider": "zhipu", "api_url": "https://open.bigmodel.cn/api/paas/v4/embeddings"},

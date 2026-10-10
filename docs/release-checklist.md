@@ -22,10 +22,16 @@
 npm run release:check
 ```
 
+综合自检第一步检查**工作区是否干净**：有未提交的改动或没纳入版本管理的文件就直接失败（本机产物——根目录 `node_modules/`、`.runlogs/`、
+根目录的 `*.log`、`*.patch`——已经在 `.gitignore` 里）。只是本机自检、不发布时可以加 `--allow-dirty`。
+
+综合自检里包含**空库测试**（`scripts/test_fresh_db.py`：临时库上跑迁移 + 两次初始化 + 和空库相关的测试，跑完删库）。
+数据库账号没有建库权限时用 `npm run release:check -- --skip-fresh-db`，并以 CI 的 backend 任务结果为准。
+
 必须确认：
 
 - 应用可导入。
-- `/health` 可用。
+- `/live` 返回 200，`/ready`（与 `/health` 相同）在数据库正常时返回 200；停掉数据库后 `/ready` 必须返回 503（Docker healthcheck 用它）。
 - 登录、聊天、知识库、任务、管理员路由仍存在。
 - 数据库幂等启动迁移仍可执行。
 - Alembic 迁移文件存在，已有环境发布前已完成备份和版本确认。
@@ -89,6 +95,15 @@ npm run frontend:build
 - 前端 `npm run frontend:build` 产物由 Nginx 托管，`/api`、`/health`、`/metrics` 反代到后端。
 - 浏览器访问 `/health` 返回后端健康检查；`/metrics` 返回 Prometheus 文本指标。
 
+## 上线后验收（交付）
+
+- 用一个**从没打开过本站的浏览器**和一个**开着旧版本页面的浏览器**各访问一次：旧页面应自动刷新到新版本，不能白屏（nginx 缓存规则见 `docs/deployment.md` 2.3）。
+- `curl -I https://<域名>/` 看到 `Cache-Control: no-cache`；`curl -I https://<域名>/assets/不存在.js` 返回 404，不是 200 的 HTML。
+- 登录后持续操作超过 30 分钟不被登出；后台“组织架构”能看到企业（空库首次部署时由启动自动创建）。
+- 跑一次数据体检：`.venv/bin/python scripts/data_health_check.py`，没有“严重”项；“注意”项和客户确认后再 `--fix`（先备份）。
+- 和客户确认数据保留期限后再打开 `DATA_RETENTION_AUTO`（见 `docs/deployment.md` 5.2）；第一次先 `scripts/data_retention.py` 只看不删。
+- 启用每日数据体检定时任务 `deploy/systemd/agent-data-health.timer`。
+
 ## 备份恢复
 
 发布前用 `mysqldump --single-transaction --routines --triggers <库名>` 导出数据库。
@@ -118,7 +133,7 @@ npm run load:test -- --base-url http://127.0.0.1 --scenario auth-read --username
 
 - 成功率接近 100%。
 - 没有持续 5xx。
-- `/health` 中数据库连接池没有长期打满。
+- `/system/diagnose` 中数据库连接池没有长期打满。
 - 生产环境缓存和限流后端为 Redis。
 
 ## 监控检查

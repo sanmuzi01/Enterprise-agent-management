@@ -53,6 +53,56 @@ def _packages_base() -> str:
     return os.path.join(os.path.dirname(SKILLS_ROOT), "skills_packages")
 
 
+_ROOT_MARKERS = ("skills_packages", "skills")   # 先认更具体的 skills_packages
+
+
+def _project_root() -> str:
+    # 每次现算：测试会临时替换 SKILLS_ROOT，模块导入时算死的值会跟不上
+    return os.path.dirname(SKILLS_ROOT)
+
+
+def _under_managed_base(path: str) -> bool:
+    real = os.path.realpath(path)
+    for base in (SKILLS_ROOT, _packages_base()):
+        real_base = os.path.realpath(base)
+        if real == real_base or real.startswith(real_base + os.sep):
+            return True
+    return False
+
+
+def localize_root(path: str) -> str:
+    """把配置里的资源 / 脚本目录换算成本机路径。
+
+    以前导入时写的是导入那台机器上的绝对路径（如 D:\\PyCharm\\...\\skills_packages\\imported\\x\\resources），
+    配置文件和资源一起带到 Linux 容器后，这个路径在容器里不存在——而且在 Linux 上它连“绝对路径”都不算，
+    会被拼到 skills/ 下面，所有资源都显示“不存在”，技能被判为不可用。
+    这里按路径里的 skills_packages/ 或 skills/ 那一段，换算到本机同样的位置；本机路径原样返回。
+    只在读取时换算、不改写配置文件：配置原文照旧，直接读原文的地方（如 script_report.reanalyze_config）也要先过这里。
+    """
+    raw = str(path or "")
+    if not raw or os.path.exists(raw):
+        return raw
+    if os.path.isabs(raw) and _under_managed_base(raw):   # 本机管理目录下、只是还没建出来的路径，不用换算
+        return raw
+    parts = [p for p in raw.replace("\\", "/").split("/") if p]
+    for marker in _ROOT_MARKERS:
+        if marker in parts:
+            idx = len(parts) - 1 - parts[::-1].index(marker)
+            return os.path.join(_project_root(), marker, *parts[idx + 1:])
+    return raw
+
+
+def _resolve_managed_root(path: str) -> str:
+    """读取时：先换算成本机路径；以 skills_packages/ 或 skills/ 开头的相对路径按项目根目录解析，其余相对路径按 skills/ 解析（旧写法）。"""
+    local = localize_root(path)
+    if os.path.isabs(local):
+        return local
+    rel = local.replace("\\", "/")
+    if rel.split("/")[0] in _ROOT_MARKERS:
+        return os.path.join(_project_root(), *rel.split("/"))
+    return _safe_join(SKILLS_ROOT, local)
+
+
 def _ensure_managed_dir(path: str, label: str, bases: List[str]) -> str:
     """resource_root / scripts_root 只能指向平台自己管理的目录。
 
@@ -85,8 +135,7 @@ def _normalize_resources(config: Dict[str, Any], file_path: str) -> Dict[str, An
     permissions = config["permissions"]
     allowed = set(permissions.get("file_read") or [])
     resource_root = config.get("resource_root") or os.path.join(os.path.dirname(file_path), "resources")
-    if not os.path.isabs(resource_root):
-        resource_root = _safe_join(SKILLS_ROOT, resource_root)
+    resource_root = _resolve_managed_root(resource_root)
     resource_root = _ensure_managed_dir(resource_root, "resource_root", [SKILLS_ROOT, _packages_base()])
     normalized_resources: List[Dict[str, Any]] = []
     resource_text_parts: List[str] = []
@@ -183,7 +232,7 @@ def _load_skill_config_uncached(config_file: str, file_path: str)->Dict[str,Any]
         scripts_raw = config.get("scripts")
         if not scripts_root or not isinstance(scripts_raw, list):
             raise SkillValidationError("scripts_root 和 scripts 必须同时提供，且 scripts 是列表")
-        config["scripts_root"] = _ensure_managed_dir(str(scripts_root), "scripts_root", [_packages_base()])
+        config["scripts_root"] = _ensure_managed_dir(_resolve_managed_root(str(scripts_root)), "scripts_root", [_packages_base()])
         scripts: List[str] = []
         for item in scripts_raw:
             rel = str(item).replace("\\", "/")

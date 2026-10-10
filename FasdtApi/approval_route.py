@@ -26,7 +26,7 @@ async def list_pending_approvals(
         async_db=Depends(get_async_db),
         current_user: User = Depends(require_org_role_async("admin")),
 ):
-    return await approval_service.list_pending(async_db, limit=limit)
+    return await approval_service.list_pending(async_db, limit=limit, approver_id=current_user.id)
 
 
 @router.post("/{approval_id}/decide", summary="批准或拒绝一条审批单（企业管理员）")
@@ -36,4 +36,4 @@ async def decide_approval(
         async_db=Depends(get_async_db),
         current_user: User = Depends(require_org_role_async("admin")),
 ):
-    return await approval_service.decide(async_db, approval_id, current_user.id, data.approve)
+    return await approval_service.decide(async_db, approval_id, current_user.id, data.approve, enforce_org=True)

@@ -96,7 +96,7 @@
               v-else
               ref="renameInputRef"
               v-model="renameText"
-              @keydown.enter="commitRename(c.id)"
+              @keydown.enter="!isImeEnter($event) && commitRename(c.id)"
               @keydown.esc="cancelRename"
               @click.stop
               @blur="commitRename(c.id)"
@@ -266,6 +266,25 @@
             </div>
             <div v-else class="font-sans text-gray-500">已取消，未执行</div>
           </div>
+          <div v-else-if="evt.type === 'route'" class="max-w-2xl w-full px-4 py-2.5 rounded-lg border border-sky-200 bg-sky-50 text-xs text-sky-900 space-y-1" data-testid="route-notice">
+            <p v-if="evt.reason === 'routed'">
+              已转交给「{{ evt.target_name }}」处理<span v-if="evt.matched_keywords?.length">（命中：{{ evt.matched_keywords.join('、') }}）</span>。
+            </p>
+            <p v-else-if="evt.reason === 'no_usable_agent'">
+              问题涉及「{{ departmentLabel(evt.department_code) }}」，但你所在的部门没有已发布的{{ departmentLabel(evt.department_code) }}助手，由中央助手直接回答；可联系企业管理员配置并发布。
+            </p>
+            <p v-if="evt.alternatives?.length">
+              这个问题还涉及：
+              <RouterLink v-for="alt in evt.alternatives" :key="alt.agent_id" :to="`/agents/${alt.agent_id}/chat`" class="mr-2 font-medium text-sky-700 underline">改问「{{ alt.name }}」</RouterLink>
+            </p>
+            <p v-if="evt.unavailable?.length && evt.reason === 'routed'" class="text-sky-700">
+              另外涉及{{ evt.unavailable.map((u: any) => departmentLabel(u.department_code)).join('、') }}，你所在的部门没有对应的已发布助手。
+            </p>
+            <p v-if="evt.alternatives?.length || evt.unavailable?.length" data-testid="route-orchestrate">
+              这件事涉及多个部门：
+              <button class="font-medium text-sky-700 underline" @click="openOrchestration(evt.message)">在部门工作台一次拆成各部门步骤办理</button>
+            </p>
+          </div>
           <div v-else class="max-w-2xl w-full px-4 py-2 rounded-lg border border-gray-200 bg-gray-50 text-xs text-gray-500 font-mono space-y-1">
             <div v-if="evt.type === 'thinking'">
               <span class="text-purple-500 font-semibold">🤔 思考</span>
@@ -358,7 +377,7 @@
               v-model="inputText"
               :disabled="loading || !chatReady"
               rows="1"
-              @keydown.enter.exact.prevent="sendMessage"
+              @keydown.enter.exact="onComposerEnter"
               :placeholder="chatReady ? '输入消息…' : chatBlockedReason"
               class="relative max-h-40 min-w-0 flex-1 resize-none bg-transparent px-3 py-2.5 text-[15.5px] leading-6 outline-none placeholder:text-slate-400 disabled:cursor-not-allowed"
             ></textarea>
@@ -531,13 +550,13 @@
                     <!-- Tool 调用信息 -->
                     <div v-if="step.tool_name" class="space-y-1 text-xs">
                       <div class="flex items-start gap-2">
-                        <span class="shrink-0 text-purple-600 font-medium">🔧 {{ step.tool_name }}</span>
+                        <span class="shrink-0 text-purple-600 font-medium">🔧 {{ toolDisplayName(step.tool_name) }}</span>
                       </div>
                       <details class="group">
                         <summary class="text-gray-500 cursor-pointer select-none hover:text-gray-700 list-none">
                           <span class="inline-flex items-center gap-1">
                             <span class="group-open:rotate-90 transition-transform">▶</span>
-                            工具参数
+                            技术详情：调用内容
                           </span>
                         </summary>
                         <pre class="mt-1 p-2 rounded bg-gray-50 text-[11px] text-gray-700 overflow-x-auto">{{ prettyJson(step.tool_args) }}</pre>
@@ -546,7 +565,7 @@
                         <summary class="text-gray-500 cursor-pointer select-none hover:text-gray-700 list-none">
                           <span class="inline-flex items-center gap-1">
                             <span class="group-open:rotate-90 transition-transform">▶</span>
-                            返回结果
+                            技术详情：返回内容
                           </span>
                         </summary>
                         <pre class="mt-1 p-2 rounded bg-emerald-50 text-[11px] text-emerald-800 overflow-x-auto max-h-48 overflow-y-auto">{{ step.tool_result }}</pre>
@@ -565,6 +584,8 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
+import { toolDisplayName } from '../utils/displayNames'
 import { ref, onMounted, nextTick, watch, computed, onBeforeUnmount } from 'vue'
 import { useRoute ,useRouter } from 'vue-router'
 import { renderMarkdown } from '../utils/markdown'
@@ -680,7 +701,7 @@ const stepLabel = (s: any) => {
   if (t.includes('retrieve')) return '知识库检索'
   if (t.includes('permission')) return '权限拒绝'
   if (t.includes('tool')) return '工具执行'
-  if (s.tool_name) return '工具 ' + s.tool_name
+  if (s.tool_name) return '工具：' + toolDisplayName(s.tool_name)
   return 'LLM 推理'
 }
 const prettyJson = (v: any) => {
@@ -787,6 +808,8 @@ function onAnswerClick(e: MouseEvent, msg: any) {
   const idx = Number(el.dataset.cite)
   if (Number.isFinite(idx)) msg.citeOpen = idx
 }
+const DEPARTMENT_LABELS: Record<string, string> = { hr: '人事', procurement: '采购', sales: '销售', finance: '财务', it: 'IT' }
+const departmentLabel = (code?: string | null) => (code && DEPARTMENT_LABELS[code]) || code || '相关部门'
 const short = (s: string, n: number) => {
   const s2 = s || ''
   return s2.length > n ? s2.slice(0, n) + '...' : s2
@@ -829,6 +852,10 @@ const loadCurrentAgent = async () => {
   try {
     const agentList = await agentApi.listAgents()
     currentAgent.value = agentList.find((agent: any) => agent.id === agentId.value) || null
+    if (!currentAgent.value) {
+      // 列表只含自己创建的助手；企业中央助手、部门助手由管理员创建，有权使用时按 id 单独取。
+      try { currentAgent.value = await agentApi.getAgent(agentId.value) } catch { currentAgent.value = null }
+    }
   } catch (e: any) {
     console.error('加载助手信息失败:', e)
     toastError(getErrorMessage(e, '加载助手信息失败'))
@@ -999,6 +1026,21 @@ const handleExportConv = async (c: any, format: 'markdown' | 'json') => {
     toastError(getErrorMessage(e, '导出失败'))
   }
 }
+/** 跨部门请求：把原话带到部门工作台的“协同办理”（只在本浏览器会话里暂存，不放进地址栏）。 */
+function openOrchestration(message?: string) {
+  try {
+    if (message) sessionStorage.setItem('orchestration_draft', message)
+  } catch { /* 存不住就让用户在协同办理里重新输入 */ }
+  router.push('/department')
+}
+
+// 回车发送；输入法选词的回车留给输入法（不能 preventDefault，否则选不了词），Shift+回车换行由 .exact 排除
+const onComposerEnter = (event: KeyboardEvent) => {
+  if (isImeEnter(event)) return
+  event.preventDefault()
+  void sendMessage()
+}
+
 const sendMessage = async () => {
   const msg = inputText.value.trim()
   if (!msg || loading.value) return
@@ -1031,7 +1073,9 @@ const sendMessage = async () => {
       message: msg,
       attachmentIds: attached.map((a) => a.id),
       onEvent: async (evt) => {
-                if (evt.type === 'ready' && evt.run_id) {
+                if (evt.type === 'route') {
+          eventTraces.value.push({ ...evt, message: msg })
+        } else if (evt.type === 'ready' && evt.run_id) {
           // 可选：记 run_id 供轨迹
         } else if (evt.type === 'retrieval') {
           eventTraces.value.push({ type: 'retrieval', hit_count: evt.hit_count, stats: evt.stats })

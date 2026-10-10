@@ -36,3 +36,21 @@ groups:
         annotations:
           summary: 数据库连接池接近打满
           description: 数据库连接池借出连接数持续接近池大小，请检查慢查询、连接泄漏或调大连接池。
+
+      - alert: AgentRedisDown
+        expr: agent_redis_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Redis 不可用
+          description: 限流 / 并发控制 / 缓存已降级。多个 Worker 时各进程各算各的额度（登录、短信等入口会按策略收紧或暂停，重任务可能暂停接收），请尽快恢复 Redis。
+
+      - alert: AgentLimiterDegraded
+        expr: increase(agent_limiter_redis_degraded_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: 限流 / 并发控制因 Redis 不可用而降级
+          description: 最近 5 分钟有请求在 Redis 不可用时被降级处理（标签 mode：local 各进程独立 / strict 额度均分 / closed 直接拒绝）。

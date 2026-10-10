@@ -21,7 +21,7 @@
 **这一步只落地这两个函数本身 + 单元测试，还没有接到任何路由上**——按设计稿第 3 节的
 模块清单逐个接入是下一步，接一个模块跑一遍那个模块的路由级测试，不是一次性全量替换。
 """
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Tuple
 
 from fastapi import Depends
 from sqlalchemy import text
@@ -87,6 +87,9 @@ def _team_role_rank(db: Session, user_id: int, team_id: int) -> Optional[int]:
         text(
             "SELECT MAX(er.rank) FROM team_members tm "
             "JOIN teams t ON tm.team_id = t.id "
+            "JOIN organizations o ON t.organization_id = o.id AND o.status = 'active' "
+            "JOIN organization_members om ON om.organization_id = t.organization_id "
+            "AND om.user_id = tm.user_id AND om.status = 'active' "
             "JOIN enterprise_role er ON tm.role_id = er.id "
             "WHERE tm.user_id = :uid AND tm.team_id = :tid "
             "AND tm.status = 'active' AND er.scope = 'team' AND t.status = 'active'"
@@ -104,6 +107,39 @@ def is_org_admin(db: Session, user_id: int) -> bool:
     if rank is None:
         return False
     return rank >= _min_required_rank(db, "organization", ["admin"])
+
+
+def org_admin_scope(db: Session, user_id: int, team_id: Optional[int]) -> Tuple[bool, List[int]]:
+    """企业管理员身份只在“资源所属的那个企业”里有效，返回 (是不是该企业的管理员, 该企业全部有效部门编号)。
+
+    `is_org_admin()` 看的是用户在**任何**企业里的最高角色——单企业部署下够用，多企业时就变成“任何一个企业的管理员
+    等于所有企业的管理员”：企业 B 的管理员能审批、查看企业 A 的请假和工单（安全专项测试里真实复现）。
+    所以签进企业业务中心的 is_org_admin 必须按 team_id 所在的企业重新算，并把该企业的部门编号一起签进去（org_team_ids），
+    Java 侧（TeamAccessGuard）要求资源所在部门必须在这个列表里。
+    team_id 为空（企业管理员没有具体部门）时，范围是用户担任管理员的全部企业。
+    """
+    min_rank = _min_required_rank(db, "organization", ["admin"])
+    if team_id is not None:
+        org_id = db.execute(text("SELECT t.organization_id FROM teams t WHERE t.id = :t AND t.status = 'active'"), {"t": team_id}).scalar()
+        org_ids = [org_id] if org_id is not None else []
+    else:
+        org_ids = None
+    rows = db.execute(
+        text(
+            "SELECT om.organization_id, MAX(er.rank) FROM organization_members om "
+            "JOIN organizations o ON om.organization_id = o.id AND o.status = 'active' "
+            "JOIN enterprise_role er ON om.role_id = er.id AND er.scope = 'organization' "
+            "WHERE om.user_id = :uid AND om.status = 'active' GROUP BY om.organization_id"
+        ),
+        {"uid": user_id},
+    ).all()
+    admin_orgs = [int(org) for org, rank in rows if rank is not None and rank >= min_rank and (org_ids is None or org in org_ids)]
+    if not admin_orgs:
+        return False, []
+    marks = ",".join(f":o{i}" for i in range(len(admin_orgs)))
+    team_rows = db.execute(text(f"SELECT id FROM teams WHERE status = 'active' AND organization_id IN ({marks})"),
+                           {f"o{i}": org for i, org in enumerate(admin_orgs)}).all()
+    return True, sorted(int(r[0]) for r in team_rows)
 
 
 def is_team_admin(db: Session, user_id: int, team_id: Optional[int]) -> bool:
@@ -166,6 +202,31 @@ async def _min_required_rank_async(db, scope: str, roles: Iterable[str]) -> int:
     )
     ranks = [r[0] for r in result.all()]
     return min(ranks) if ranks else 10**9
+
+
+async def admin_org_ids_async(db, user_id: int) -> List[int]:
+    """用户担任企业管理员（admin 及以上）的全部有效企业编号。平台审批等“只能管自己企业的资源”的接口用它缩小范围，
+    `require_org_role_async` 只回答“是不是任何一个企业的管理员”，不能单独用来授权跨资源的操作。"""
+    min_rank = await _min_required_rank_async(db, "organization", ["admin"])
+    rows = (await db.execute(
+        text(
+            "SELECT om.organization_id, MAX(er.rank) FROM organization_members om "
+            "JOIN organizations o ON om.organization_id = o.id AND o.status = 'active' "
+            "JOIN enterprise_role er ON om.role_id = er.id AND er.scope = 'organization' "
+            "WHERE om.user_id = :uid AND om.status = 'active' GROUP BY om.organization_id"
+        ),
+        {"uid": user_id},
+    )).all()
+    return sorted(int(org) for org, rank in rows if rank is not None and rank >= min_rank)
+
+
+async def is_org_admin_async(db, user_id: int) -> bool:
+    """`is_org_admin` 的异步版，部门工作台（`service/department_workspace_service.py`）
+    在异步路由里判断"当前用户是不是企业管理员"要用这个，不新开同步 Session。"""
+    rank = await _org_role_rank_async(db, user_id)
+    if rank is None:
+        return False
+    return rank >= await _min_required_rank_async(db, "organization", ["admin"])
 
 
 def require_org_role_async(*roles: str):

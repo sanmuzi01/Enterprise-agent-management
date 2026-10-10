@@ -39,9 +39,20 @@
         还没有知识库空间。点右上角「新建空间」，把一类企业资料归到一起。
       </div>
 
+      <template v-else>
+        <div class="mb-4 flex flex-wrap items-center gap-2 text-xs" data-testid="space-scope-filter">
+          <button v-for="option in scopeOptions" :key="option.key" @click="scopeFilter = option.key"
+            class="rounded-full border px-3 py-1 transition-colors"
+            :class="scopeFilter === option.key ? 'border-sky-400 bg-sky-50 text-sky-700' : 'border-sky-200 bg-white text-slate-600 hover:bg-sky-50'">
+            {{ option.label }}<span class="ml-1 text-slate-400">{{ option.count }}</span>
+          </button>
+        </div>
+        <div v-if="!visibleSpaces.length" class="rounded-lg border border-dashed border-sky-200 bg-white/60 p-10 text-center text-sm text-slate-500">
+          这个分类下还没有知识库空间。
+        </div>
       <div v-else class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <SpaceCard
-          v-for="s in spaces"
+          v-for="s in visibleSpaces"
           :key="s.id"
           :space="s"
           @open="router.push(`/knowledge-spaces/${s.id}`)"
@@ -49,6 +60,7 @@
           @delete="onDelete(s)"
         />
       </div>
+      </template>
     </main>
 
     <!-- 新建 / 编辑弹窗 -->
@@ -66,6 +78,17 @@
           <option :value="null">不指定</option>
           <option v-for="p in purposes" :key="p.key" :value="p.key">{{ p.label }}</option>
         </select>
+
+        <p v-if="editing && editing.scope !== 'personal' && editing.scope !== 'shared'" class="mt-3 rounded bg-slate-50 px-3 py-2 text-xs text-slate-500" data-testid="space-assigned-note">
+          这个知识库已由管理员划分给{{ assignedText(editing) }}。划分范围和密级由管理员在「企业知识库」里统一调整。
+        </p>
+
+        <label class="mt-3 block text-xs text-slate-500">密级</label>
+        <select v-model="form.sensitivity" :disabled="!canChangeLevel" data-testid="space-sensitivity-select"
+          class="mt-1 w-full rounded border border-sky-200 px-3 py-2 text-sm outline-none focus:border-sky-400 disabled:bg-slate-50 disabled:text-slate-400">
+          <option v-for="s in sensitivities" :key="s.key" :value="s.key">{{ s.label }}</option>
+        </select>
+        <p class="mt-1 text-[11px] text-slate-400">{{ sensitivityHint }}</p>
 
         <label class="mt-3 block text-xs text-slate-500">描述（可选）</label>
         <textarea v-model="form.description" rows="2" maxlength="500"
@@ -90,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ArrowLeft, Plus } from 'lucide-vue-next'
 import {
@@ -105,12 +128,14 @@ const router = useRouter()
 
 const spaces = ref<KnowledgeSpace[]>([])
 const purposes = ref<{ key: string; label: string }[]>([])
+const sensitivities = ref<{ key: string; label: string }[]>([])
+const scopeFilter = ref<string>('all')
 const loading = ref(true)
 const loadError = ref('')
 
 const formOpen = ref(false)
 const editing = ref<KnowledgeSpace | null>(null)
-const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [] })
+const form = reactive<SpaceCreatePayload>({ name: '', description: '', purpose: null, tags: [], sensitivity: 'internal' })
 const tagsText = ref('')
 const formError = ref('')
 const saving = ref(false)
@@ -122,6 +147,7 @@ async function reload() {
     const res = await listSpaces()
     spaces.value = res.items
     purposes.value = res.purposes
+    sensitivities.value = res.sensitivities || []
   } catch (e: any) {
     loadError.value = getErrorMessage(e, '加载知识库空间失败')
   } finally {
@@ -129,10 +155,60 @@ async function reload() {
   }
 }
 
+// 筛选：全部 / 我的与分享 / 全企业 / 各部门（一个知识库划分给了多个部门，就出现在每个部门下）
+const scopeOptions = computed(() => {
+  const departments = new Map<number, { name: string; count: number }>()
+  let mine = 0
+  let company = 0
+  for (const s of spaces.value) {
+    if (s.scope === 'department') {
+      for (const d of s.departments) {
+        const entry = departments.get(d.id) || { name: d.name, count: 0 }
+        entry.count += 1
+        departments.set(d.id, entry)
+      }
+    } else if (s.scope === 'enterprise') {
+      company += 1
+    } else {
+      mine += 1
+    }
+  }
+  const options = [{ key: 'all', label: '全部', count: spaces.value.length }]
+  if (mine) options.push({ key: 'mine', label: '我的与分享', count: mine })
+  if (company) options.push({ key: 'enterprise', label: '全企业', count: company })
+  for (const [id, entry] of departments) options.push({ key: `team:${id}`, label: entry.name, count: entry.count })
+  return options
+})
+
+const visibleSpaces = computed(() => {
+  const key = scopeFilter.value
+  if (key === 'all') return spaces.value
+  if (key === 'mine') return spaces.value.filter((s) => s.scope === 'personal' || s.scope === 'shared')
+  if (key === 'enterprise') return spaces.value.filter((s) => s.scope === 'enterprise')
+  const teamId = Number(key.replace('team:', ''))
+  return spaces.value.filter((s) => s.scope === 'department' && s.departments.some((d) => d.id === teamId))
+})
+
+// 已经划分给部门 / 全企业的知识库，密级由管理员统一调整
+const canChangeLevel = computed(() => !editing.value || editing.value.scope === 'personal')
+
+const assignedText = (s: KnowledgeSpace) =>
+  s.scope === 'enterprise' ? '全企业' : s.departments.map((d) => `「${d.name}」`).join('、') || '部门'
+
+const sensitivityHint = computed(() => {
+  switch (form.sensitivity) {
+    case 'public': return '公开：可以发给任何模型。'
+    case 'confidential': return '机密：只会发给企业批准的模型，不会发给外部云模型和外部智能体服务。'
+    case 'restricted': return '绝密：不会发给任何模型；发布在部门里时，部门成员也不会自动获得访问权限。'
+    default: return '内部：默认级别，可以发给已配置的模型。'
+  }
+})
+
 function openCreate() {
   editing.value = null
   form.name = ''
   form.description = ''
+  form.sensitivity = 'internal'
   form.purpose = null
   tagsText.value = ''
   formError.value = ''
@@ -143,6 +219,7 @@ function openEdit(s: KnowledgeSpace) {
   editing.value = s
   form.name = s.name
   form.description = s.description
+  form.sensitivity = s.sensitivity || 'internal'
   form.purpose = s.purpose
   tagsText.value = s.tags.join(', ')
   formError.value = ''
@@ -158,6 +235,8 @@ async function submit() {
     purpose: form.purpose,
     tags: tagsText.value.split(',').map((t) => t.trim()).filter(Boolean),
   }
+  // 已划分的知识库密级由管理员统一调整（后端也会拒绝），这里不带
+  if (canChangeLevel.value) payload.sensitivity = form.sensitivity
   try {
     if (editing.value) await updateSpace(editing.value.id, payload)
     else await createSpace(payload)

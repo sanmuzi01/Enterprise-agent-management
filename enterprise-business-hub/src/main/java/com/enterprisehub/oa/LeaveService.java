@@ -90,7 +90,7 @@ public class LeaveService {
         LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
 
         LeaveBalance balance = leaveBalanceRepository
-                .findByUserIdAndLeaveTypeIdAndYear(request.getApplicantUserId(), request.getLeaveTypeId(),
+                .findForUpdate(request.getApplicantUserId(), request.getLeaveTypeId(),         // 余额行锁：同一个人的两张请假同时批准，不能各扣各的互相覆盖
                         request.getStartDate().getYear())
                 .orElseThrow(() -> badRequest("余额记录不存在，无法批准"));
         if (balance.getRemainingDays() < request.getDays()) {
@@ -126,8 +126,40 @@ public class LeaveService {
         return LeaveRequestDto.from(request, type);
     }
 
+    /** "我的请假"列表——天然按 applicantUserId 过滤，不存在跨用户泄露的可能，不需要额外的归属校验。 */
+    public List<LeaveRequestDto> listMine(long applicantUserId) {
+        return leaveRequestRepository.findByApplicantUserIdOrderByCreatedAtDesc(applicantUserId).stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    /** "部门待审批"列表——跟 approve/reject 用同一个 TeamAccessGuard 检查，只有这个部门的负责人
+     * 或企业管理员能看，跟审批时的权限判断口径完全一致（不是查看权限更松）。 */
+    public List<LeaveRequestDto> listTeamPending(long teamId, Long callerTeamId, boolean isOrgAdmin, boolean isTeamAdmin) {
+        TeamAccessGuard.requireTeamAccess(callerTeamId, isOrgAdmin, isTeamAdmin, teamId);
+        return leaveRequestRepository.findByTeamIdAndStatusOrderByCreatedAtDesc(teamId, LeaveStatus.SUBMITTED).stream()
+                .map(this::toDto)
+                .toList();
+    }
+
+    /** 范围内（FastAPI 签在路径里的 scopeTeamIds）已批准、与日期区间重叠的请假；只读，给考勤异常判断用。 */
+    public List<LeaveRequestDto> listApproved(java.util.Collection<Long> scopeTeamIds, LocalDate from, LocalDate to) {
+        if (scopeTeamIds == null || scopeTeamIds.isEmpty()) {
+            throw badRequest("缺少 scopeTeamIds");
+        }
+        if (from == null || to == null || to.isBefore(from) || java.time.temporal.ChronoUnit.DAYS.between(from, to) > 93) {
+            throw badRequest("日期区间无效（最长 93 天）");
+        }
+        return leaveRequestRepository.findApprovedOverlapping(scopeTeamIds, from, to).stream().map(this::toDto).toList();
+    }
+
+    private LeaveRequestDto toDto(LeaveRequest request) {
+        LeaveType type = leaveTypeRepository.findById(request.getLeaveTypeId()).orElseThrow();
+        return LeaveRequestDto.from(request, type);
+    }
+
     private LeaveRequest getOwnedDraft(long requestId, long applicantUserId) {
-        LeaveRequest request = leaveRequestRepository.findById(requestId)
+        LeaveRequest request = leaveRequestRepository.findForUpdate(requestId)       // 行锁：同一张单同时提交，后到的等前一个提交后看到已提交状态
                 .orElseThrow(() -> notFound("请假单不存在"));
         if (request.getApplicantUserId() != applicantUserId) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "请假单不存在");
@@ -139,7 +171,7 @@ public class LeaveService {
     }
 
     private LeaveRequest getSubmitted(long requestId) {
-        LeaveRequest request = leaveRequestRepository.findById(requestId)
+        LeaveRequest request = leaveRequestRepository.findForUpdate(requestId)       // 行锁：同一张单同时审批 / 驳回，只有一个能成功
                 .orElseThrow(() -> notFound("请假单不存在"));
         if (request.getStatus() != LeaveStatus.SUBMITTED) {
             throw badRequest("只有已提交状态的请假单能审批，当前状态: " + request.getStatus());

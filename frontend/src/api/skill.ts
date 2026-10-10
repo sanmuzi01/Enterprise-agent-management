@@ -123,6 +123,19 @@ export async function getSkill(skillId: number): Promise<Skill> {
   return data.data
 }
 
+export interface SkillShelfResult {
+  action: 'publish' | 'unpublish'
+  changed: { id: number; name: string }[]
+  unchanged: number[]
+  skipped: { id: number; name: string; reason: string }[]
+}
+
+/** （管理员）批量上架 / 下架：上架 = 公开 + 已发布，出现在用户的技能中心；下架 = 退回草稿 */
+export async function batchShelfSkills(skillIds: number[], action: 'publish' | 'unpublish'): Promise<SkillShelfResult> {
+  const { data } = await request.post<SkillResponse<SkillShelfResult>>('/skill/admin/shelf', { skill_ids: skillIds, action })
+  return data.data
+}
+
 export async function validateSkill(skillId: number): Promise<SkillValidation> {
   const { data } = await request.get<SkillResponse<SkillValidation>>(`/skill/${skillId}/validate`)
   return data.data

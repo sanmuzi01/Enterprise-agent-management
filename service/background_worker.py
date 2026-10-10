@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import os
 import time
 
@@ -18,6 +19,28 @@ def _get_widget_loop() -> "asyncio.AbstractEventLoop":
     if _widget_loop is None or _widget_loop.is_closed():
         _widget_loop = asyncio.new_event_loop()
     return _widget_loop
+
+
+def close_widget_loop() -> None:
+    """进程退出前关闭常驻事件循环。
+
+    不关的话，Windows 的 ProactorEventLoop 在解释器退出时会报
+    `ResourceWarning: unclosed event loop` 和两个 `unclosed socket`（循环内部的自通知 socketpair），
+    此前误以为是 asyncmy 连接泄漏。循环正在别的线程里运行时关不掉，直接放弃（进程马上就退出了）。
+    """
+    global _widget_loop
+    loop, _widget_loop = _widget_loop, None
+    if loop is None or loop.is_closed() or loop.is_running():
+        return
+    try:
+        loop.run_until_complete(loop.shutdown_asyncgens())
+    except Exception:  # noqa: BLE001 —— 退出阶段的清理失败不能影响进程退出
+        pass
+    finally:
+        loop.close()
+
+
+atexit.register(close_widget_loop)
 
 
 def _env_float(name: str, default: float) -> float:
@@ -99,6 +122,26 @@ def _run_widget_scheduler_tick() -> None:
         logger.warning(f"组件调度执行失败: {exc}")
 
 
+def _run_reminder_tick() -> None:
+    """业务提醒规则（审批等待、客户未跟进、缺发票、待办到期、每周摘要）。默认开启，
+    REMINDERS_ENABLED=0 关闭。每条规则有自己的间隔和租约，多个 Worker 同时运行也只执行一次。"""
+    if os.getenv("REMINDERS_ENABLED", "1") == "0":
+        return
+    try:
+        from models.async_db import AsyncSessionLocal
+        from service.reminders import run_due_rules
+
+        async def _tick():
+            async with AsyncSessionLocal() as db:
+                return await run_due_rules(db)
+
+        results = _get_widget_loop().run_until_complete(_tick())
+        if results:
+            logger.info(f"提醒规则: {results}")
+    except Exception as exc:  # noqa: BLE001 - 提醒失败不能拖垮任务 Worker
+        logger.warning(f"提醒规则执行失败: {exc}")
+
+
 def run_forever() -> None:
     """持续运行 Worker。
 
@@ -108,6 +151,7 @@ def run_forever() -> None:
     bootstrap_database()
     poll_seconds = _env_float("TASK_WORKER_POLL_SECONDS", 2.0)
     widget_poll_seconds = _env_float("WIDGET_SCHEDULER_POLL_SECONDS", 60.0)
+    reminder_poll_seconds = _env_float("REMINDER_POLL_SECONDS", 60.0)
 
     from service.widgets.scheduler import scheduler_enabled
 
@@ -116,6 +160,7 @@ def run_forever() -> None:
         f"组件调度={'开启' if scheduler_enabled() else '关闭'}（每 {widget_poll_seconds:g}s 一轮）"
     )
     last_widget_tick = 0.0
+    last_reminder_tick = 0.0
     try:
         while True:
             handled = run_once()
@@ -123,6 +168,9 @@ def run_forever() -> None:
             if now - last_widget_tick >= widget_poll_seconds:
                 _run_widget_scheduler_tick()
                 last_widget_tick = now
+            if now - last_reminder_tick >= reminder_poll_seconds:
+                _run_reminder_tick()
+                last_reminder_tick = now
             if not handled:
                 time.sleep(poll_seconds)
     finally:

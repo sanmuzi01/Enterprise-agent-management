@@ -1,0 +1,29 @@
+# 依赖自动升级：每周检查一次，各生态各开一个 PR，安全更新会优先提。
+# CI 里 pip-audit / npm audit 忽略的“暂时没有修复版本”的漏洞，一旦上游出了修复版本，Dependabot 会提升级 PR；
+# 豁免清单见 .github/vuln-exceptions.json（每条有负责人和到期时间，scripts/check_vuln_exceptions.py 在 CI 里核对）。
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: npm
+    directory: "/frontend"
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: maven
+    directory: "/enterprise-business-hub"
+    schedule: {interval: weekly}
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: {interval: weekly}
+  - package-ecosystem: docker
+    directory: "/"
+    schedule: {interval: weekly}

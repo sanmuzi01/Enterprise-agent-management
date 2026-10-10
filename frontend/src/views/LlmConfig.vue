@@ -3,8 +3,9 @@
     <header class="border-b border-slate-200/80 bg-white/88 px-5 py-4 shadow-sm backdrop-blur-xl lg:px-8">
       <div class="mx-auto max-w-6xl">
         <SectionTabs class="mb-3" :tabs="[
-          { label: '模型连接', path: '/llm-configs' },
+          { label: '我的模型密钥', path: '/llm-configs' },
           { label: '个性化与系统状态', path: '/settings' },
+          { label: '飞书 / 钉钉', path: '/settings/integrations' },
         ]" />
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
@@ -14,14 +15,18 @@
             </p>
           </div>
           <div class="grid grid-cols-2 gap-2 lg:w-[330px]">
-            <StatusCard label="回答问题" :ok="chatConfigs.length > 0" :text="chatConfigs.length ? '已开启' : '未开启'" />
-            <StatusCard label="读取资料" :ok="embeddingConfigs.length > 0" :text="embeddingConfigs.length ? '已开启' : '未开启'" />
+            <StatusCard label="回答问题" :ok="chatConfigs.length > 0 || enterpriseConnected" :text="chatConfigs.length || enterpriseConnected ? '已开启' : '未开启'" />
+            <StatusCard label="读取资料" :ok="embeddingConfigs.length > 0 || enterpriseConnected" :text="embeddingConfigs.length || enterpriseConnected ? '已开启' : '未开启'" />
           </div>
         </div>
       </div>
     </header>
 
     <main class="flex-1 overflow-y-auto px-5 py-6 lg:px-8">
+      <p v-if="enterpriseConnected" class="mx-auto mb-5 max-w-6xl rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800" data-testid="enterprise-llm-note">
+        管理员已经为全公司统一连接了：{{ enterpriseProviders.map((p) => p.label).join('、') }}。这些服务你不需要再配置；
+        如果你在下面填了自己的密钥，会优先使用你自己的。
+      </p>
       <div class="mx-auto grid max-w-6xl gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
         <section class="space-y-5">
           <section class="ui-card rounded-lg p-5">
@@ -178,10 +183,12 @@
 </template>
 
 <script setup lang="ts">
+import { MODEL_NAMES, modelDisplayName } from '../utils/displayNames'
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { CheckCircle2, Clipboard, KeyRound, Trash2 } from 'lucide-vue-next'
 import SectionTabs from '../components/SectionTabs.vue'
 import * as llmApi from '../api/llmConfig'
+import { listEnterpriseProviders } from '../api/adminLlm'
 import type { LlmConfig, LlmConfigTestResult, SupportedModel } from '../api/llmConfig'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
@@ -253,36 +260,7 @@ const providerOptions = [
   },
 ]
 
-const modelNames: Record<string, string> = {
-  'glm-4': '中文通用助手',
-  'glm-4-flash': '轻量快速助手',
-  'glm-4-plus': '复杂任务助手',
-  'deepseek-chat': 'DeepSeek 问答',
-  'deepseek-reasoner': 'DeepSeek 推理',
-  'deepseek-coder': 'DeepSeek 编程',
-  'gpt-4o': 'OpenAI 高能力助手',
-  'gpt-4o-mini': 'OpenAI 轻量助手',
-  'o3-mini': 'OpenAI 推理助手',
-  'o4-mini': 'OpenAI 新一代轻量推理',
-  'kimi-k2-0711-preview': 'Kimi K2 预览',
-  'kimi-latest': 'Kimi 最新稳定入口',
-  'qwen-plus': '通义千问均衡助手',
-  'qwen-turbo': '通义千问快速助手',
-  'qwen-max': '通义千问高能力助手',
-  'qwen-long': '通义千问长文本助手',
-  'sonar': 'Perplexity 联网检索',
-  'sonar-pro': 'Perplexity 联网检索（增强）',
-  'gpt-4o-search-preview': 'OpenAI 联网检索',
-  'gpt-4o-mini-search-preview': 'OpenAI 轻量联网检索',
-  'embedding-3': '中文资料读取',
-  'embedding-2': '兼容资料读取',
-  'text-embedding-3-small': 'OpenAI 轻量资料读取',
-  'text-embedding-3-large': 'OpenAI 高精度资料读取',
-  'text-embedding-ada-002': 'OpenAI 旧版资料读取',
-  'BAAI/bge-small-zh-v1.5': '本地中文轻量资料读取',
-  'BAAI/bge-base-zh-v1.5': '本地中文标准资料读取',
-  'BAAI/bge-large-zh-v1.5': '本地中文高精度资料读取',
-}
+const modelNames: Record<string, string> = MODEL_NAMES
 
 const fallbackModels: SupportedModel[] = [
   { model_name: 'glm-4', provider: 'zhipu', kind: 'chat' },
@@ -336,7 +314,7 @@ function inferKind(modelName: string): CapabilityKey {
 }
 
 function modelLabel(modelName: string) {
-  return `${modelNames[modelName] || modelName} · ${modelName}`
+  return modelDisplayName(modelName)
 }
 
 function friendlyModelName(modelName: string) {
@@ -358,8 +336,16 @@ function applyProviderDefaults() {
   selectedCapabilities.value = selectedEmbeddingModel.value ? ['chat', 'embedding'] : ['chat']
 }
 
+const enterpriseProviders = ref<{ provider: string; label: string }[]>([])
+const enterpriseConnected = computed(() => enterpriseProviders.value.length > 0)
+
 async function reload() {
   configs.value = await llmApi.listConfigs()
+  try {
+    enterpriseProviders.value = await listEnterpriseProviders()
+  } catch {
+    enterpriseProviders.value = []       // 读不到不影响个人配置
+  }
 }
 
 async function loadSupportedModels() {

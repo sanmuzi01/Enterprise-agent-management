@@ -1,6 +1,8 @@
 package com.enterprisehub.crm;
 
 import com.enterprisehub.audit.AuditService;
+import com.enterprisehub.crm.dto.ContactDto;
+import com.enterprisehub.crm.dto.CustomerDto;
 import com.enterprisehub.crm.dto.CustomerSummaryDto;
 import com.enterprisehub.crm.dto.FollowUpDto;
 import com.enterprisehub.crm.dto.OpportunityDto;
@@ -71,7 +73,7 @@ public class CrmService {
 
     @Transactional
     public FollowUpDto confirmFollowUp(long followUpId, long authorUserId, String traceId) {
-        FollowUp followUp = followUpRepository.findById(followUpId)
+        FollowUp followUp = followUpRepository.findForUpdate(followUpId)
                 .orElseThrow(() -> notFound("跟进记录不存在"));
         if (followUp.getAuthorUserId() != authorUserId) {
             throw notFound("跟进记录不存在");
@@ -99,9 +101,11 @@ public class CrmService {
                 throw notFound("商机不存在");
             }
             opportunity.update(stage, body.amount());
+            opportunity.updatePlan(body.expectedCloseDate(), body.nextStep());
             action = "crm.opportunity_updated";
         } else {
             opportunity = new Opportunity(customerId, stage, body.amount(), ownerUserId, requestTeamId);
+            opportunity.updatePlan(body.expectedCloseDate(), body.nextStep());
             opportunityRepository.save(opportunity);
             action = "crm.opportunity_created";
         }
@@ -113,6 +117,17 @@ public class CrmService {
     public List<OpportunityDto> listOpportunities(long customerId, long requestTeamId) {
         getCustomerInTeam(customerId, requestTeamId);
         return opportunityRepository.findByCustomerId(customerId).stream().map(OpportunityDto::from).toList();
+    }
+
+    /** 部门工作台里程碑3新增：本部门客户列表。跟审批类操作不同，CRM 里任何部门
+     * 成员都能看本部门客户，不需要额外判断负责人角色。 */
+    public List<CustomerDto> listCustomers(long teamId) {
+        return customerRepository.findByTeamIdOrderByCreatedAtDesc(teamId).stream().map(CustomerDto::from).toList();
+    }
+
+    /** CRM Copilot：本部门全部联系人（邮件、会议按邮箱 / 手机号自动对上客户用）。只返回本部门客户的联系人。 */
+    public List<ContactDto> listContacts(long teamId) {
+        return contactRepository.findByTeamId(teamId).stream().map(ContactDto::from).toList();
     }
 
     private Customer getCustomerInTeam(long customerId, long requestTeamId) {

@@ -1,6 +1,7 @@
 package com.enterprisehub.crm;
 
 import com.enterprisehub.crm.dto.CreateFollowUpRequest;
+import com.enterprisehub.crm.dto.CustomerDto;
 import com.enterprisehub.crm.dto.UpsertOpportunityRequest;
 import com.enterprisehub.idempotency.IdempotencyService;
 import com.enterprisehub.security.RequestContext;
@@ -11,6 +12,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
+
+import java.util.List;
 
 /** CRM 客户跟进闭环的 REST 接口，供 FastAPI 侧的销售 Agent 工具调用
  * （service/tools/crm.py，跟 oa_leave.py/procurement.py 是同一种薄工具层）。 */
@@ -25,6 +28,21 @@ public class CrmController {
     public CrmController(CrmService crmService, IdempotencyService idempotencyService) {
         this.crmService = crmService;
         this.idempotencyService = idempotencyService;
+    }
+
+    /** 部门工作台里程碑3新增：本部门客户列表。用 requireTeamId() 取"当前登录者
+     * 自己部门"，不是显式 teamId 参数——CRM 没有"企业管理员跨部门查看"这种场景，
+     * 跟 leave/procurement 的 team-pending 不一样。 */
+    @GetMapping("/customers")
+    public List<CustomerDto> listCustomers() {
+        ScopeGuard.require("crm.read");
+        return crmService.listCustomers(requireTeamId());
+    }
+
+    @GetMapping("/contacts")
+    public Object listContacts() {
+        ScopeGuard.require("crm.read");
+        return crmService.listContacts(requireTeamId());
     }
 
     @GetMapping("/customers/{id}")

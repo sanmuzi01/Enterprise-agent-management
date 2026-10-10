@@ -49,6 +49,20 @@
 
       <!-- 右侧状态卡 -->
       <section class="space-y-5">
+        <RouterLink
+          to="/admin/integrations"
+          class="group block rounded-lg border border-indigo-200 bg-indigo-50/60 p-4 transition-colors hover:border-indigo-300 hover:bg-indigo-50"
+        >
+          <div class="flex items-start justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-900">飞书 / 钉钉接入</h2>
+              <p class="mt-1 text-xs leading-5 text-slate-500">配置机器人、事件回调、组织架构同步和员工账号绑定。</p>
+            </div>
+            <MessagesSquare :size="18" class="mt-0.5 shrink-0 text-indigo-500" />
+          </div>
+          <p class="mt-3 text-xs font-medium text-indigo-600 group-hover:text-indigo-700">进入接入配置 →</p>
+        </RouterLink>
+
         <article class="rounded-lg border border-slate-200 bg-white p-4">
           <div class="mb-3 flex items-center justify-between">
             <h2 class="text-sm font-semibold text-slate-900">任务状态</h2>
@@ -82,7 +96,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { RouterLink } from 'vue-router'
-import { Activity, Database, RefreshCcw } from 'lucide-vue-next'
+import { Activity, Database, MessagesSquare, RefreshCcw } from 'lucide-vue-next'
 import * as adminApi from '../../api/admin'
 import type { AdminOverview, AdminTask } from '../../api/admin'
 import { getErrorMessage } from '../../utils/request'

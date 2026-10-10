@@ -115,15 +115,35 @@ async def request_or_get_pending(
     return _to_dict(row)
 
 
-async def list_pending(db, limit: int = 50) -> List[Dict[str, Any]]:
+async def resource_org_id(db, resource_type: str, resource_id: int) -> Optional[int]:
+    """审批单所指资源属于哪个企业；未登记的资源类型返回 None（HTTP 层按“不可见”处理）。
+    新增审批类型时必须在这里登记资源 → 企业的对应关系，否则任何企业的管理员都看不到、也批不了它。"""
+    if resource_type == "space":
+        from models.init_db import KnowledgeSpace
+        return (await db.execute(select(KnowledgeSpace.organization_id).where(KnowledgeSpace.id == resource_id))).scalar()
+    return None
+
+
+async def list_pending(db, limit: int = 50, approver_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """approver_id 给定时只返回这位管理员所管企业的审批单（别的企业管理员看不到）；不给则不过滤（内部调用 / 测试）。"""
     rows = (await db.execute(
         select(ApprovalRequest).where(ApprovalRequest.status == "pending")
-        .order_by(ApprovalRequest.id.desc()).limit(limit)
+        .order_by(ApprovalRequest.id.desc()).limit(limit if approver_id is None else max(limit * 10, 500))
     )).scalars().all()
-    return [_to_dict(r) for r in rows]
+    if approver_id is None:
+        return [_to_dict(r) for r in rows]
+    from service.enterprise_access import admin_org_ids_async
+    orgs = set(await admin_org_ids_async(db, approver_id))
+    visible = []
+    for row in rows:
+        if await resource_org_id(db, row.resource_type, row.resource_id) in orgs:
+            visible.append(_to_dict(row))
+        if len(visible) >= limit:
+            break
+    return visible
 
 
-async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[str, Any]:
+async def decide(db, approval_id: int, approver_id: int, approve: bool, *, enforce_org: bool = False) -> Dict[str, Any]:
     """P1 并发修复：之前是"读一次 row、在 Python 里判断、再逐个字段赋值、最后
     commit"，两个管理员并发点"批准"/"拒绝"同一条单子，都能读到 status=pending，
     都会走到底下的写入，最后提交的那个会把先提交的那个悄悄覆盖掉——数据库里
@@ -138,6 +158,11 @@ async def decide(db, approval_id: int, approver_id: int, approve: bool) -> Dict[
     )).scalars().first()
     if row is None:
         raise NotFound("审批单不存在")
+    if enforce_org:
+        # 企业管理员只能决定自己企业的审批单；别的企业的、以及没登记所属企业的一律当作不存在（不泄露它存在）
+        from service.enterprise_access import admin_org_ids_async
+        if await resource_org_id(db, row.resource_type, row.resource_id) not in set(await admin_org_ids_async(db, approver_id)):
+            raise NotFound("审批单不存在")
     if approver_id == row.applicant_id:
         # 双人审批的底线：申请人是企业管理员时，`require_org_role("admin")` 本身
         # 挡不住他给自己的申请签字——这条必须在这里单独判断，不能只靠角色门槛。

@@ -69,7 +69,7 @@ def _loads(raw: Optional[str], fallback):
     try:
         value = json.loads(raw) if raw else None
         return value if value is not None else fallback
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return fallback
 
 

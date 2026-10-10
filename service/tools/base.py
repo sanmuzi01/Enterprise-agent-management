@@ -10,6 +10,10 @@ from abc import ABC,abstractmethod
 import os
 from typing import Dict,Any,List,Optional
 
+from utils.logger_handler import get_logger
+
+_registry_logger = get_logger("tool_registry", console_level=40)   # 注册明细只进文件日志，不刷终端
+
 
 class ToolPermissionError(Exception):
     """工具权限不足时抛出"""
@@ -188,9 +192,9 @@ class ToolRegistry:
         instance =  tool_class()
         name = instance.name
         if name in cls._registry:
-            print(f"[ToolRegistry] 覆盖已有工具: {name} → {tool_class.__name__}")
+            _registry_logger.warning("[ToolRegistry] 覆盖已有工具: %s → %s", name, tool_class.__name__)
         cls._registry[name] = tool_class
-        print(f"[ToolRegistry] 注册工具: {name} → {tool_class.__name__}")
+        _registry_logger.debug("[ToolRegistry] 注册工具: %s → %s", name, tool_class.__name__)
         return tool_class
 
     @classmethod

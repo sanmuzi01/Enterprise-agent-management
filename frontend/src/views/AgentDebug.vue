@@ -61,7 +61,7 @@
                     v-model="dryRunMessage"
                     class="ui-field h-10 min-w-0 flex-1 rounded px-3 text-sm outline-none"
                     placeholder="例如：根据我上传的资料，总结一下项目当前进度"
-                    @keydown.enter="runDryRun"
+                    @keydown.enter="!isImeEnter($event) && runDryRun()"
                   />
                   <button
                     @click="runDryRun"
@@ -85,7 +85,7 @@
                     <PanelHeader title="模型消息" action="复制" @action="copyText(JSON.stringify(dryRun.messages, null, 2), '消息内容')" />
                     <div class="max-h-80 overflow-y-auto p-3">
                       <article v-for="(msg, idx) in dryRun.messages" :key="idx" class="mb-2 rounded border border-slate-100 bg-slate-50 p-3">
-                        <p class="mb-1 text-xs font-semibold text-slate-500">{{ msg.role }}</p>
+                        <p class="mb-1 text-xs font-semibold text-slate-500">{{ messageRoleLabel(msg.role) }}</p>
                         <p class="whitespace-pre-wrap text-xs leading-relaxed text-slate-700">{{ short(msg.content, 1200) }}</p>
                       </article>
                     </div>
@@ -139,18 +139,25 @@
                     <span class="mb-1 block text-xs font-medium text-slate-600">Top K</span>
                     <input v-model.number="evalTopK" type="number" min="1" max="20" class="ui-field h-10 w-full rounded px-3 text-sm outline-none" />
                   </label>
-                  <label class="flex items-center justify-between gap-3 rounded border border-slate-200 bg-slate-50 px-3 py-2">
-                    <span class="text-xs font-medium text-slate-700">启用 LLM Judge</span>
-                    <input v-model="evalUseJudge" type="checkbox" class="h-4 w-4 accent-blue-600" />
-                  </label>
-                  <label class="block">
-                    <span class="mb-1 block text-xs font-medium text-slate-600">Judge 模型</span>
-                    <input
+                  <label class="block" for="eval-judge-model">
+                    <span class="mb-1 block text-xs font-medium text-slate-600">评分模型（可选）</span>
+                    <select
+                      id="eval-judge-model"
                       v-model="evalJudgeModel"
-                      :disabled="!evalUseJudge"
-                      class="ui-field h-10 w-full rounded px-3 text-sm outline-none disabled:bg-slate-100 disabled:text-slate-400"
-                      placeholder="例如 gpt-4o-mini"
-                    />
+                      class="ui-field h-10 w-full rounded px-3 text-sm outline-none"
+                    >
+                      <option value="">不评分，只看资料有没有找对</option>
+                      <option v-for="m in judgeModels" :key="m.model_name" :value="m.model_name">
+                        {{ modelDisplayName(m.model_name) }}（{{ m.source === 'personal' ? '我的密钥' : '公司统一连接' }}）
+                      </option>
+                    </select>
+                    <span class="mt-1 block text-[11px] leading-relaxed text-slate-500">
+                      选了模型，会让它逐句检查用例里的“标准回答”有没有被找到的资料支撑，算出“有据可依”的比例（防止助手瞎编）。
+                      只对写了 answer 的用例打分，会消耗这个模型的额度。
+                    </span>
+                    <span v-if="judgeModelsLoaded && !judgeModels.length" class="mt-1 block text-[11px] text-amber-700">
+                      还没有可用的聊天模型：请管理员在后台「模型连接」里连接服务商，或在「模型设置」里配置自己的密钥。
+                    </span>
                   </label>
                   <button
                     @click="runRagEvaluation"
@@ -242,7 +249,7 @@
                   <PanelHeader title="工具与能力" />
                   <div class="space-y-3 p-3">
                     <div class="flex flex-wrap gap-1.5">
-                      <span v-for="tool in debug.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ tool }}</span>
+                      <span v-for="tool in debug.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolDisplayName(tool) }}</span>
                       <span v-if="debug.tool_names.length === 0" class="text-xs text-slate-400">没有绑定工具</span>
                     </div>
                     <article v-for="skill in debug.skills" :key="skill.name" class="rounded border border-slate-100 bg-slate-50 p-3">
@@ -290,7 +297,7 @@
                         <p v-if="doc.error_msg" class="mt-1 line-clamp-2 text-xs text-red-600">{{ doc.error_msg }}</p>
                       </div>
                       <span :class="doc.status === 'done' ? 'bg-emerald-50 text-emerald-700' : doc.status === 'failed' ? 'bg-red-50 text-red-700' : 'bg-blue-50 text-blue-700'" class="shrink-0 rounded px-2 py-1 text-xs">
-                        {{ doc.status }}
+                        {{ documentStatusLabel(doc.status) }}
                       </span>
                     </div>
                   </article>
@@ -330,6 +337,8 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
+import { documentStatusLabel, messageRoleLabel, toolDisplayName } from '../utils/displayNames'
 import { computed, defineComponent, h, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -351,6 +360,10 @@ import { evaluateRag } from '../api/evaluation'
 import type { RagEvalCase, RagEvalReport } from '../api/evaluation'
 import { toastSuccess } from '../utils/toast'
 import { getErrorMessage } from '../utils/request'
+import { listConfigs, listSupportedModelCatalog } from '../api/llmConfig'
+import { listEnterpriseProviders } from '../api/adminLlm'
+import { usableChatModels, type UsableModel } from '../utils/usableModels'
+import { modelDisplayName } from '../utils/displayNames'
 
 const PanelHeader = defineComponent({
   props: {
@@ -410,8 +423,25 @@ const evalCasesText = ref(JSON.stringify([
   },
 ], null, 2))
 const evalTopK = ref(5)
-const evalUseJudge = ref(false)
 const evalJudgeModel = ref('')
+const judgeModels = ref<UsableModel[]>([])
+const judgeModelsLoaded = ref(false)
+
+// 评分模型只能从“现在就能调用”的聊天模型里选：手填一个没接通的名字只会在运行时报错
+const loadJudgeModels = async () => {
+  try {
+    const [catalog, providers, configs] = await Promise.all([
+      listSupportedModelCatalog(),
+      listEnterpriseProviders().catch(() => []),
+      listConfigs().catch(() => []),
+    ])
+    judgeModels.value = usableChatModels(catalog.chat, providers.map((p) => p.provider), configs.map((c) => c.model_name))
+  } catch {
+    judgeModels.value = []
+  } finally {
+    judgeModelsLoaded.value = true
+  }
+}
 const evalLoading = ref(false)
 const evalError = ref('')
 const evalReport = ref<RagEvalReport | null>(null)
@@ -704,9 +734,7 @@ const runRagEvaluation = async () => {
     evalReport.value = await evaluateRag(agentId.value, {
       cases,
       top_k: evalTopK.value,
-      faithfulness_judge_model: evalUseJudge.value && evalJudgeModel.value.trim()
-        ? evalJudgeModel.value.trim()
-        : null,
+      faithfulness_judge_model: evalJudgeModel.value || null,
     })
     toastSuccess('RAG 评估完成')
   } catch (e: any) {
@@ -716,7 +744,10 @@ const runRagEvaluation = async () => {
   }
 }
 
-onMounted(loadDebug)
+onMounted(() => {
+  loadDebug()
+  loadJudgeModels()
+})
 watch(activePanel, (value) => {
   localStorage.setItem('agent_debug_panel', value)
 })

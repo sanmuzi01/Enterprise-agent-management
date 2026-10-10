@@ -1,5 +1,13 @@
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import { toastError } from './toast'
+import { clearSessionMarker, csrfHeaders } from './session'
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    /** 调用方自己处理这个请求的失败（比如“没有权限就隐藏区块”），拦截器不再弹全局错误提示。 */
+    skipErrorToast?: boolean
+  }
+}
 
 const REQUEST_ID_HEADER = 'X-Request-ID'
 
@@ -10,9 +18,11 @@ const createRequestId = () => {
 
 export const getErrorMessage = (err: any, fallback = '请求失败') => {
   const requestId = err?.response?.headers?.['x-request-id'] || err?.config?.headers?.[REQUEST_ID_HEADER]
+  // 系统故障（5xx）时后端会给出问题编号：用户只要把它报给管理员，就能在问题中心直接找到这次故障
+  const issueNo = err?.response?.data?.issue_no
   const status = err?.response?.status
   const rawDetail = err?.response?.data?.detail || err?.response?.data?.message || err?.response?.data?.error
-  const withRequestId = (message: string) => requestId ? `${message}（请求ID：${requestId}）` : message
+  const withRequestId = (message: string) => issueNo ? `${message}（问题编号：${issueNo}）` : requestId ? `${message}（请求ID：${requestId}）` : message
 
   const statusMessages: Record<number, string> = {
     400: '提交内容有误，请检查填写项后再试',
@@ -69,16 +79,15 @@ export const getErrorMessage = (err: any, fallback = '请求失败') => {
 // Axios 单例：统一前缀 /api（匹配 vite.config.ts 的代理）、JWT 注入、401 清理
 const request: AxiosInstance = axios.create({
   baseURL: '/api',
+  withCredentials: true, // 登录令牌在 HttpOnly Cookie 里，由浏览器自动携带
   timeout: 300_000, // 5 分钟，同步对话 + RAG 切分可能很慢
 })
 
 request.interceptors.request.use((config) => {
-  const token = localStorage.getItem('token')
   config.headers = config.headers || {}
   config.headers[REQUEST_ID_HEADER] = config.headers[REQUEST_ID_HEADER] || createRequestId()
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
+  // 会改数据的请求带上 CSRF 头（值来自页面能读到的 csrf_token Cookie），后端会和会话核对
+  Object.assign(config.headers, csrfHeaders(config.method))
   return config
 })
 
@@ -90,12 +99,12 @@ request.interceptors.response.use(
     const url: string = err.config?.url || ''
     const isLoginRequest = url.includes('/user/login')
     if (err.response?.status === 401 && !isLoginRequest) {
-      localStorage.removeItem('token')
       localStorage.removeItem('user')
+      clearSessionMarker()
       if (location.pathname !== '/login') {
         location.href = '/login'
       }
-    } else {
+    } else if (!err.config?.skipErrorToast) {
       toastError(getErrorMessage(err))
     }
     return Promise.reject(err)

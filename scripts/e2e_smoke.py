@@ -251,6 +251,9 @@ def _run_flows(base_url: str, backend_url: str, args, normal_name: str, admin_na
             "system_prompt": "回答前先说“已收到需求”。", "tool_names": ["word_count"], "is_public": 1,
         })
         skill_id = skill["data"]["id"]
+        # 公开 Skill 要“已发布”才会出现在普通用户的列表里（draft 即使 is_public=1 也看不到），所以建完先发布
+        current = admin_api.get(f"/skill/{skill_id}")["data"]
+        admin_api.put(f"/skill/{skill_id}", json={"lifecycle_status": "published", "expected_row_version": current["row_version"]})
         report("准备知识库空间与公开 Skill", PASS, f"space_id={space_id}, skill_id={skill_id}")
     except Exception as e:  # noqa: BLE001
         report("准备知识库空间与公开 Skill", FAIL, str(e))
@@ -395,7 +398,7 @@ def _flow_chat_and_citations(page, base_url, agent_id) -> bool:
 def _flow_admin_edit_and_rollback_skill(browser, base_url, admin_name, admin_password, admin_api, skill_id) -> bool:
     edited_prompt = f"改过的提示词-{int(time.time())}"
     skill_name = admin_api.get(f"/skill/{skill_id}")["data"]["name"]
-    # 独立浏览器上下文：普通用户的登录态（localStorage token）留在原来那个 page 里，
+    # 独立浏览器上下文：普通用户的登录态（HttpOnly 会话 Cookie）留在原来那个 page 里，
     # 不新开一个上下文的话，导航到 /login 会被 Login.vue 的 onMounted 直接重定向回工作台。
     context = browser.new_context(viewport={"width": 1360, "height": 900})
     page = context.new_page()

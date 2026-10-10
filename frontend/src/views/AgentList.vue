@@ -217,7 +217,7 @@
                   <div v-else-if="widget.type === 'recent-tasks'" class="space-y-2">
                     <div v-for="task in dashboard?.recent_tasks.slice(0, 3) || []" :key="task.id" class="rounded border border-slate-100 bg-white/70 p-2">
                       <div class="flex items-center justify-between gap-2">
-                        <span class="truncate text-xs font-medium text-slate-800">{{ task.title || task.task_type }}</span>
+                        <span class="truncate text-xs font-medium text-slate-800">{{ task.title || taskTypeLabel(task.task_type) }}</span>
                         <span class="shrink-0 rounded px-2 py-0.5 text-xs" :class="statusClass(task.status)">{{ statusText(task.status) }}</span>
                       </div>
                     </div>
@@ -358,7 +358,7 @@
               <div v-if="dashboard?.recent_tasks.length" class="space-y-3">
                 <div v-for="task in dashboard.recent_tasks" :key="task.id" class="rounded-lg border border-slate-100 bg-white/72 p-3">
                   <div class="flex items-center justify-between gap-3">
-                    <span class="truncate text-sm font-medium text-slate-900">{{ task.title || task.task_type }}</span>
+                    <span class="truncate text-sm font-medium text-slate-900">{{ task.title || taskTypeLabel(task.task_type) }}</span>
                     <span class="shrink-0 rounded px-2 py-0.5 text-xs" :class="statusClass(task.status)">
                       {{ statusText(task.status) }}
                     </span>
@@ -407,7 +407,7 @@
                   </span>
                   <div class="min-w-0">
                     <h2 class="truncate text-sm font-semibold text-slate-900">{{ agent.name }}</h2>
-                    <p class="truncate text-xs text-slate-500">{{ agent.model_name }} · 温度 {{ agent.temperature }}</p>
+                    <p class="truncate text-xs text-slate-500">{{ modelDisplayName(agent.model_name) }} · 温度 {{ agent.temperature }}</p>
                   </div>
                 </div>
               </div>
@@ -655,6 +655,7 @@
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName, taskTypeLabel } from '../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {

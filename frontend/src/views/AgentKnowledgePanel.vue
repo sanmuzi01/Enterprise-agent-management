@@ -50,7 +50,7 @@
         <p class="mb-2 text-xs text-slate-500">按本助手实际的绑定和配置跑一次检索，看会命中哪些资料。</p>
         <div class="flex gap-2">
           <input
-            v-model="query" placeholder="例如：报销标准是多少？" @keyup.enter="runTest"
+            v-model="query" placeholder="例如：报销标准是多少？" @keydown.enter="!isImeEnter($event) && runTest()"
             class="h-9 flex-1 rounded border border-slate-300 px-2 text-sm outline-none focus:border-sky-400"
           />
           <button
@@ -68,6 +68,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AgentSubnav from '../components/agent/AgentSubnav.vue'

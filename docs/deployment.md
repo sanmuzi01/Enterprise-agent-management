@@ -18,10 +18,13 @@
 
 ## 1. 准备配置
 
-复制生产模板并填写真实密钥：
+复制生产模板并填写真实密钥。**两份模板按部署方式选一份**（变量一一对应，只有主机地址不同：容器里 `127.0.0.1` 指的是容器自己，所以 Docker 部署要用服务名 `db` / `redis` / `enterprise-hub`）：
 
 ```powershell
+# 直接在服务器上跑（systemd / 进程）：
 Copy-Item .env.production.example .env
+# docker-compose.prod.yml 部署：
+Copy-Item .env.production.docker.example .env
 ```
 
 必须修改：
@@ -195,14 +198,89 @@ mysql-init 脚本不会对已初始化过的数据卷重跑，把
 （`service/config_validation.py`）会在 `MYSQL_ROOT_PASSWORD` 缺失或跟业务账号
 密码重复时直接报错拦下来，不会等到真出事才发现。
 
+## 2.3 登录会话、内容安全策略、Redis 与上传上限
+
+- **登录 Cookie**：令牌放在 HttpOnly Cookie 里（页面脚本读不到），生产必须带 `Secure`（只在 https 上发送），所以**生产必须走 https**。
+  `SESSION_COOKIE_SECURE=0` 会被启动校验拒绝；`SESSION_COOKIE_SAMESITE` 默认 `lax`，可改 `strict`。前端和 API 必须同源（Nginx 把 `/api/` 反代到后端，模板已经是这样）。
+- **内容安全策略（CSP）**：`deploy/nginx.conf` 里的 `Content-Security-Policy` 只允许加载本站的脚本和向本站发请求。改前端时不要重新引入内联脚本或外部脚本 / 字体 / 图片地址
+  （`npm --prefix frontend run preview` 用同一份策略，能在上线前本地看到有没有挡住页面自己的东西；`tests/test_csp_policy.py` 核对两处一致）。API 响应自带最严格的策略。
+- **Redis**：里面放着限流计数、验证码摘要、模型配置缓存（只有密文）。只放在内网 / 容器内部网络，**不要对外发布端口**；生产建议设口令（`REDIS_URL=redis://:口令@主机:6379/0`），
+  跨主机连接用 `rediss://`（TLS）并配 ACL。没有口令时启动校验会给出警告。缓存内容只用 JSON，不再使用 pickle。
+- **上传**：流式写进临时文件（`knowledge_files/.incoming`，和最终位置同一个文件系统，入库时是 rename，不占内存）。上限：`KNOWLEDGE_UPLOAD_MAX_BYTES`（单个文件，默认 50MB）、
+  `KNOWLEDGE_UPLOAD_REQUEST_MAX_BYTES`（一次请求累计，默认 50MB，与 Nginx `client_max_body_size 50m` 一致）、`KNOWLEDGE_UPLOAD_MAX_FILES`（批量个数，默认 20）、
+  `USER_MAX_CONCURRENT_UPLOADS`（同一用户同时上传的个数，默认 3）；Nginx 的 `client_max_body_size` 和 `MAX_REQUEST_BODY_BYTES` 要不小于它们。
+  没有写权限或文件类型不支持的请求，在接收文件内容之前就被拒绝。
+- **登录有效期（滑动续期）**：令牌本身 60 分钟有效（`ACCESS_TOKEN_EXPIRE_MINUTES`）。用户在用的时候，剩余不到一半就自动换一张新的（响应里重新下发 Cookie），
+  所以一直在用就不会被登出；一直不操作 60 分钟后要重新登录。从登录算起最长 `SESSION_MAX_HOURS`（默认 12 小时）必须重新登录一次，续期不会超过它。
+  页面后台的定时轮询（待办数、未读数）带 `X-Background-Poll: 1`，**不算“在用”**，不会让挂着不动的页面永远不过期。
+  只有浏览器 Cookie 登录会续期，脚本用的 Bearer 令牌不续期。实现见 `service/session_renewal.py`。
+- **前端发布后旧页面自动更新**：`index.html` 不缓存（`expires -1`），带哈希的 `/assets/` 缓存一年；`/assets/` 下找不到的文件返回 404，
+  **不能**回退成 `index.html`——否则旧页面按需加载已经不存在的旧文件时拿到一段 HTML，浏览器报 MIME 错误，页面白屏，只能换浏览器或清缓存。
+  前端捕获到“加载旧版本文件失败”后会自动刷新一次拿新版本（10 秒内不重复刷新，`frontend/src/utils/staleBuild.ts`）。
+  三份 nginx 配置（`deploy/nginx.conf`、`frontend/nginx.conf`、`agent-platform-https.conf`）都是这样写的，`tests/test_nginx_delivery.py` 核对；
+  注意 `add_header` 不要写进 `location` 里（会让 server 级的安全头整体失效），缓存头用 `expires`。
+- **第一次启动自动建好企业**：空库第一次启动时，如果有用户但还没有企业记录，会自动建一条企业（名字取 `DEFAULT_ENTERPRISE_NAME`，没设就用“默认企业”），
+  把已有用户加为成员（平台管理员为所有者），把没有归属的知识库挂到企业下。已经有企业就什么都不做。多个实例同时启动只建一次：先拿数据库命名锁（拿不到就跳过这次，不会没锁硬做），再加一层数据库兜底——建企业和写哨兵行 `bootstrap_marker(default_enterprise)` 在同一个事务里，并发的第二个撞主键后整体回滚。以前自动建过、后来企业记录被人删了，不会自动重建（数据体检会报“没有企业”，按提示手动处理）。
+  不想自动建就设 `AUTO_CREATE_ENTERPRISE=0`，再手动跑 `scripts/backfill_default_organization.py --yes`。实现见 `service/enterprise_bootstrap.py`。
+- **脚本 / 集成的令牌**：浏览器登录（`POST /user/login`）响应体里没有 JWT。需要 Bearer 令牌的脚本走 `POST /auth/token`（单独限流 + 审计 `auth.token_issued`），
+  **生产默认关闭**（`AUTH_TOKEN_ENDPOINT_ENABLED=1` 才开，开了启动校验会提醒）。压测脚本 `scripts/load_test.py` 和 `scripts/drill_*.py` 用的就是它。
+
+## 2.4 外部智能体与部门知识库
+
+- **接入企业自己部署的智能体服务**（协议见 [external-agent-protocol.md](external-agent-protocol.md)）：管理员在“组织管理 → 智能体管理”里把智能体的运行方式设为外部服务。
+  服务地址默认只允许公网地址；**服务在企业内网时，必须由运维把它的主机写进 `EXTERNAL_AGENT_ALLOWED_HOSTS`**（逗号分隔，可写 `host` 或 `host:port`）。
+  云厂商元数据地址任何情况下都不放行；生产环境要求 `https`（内网白名单主机可以用 `http`）。
+  可选限制：`EXTERNAL_AGENT_MAX_TIMEOUT_SECONDS`（默认 300）、`EXTERNAL_AGENT_MAX_RESPONSE_BYTES`（默认 1MB）、`EXTERNAL_AGENT_MAX_ANSWER_CHARS`（默认 50000）。
+  平台与外部服务之间用每个智能体独立的签名密钥做 HMAC 签名，密钥只在生成时显示一次；机密、绝密空间里的资料不会发给外部服务。
+- **只服务一个企业**：平台是为单一企业定制的，id 最小的那条企业记录就是它；新用户注册后自动加入。企业名称可以在管理后台改成真实的公司名。
+  不支持多企业，也没有按企业分组的界面。
+- **后台页面各管一件事**：“用户管理”管账号（状态、套餐、重置密码），并直接显示和修改每个人的所属部门与企业角色；“组织架构”管企业名称、部门、部门成员与负责人；
+  “企业智能体”“企业知识库”“模型连接”“技能管理”归在“AI 能力”下。没有单独的“企业成员”列表——成员注册后自动属于本企业。
+- **模型的 API Key 由管理员统一连接**（管理后台“模型连接”）：按服务商（智谱、OpenAI、DeepSeek、Kimi、通义千问、Perplexity）连接一次，全公司共用，
+  员工不用再各自配置；员工自己填了个人密钥的话仍然优先用他自己的。密钥加密保存、只写不读，页面只显示末四位；连接 / 更换 / 停用 / 删除都写审计。
+- **企业智能体是接入或启用的，不是填几段提示词造出来的**：管理后台“企业智能体”页有两条路——“接入智能体服务”（工程师开发好的服务，见
+  [external-agent-protocol.md](external-agent-protocol.md)）和“启用内置智能体”（选平台内置的业务模板，自带业务工具）。接口不再接受没有模板的空白创建。
+  每个智能体有档案：它能做什么、谁维护。
+- **知识库、智能体统一创建，再由管理员划分**（管理后台“企业知识库”“企业智能体”）：
+  - 知识库先创建（默认“未划分”，只有所有者和被加入的成员能看到），再划分给**一个或多个部门**，或划分给**全企业**。
+    被划分到的部门成员自动只读，部门负责人还能维护文档；全企业的空间所有在职成员自动只读。
+    “绝密”密级不继承任何部门 / 全企业身份；成员资格只给“读”，改设置、管成员、删空间仍需空间角色或平台管理员。
+    普通用户在“知识库中心”只能创建个人空间，不能自行发布到部门。
+  - 智能体的创建和编辑在同一个编辑器里完成（管理后台“企业智能体”页）：基本信息与运行方式、助手设定（角色 / 任务 / 约束 / 输出格式）、
+    模型与温度与长期记忆、知识库（绑定哪些资料、检索几段、是否重排、是否必须标注来源、没依据时是否拒答）、技能、发布前检查与试运行。
+    管理员可以绑定任何一个知识库，不要求自己是它的成员；只能选目录里的聊天模型；技能只能选已发布的或自己的草稿。
+    发布前检查给出“必须处理”（未划分、模型不可用、外部服务没配地址）和“建议处理”（没写设定、开了知识库却没绑资料、绑的资料使用者读不到、外部服务没测过连接）。
+    Agent 列表按企业分组：不同企业各有自己的“人事部”，不再混在一起看起来像重复。
+  - 智能体先创建（业务智能体默认“未划分”的草稿，只有创建者能试用，不能发布），再划分给**一个部门**（成为该部门的主助手）或**全企业**（中央智能体）。
+    已发布的智能体正在被使用，调整划分前要先停用。智能体绑定的资料如果没有划分给它的使用者，列表会提示“使用者读不到”，因为聊天时的检索按提问者本人的权限校验。
+  - **接口工具（让智能体查企业已有系统：订单、工单、库存……）**：管理员在「企业智能体 → 编辑 → 接口工具」里配置，对任何中央 / 部门智能体都可以（`/admin/org/agents/{id}/api-connectors`），新增、启用、停用、删除都写审计（不记认证头和查询串）。接口地址、请求方式、认证头由管理员定，大模型只能填参数。普通用户默认不能自己接外部系统（`FEATURE_USER_API_CONNECTORS` 默认关闭），用户端“我的助手 → 接口工具”只能管自己名下的助手。
+  - 升级时需要执行 `alembic upgrade head`（新增 `agent.runtime_type`、`agent_external_endpoint`、`knowledge_space_departments`；
+    已经发布到部门的旧空间会自动生成对应的划分记录）。
+
 ## 3. 健康检查
 
-`/health` 是公开的、不需要登录的探活端点，只回 `{"ok": true/false}`，给 Docker
-healthcheck、负载均衡这类不带登录态的场景用：
+三个公开的、不需要登录的探针，只回布尔值，给 Docker healthcheck、负载均衡这类不带登录态的场景用：
 
-```text
-http://<域名>/health
-```
+| 地址 | 含义 | 返回 |
+|---|---|---|
+| `/live` | 进程还活着、能响应吗？永远轻量，不查任何依赖。失败才需要重启进程 | 始终 200 `{"ok": true}` |
+| `/ready` | 现在能接业务流量吗？查数据库（必须）和 Redis。Docker healthcheck 和负载均衡用它 | 就绪 200，**数据库不可用 503**；`{"ok": bool, "degraded": bool}` |
+| `/health` | 旧地址，语义和 `/ready` 相同（以前不管依赖是否可用都返回 200，容器永远是 healthy） | 同 `/ready` |
+
+就绪探针查数据库用的是**独立的短连接**（不借连接池里的连接：池被占满时探针不能跟着卡住），连接 / 读 / 写都有驱动级超时（比 `READY_TIMEOUT_SECONDS` 短）。
+这很重要：`asyncio.wait_for` 只能让探针按时返回 503，取消不了线程池里正在进行的同步 `connect()`；数据库网络“半通不通”（端口能连上、握手没有回应）时，
+没有驱动级超时的话每次探针都会留下一个卡死的线程，每 10 秒一次的健康检查会逐步耗尽线程池。实测只设 `connect_timeout` 不够（握手阶段仍然无限等待），必须再设 `read_timeout`。
+应用自己的连接池（同步、异步、审计）同样带 `DB_CONNECT_TIMEOUT`（默认 5 秒）和兜底的 `DB_READ_TIMEOUT`（默认 60 秒，大于 MySQL 默认的 `innodb_lock_wait_timeout=50` 秒，不会误伤正常的锁等待；
+需要跑超长查询的部署自己调大）。
+
+Redis 配置了却连不上算“降级”（`degraded: true`，并有 `agent_redis_up` 指标和告警），**默认仍然就绪**：限流 / 并发控制会按下面的策略收紧，
+而不是 Redis 抖一下所有实例同时被摘掉。更看重一致性的部署设 `READY_REQUIRE_REDIS=1`，Redis 不可用时也返回 503。
+
+Redis 不可用时的降级策略（没配置 Redis 的单进程部署不受影响）：
+
+- 登录 / 短信 / 注册 / 找回密码（`RATE_LIMIT_CRITICAL_FALLBACK`）：`strict`（生产默认，各进程用内存额度，但额度按 `API_WORKERS` 均分，合计不超过原额度）/ `open` / `closed`（直接拒绝）；
+- 重任务并发名额（`CONCURRENCY_REDIS_DOWN`）：`closed`（生产默认，停止接收新任务）/ `local`；
+- 每次降级都记 `agent_limiter_redis_degraded_total{limiter,mode}`，告警规则见 `deploy/prometheus-rules.yml`（`AgentRedisDown`、`AgentLimiterDegraded`）。
 
 数据库连接池、缓存/限流用的是不是 Redis、后台任务执行模式这些运行细节
 **不再从 `/health` 公开**——这些是内部架构信息，之前任何知道这个 URL 的匿名
@@ -300,22 +378,116 @@ REDIS_RECONNECT_INTERVAL_SECONDS=5
 
 迁移服务器时，数据库导出文件和上述目录一起打包带走即可。
 
-以上手动步骤已经包装成 `scripts/backup.py`（`npm run backup`），可以直接丢进 cron /
-Windows 计划任务定时跑，会在 `backups/` 下生成一份 `db_*.sql` + `data_*.tar.gz`：
+**Docker 部署：部门 Agent 的专业技能配置在数据卷 `skill_enterprise` 里（/app/skills/enterprise）。** 部门 Agent 发布时会生成
+`skills/enterprise/agent_<id>.yml`，Agent 调用业务工具全靠它。以前的 compose 没有给这个目录挂卷，文件在容器里，
+**重建容器就丢**，Agent 看起来正常、实际调不了任何业务工具（现在部门 Agent 状态会显示“专业技能配置文件丢失”）。
+用户自己新建的 Skill 同样由 `skill_user_created` 卷保存；本地和生产 Compose 都让 API/Worker 共享这些卷。
+从旧版本升级时，先把文件拷出来，升级后再拷进新数据卷，最后在“组织架构 → 部门专业 Agent”点一键修复补上模板新增的能力：
+
+```bash
+docker compose cp api:/app/skills/enterprise ./skills-enterprise-backup      # 升级前，容器还是旧的
+docker compose up -d --build                                                    # 升级（新建空的 skill_enterprise 卷）
+docker compose cp ./skills-enterprise-backup/. api:/app/skills/enterprise/      # 拷回数据卷
+```
+
+已经丢了的：直接点一键修复，会按模板重新生成（管理员自己给 Agent 加过的工具需要重新加）。
+
+直接部署（数据在宿主机目录）时，以上步骤已经包装成 `scripts/backup.py`（`npm run backup`），
+可以直接丢进 cron / Windows 计划任务定时跑，会在 `backups/` 下生成一份
+`db_*.sql` + `data_*.tar.gz`：
 
 ```bash
 .venv/Scripts/python.exe scripts/backup.py --keep-days 14   # 顺带清理 14 天前的旧备份
 ```
 
-Docker Compose 部署时，Chroma 数据在 `chroma_data` 具名卷里，不在上面的脚本覆盖范围，
-单独备份：
+Docker Compose 部署必须使用 `--docker`（或 `npm run backup:docker`）。这个模式不依赖卷名，
+会一次生成三份文件：Python 主库 + Java 企业业务库、API/Worker 的全部运行时文件卷、Chroma 向量卷；
+任意一步失败都会返回非零退出码并删除半截文件，计划任务可以据此报警：
 
 ```bash
-docker run --rm -v pythonproject1_chroma_data:/data -v "$PWD/backups":/backup \
-  alpine tar czf /backup/chroma_$(date +%Y%m%d_%H%M%S).tar.gz -C /data .
+npm run backup:docker
+# 生产 compose：
+.venv/bin/python scripts/backup.py --docker --compose-file docker-compose.prod.yml --keep-days 14
 ```
 
-（卷名前缀跟你项目目录名有关，跑 `docker volume ls` 确认实际名字。）
+产物分别是 `docker_db_*.sql`、`docker_app_*.tar.gz`、`docker_chroma_*.tar.gz`。
+恢复会覆盖当前数据，必须先停写并优先恢复到一套空卷做校验：
+
+```bash
+docker compose stop api worker enterprise-hub
+
+docker compose cp backups/docker_db_20261010_120000.sql db:/tmp/restore.sql
+docker compose exec -T db sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" < /tmp/restore.sql'
+docker compose exec -T db rm -f /tmp/restore.sql
+
+docker compose cp backups/docker_app_20261010_120000.tar.gz api:/tmp/restore.tar.gz
+docker compose exec -T api tar xzf /tmp/restore.tar.gz -C /app
+docker compose exec -T api rm -f /tmp/restore.tar.gz
+
+docker compose cp backups/docker_chroma_20261010_120000.tar.gz chroma:/tmp/restore.tar.gz
+docker compose exec -T chroma tar xzf /tmp/restore.tar.gz -C /data
+docker compose exec -T chroma rm -f /tmp/restore.tar.gz
+
+docker compose up -d api worker enterprise-hub
+```
+
+生产环境执行时所有命令加 `-f docker-compose.prod.yml`。恢复后必须检查 `/ready`、Java health、
+用户/部门/Agent 数量，并实际调用一次部门 Agent；不要只看容器是 `Up` 就认为恢复成功。
+
+### 5.1 数据体检
+
+库里“已经在那儿”的脏数据和前后不一致的数据，在页面上表现为“这个人看不到部门助手”“这个知识库谁都看不到”，很难从现象倒推回数据。体检脚本把这些查出来：
+
+```bash
+.venv/bin/python scripts/data_health_check.py            # 只读，列出问题、数量、样例和处理方法
+.venv/bin/python scripts/data_health_check.py --json     # 给监控 / 定时任务
+.venv/bin/python scripts/data_health_check.py --fix      # 先备份！只修“补数据、不删数据、不需要人判断”的几类，写审计
+```
+
+| 检查 | 级别 | 能自动修 |
+|---|---|---|
+| 没有企业记录 / 有多条企业记录 | 严重 | 否（保留哪家要人判断） |
+| 已停用部门的智能体仍是已发布状态 | 严重 | 否（停用助手还是启用部门要人判断） |
+| 在用的账号没有加入企业 | 注意 | 是（加为企业成员，管理员为所有者） |
+| 知识库空间没有归属企业 | 注意 | 是（挂到企业下，不改划分和成员） |
+| 部门成员在企业里已停用或不存在 | 注意 | 否 |
+| 部门助手缺少模板里新增的能力 | 注意 | 否（在“组织架构”里点一键修复，原配置保留） |
+| 提示词文件、技能配置文件、助手专属技能记录对应的助手已不存在 | 提示 | 否（确认后用 `scripts/archive_orphan_agent_files.py --apply` 移到 `backups/` 归档，附清单可恢复；git 跟踪的文件不动，库里没有助手时拒绝执行） |
+| 残留的自动化测试账号（`rt_` 开头） | 提示 | 否（`scripts/purge_test_users.py`） |
+
+有严重问题时退出码为 1。交付 / 升级后先跑一次；生产上每天跑一次：`deploy/systemd/agent-data-health.{service,timer}`（只读，不自动修；单元变成 failed 就是有严重问题）。
+
+```bash
+sudo cp deploy/systemd/agent-data-health.* /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now agent-data-health.timer
+```
+
+### 5.2 数据保留期限
+
+运行轨迹、操作日志、通知、后台任务记录每次使用都会写，只增不减。保留策略按类配置（`service/data_retention.py`）：
+
+| 数据 | 环境变量 | 默认 | 不删的 |
+|---|---|---|---|
+| 智能体运行轨迹（含每一步） | `AGENT_RUN_RETENTION_DAYS` | 180 天 | 运行中的 |
+| 接口操作日志 | `OPERATION_LOG_RETENTION_DAYS` | 90 天 | — |
+| 站内通知 | `NOTIFICATION_RETENTION_DAYS` | 180 天 | 未读的 |
+| 后台任务记录 | `BACKGROUND_TASK_RETENTION_DAYS` | 90 天 | 排队中、执行中的 |
+| 死信 | `DEAD_LETTER_RETENTION_DAYS` | 180 天 | 待处理的 |
+
+- **永远保留**：审计记录（`audit_event`、`kb_audit_log`）、问题中心（`system_issue`、`issue_event`）、审批单、对话内容（对话是用户自己的，由用户删除对话或删除助手时删）。
+- 天数设 `0` 表示这一类不清理；小于 7 天按 7 天算（防止手误把近期数据删光）。分批删除（每批 1000 条、单独提交），不长时间锁表。
+- 已有的清理照旧：发件箱事件 7 天（`OUTBOX_RETENTION_DAYS`）、附件 7 天、组件数据点 90 天。
+- 注意：一条已读通知删掉后，如果对应的高优先级提醒还没处理，下次提醒运行时会再通知一次。
+
+**自动清理默认关闭**。删数据之前要和客户确认保留期限（有的行业有留存要求），确认后：
+
+```bash
+.venv/bin/python scripts/data_retention.py            # 先看：每类保留多少天、到期多少条（不删）
+.venv/bin/python scripts/backup.py                    # 第一次清理前备份
+.venv/bin/python scripts/data_retention.py --apply    # 清理，写审计 data_retention.applied
+```
+
+之后在 `.env` 里设 `DATA_RETENTION_AUTO=1`，事件运行器每天自动清理一次（启动后满一天才跑第一次）；或者不开自动，用定时任务调 `--apply`。
 
 ## 6. 开发临时模式
 
@@ -403,6 +575,8 @@ docker compose -f docker-compose.prod.yml exec api python scripts/sandbox_accept
   普通用户只能看「能力商店」、在创建/编辑助手时**直接绑定**商店里的技能、上传输入文件、使用。
   商店里的都是管理员上架的，标「官方」。**不开放用户自带脚本**；要开放，须先做到文件隔离、依赖管理、审计和配额都完善。
   代码层面有两道：路由要求管理员，导入策略（`skill_route._import_policy`）再按角色判断一次脚本和上架权限。
+- **上架 = 公开 + 已发布**，两个条件缺一不可，用户的技能中心只显示这一类。导入能力包只会把技能设成“公开”，状态是“草稿”，所以**导入后要上架一次**：后台「技能管理 → 全部技能」勾选（或“选中所有未上架的”），点“批量上架”（`POST /skill/admin/shelf`，写审计 `skill.batch_published`）。每张卡片直接写着“已上架 / 未上架（原因）”；部门助手的专属技能不能上架。数据体检会报“公开但没发布的技能”。
+- **导入的技能换机器 / 换系统也能用**：技能配置里的资源目录、脚本目录以前写的是导入那台机器的绝对路径（例如 Windows 上的 `D:\...\skills_packages\...`），带到 Linux 容器后全部显示“permissions.file_read 包含不存在的资源”。现在读取时遇到别的机器上的绝对路径，会按其中的 `skills_packages/` 段换算到本机（`service/skills/loader.py::localize_root`），配置文件不用改、技能不用重新导入（直接读配置原文的“重新检查脚本”也走同样的换算）；路径仍然只能落在平台管理的目录里。**要在 Docker 里生效，需要重新构建 api 镜像。**
 - 所有用户绑定的是**同一份**技能配置（不再有各人的副本）：管理员改一次全员生效。
 - 管理员在后台「全部技能」里能看到并维护**所有**技能，包括以前由普通用户自己创建的旧技能（编辑、翻译、回滚、删除都可以）。
   配置文件写入是"先写临时文件并校验，通过后才原子替换"，校验不过或中途出错，线上的配置原样保留。

@@ -56,7 +56,7 @@
               class="row-input"
               placeholder="注册时使用的手机号"
               @input="normalizePhoneInput"
-              @keyup.enter="submit"
+              @keydown.enter="!isImeEnter($event) && submit()"
             />
           </label>
           <label class="row row-border">
@@ -70,7 +70,7 @@
                 autocomplete="one-time-code"
                 class="row-input"
                 placeholder="6 位数字"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -91,7 +91,7 @@
                 autocomplete="new-password"
                 class="row-input"
                 placeholder="至少 6 位"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -126,7 +126,7 @@
               autocomplete="username"
               class="row-input"
               placeholder="3–20 个字符"
-              @keyup.enter="submit"
+              @keydown.enter="!isImeEnter($event) && submit()"
             />
           </label>
           <label class="row row-border">
@@ -138,7 +138,7 @@
                 :autocomplete="isRegisterMode ? 'new-password' : 'current-password'"
                 class="row-input"
                 placeholder="至少 6 位"
-                @keyup.enter="submit"
+                @keydown.enter="!isImeEnter($event) && submit()"
               />
               <button
                 type="button"
@@ -167,7 +167,7 @@
                   max="150"
                   class="row-input"
                   placeholder="请输入年龄"
-                  @keyup.enter="submit"
+                  @keydown.enter="!isImeEnter($event) && submit()"
                 />
               </label>
               <label class="row row-border">
@@ -181,7 +181,7 @@
                   class="row-input"
                   placeholder="用于接收验证码"
                   @input="normalizePhoneInput"
-                  @keyup.enter="submit"
+                  @keydown.enter="!isImeEnter($event) && submit()"
                 />
               </label>
               <label class="row row-border">
@@ -195,7 +195,7 @@
                     autocomplete="one-time-code"
                     class="row-input"
                     placeholder="6 位数字"
-                    @keyup.enter="submit"
+                    @keydown.enter="!isImeEnter($event) && submit()"
                   />
                   <button
                     type="button"
@@ -292,6 +292,7 @@
 </template>
 
 <script setup lang="ts">
+import { isImeEnter } from '../utils/ime'
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Eye, EyeOff, Sparkles, X } from 'lucide-vue-next'
@@ -486,8 +487,8 @@ const submit = async () => {
       successMsg.value = '注册成功，正在登录...'
     }
     await userStore.login(username.value.trim(), password.value)
-    // 管理员跳 /admin，普通用户跳 /agents
-    router.push(userStore.user?.is_admin ? '/admin' : '/agents')
+    // 管理员跳 /admin；普通用户进 /home，由路由守卫决定落在部门工作台还是个人工作台
+    router.push(userStore.user?.is_admin ? '/admin' : '/home')
   } catch (e: any) {
     const fallback = isResetMode.value ? '重置密码失败' : isRegisterMode.value ? '注册失败' : '登录失败'
     errorMsg.value = getErrorMessage(e, fallback)
@@ -497,7 +498,7 @@ const submit = async () => {
 }
 
 onMounted(() => {
-  if (userStore.token) router.push(userStore.user?.is_admin ? '/admin' : '/agents')
+  if (userStore.isLoggedIn()) router.push(userStore.user?.is_admin ? '/admin' : '/home')
 })
 
 onUnmounted(() => {

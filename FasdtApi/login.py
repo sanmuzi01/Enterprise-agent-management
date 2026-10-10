@@ -1,9 +1,10 @@
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from service.exceptions import InvalidInput
 from pydantic import BaseModel,Field
-from service import auth_async_service
+from service import auth_async_service, session_cookie
+from service.auth import ACCESS_TOKEN_EXPIRE_MINUTES
 from service.password_policy import MAX_LENGTH as PW_MAX_LENGTH, MIN_LENGTH as PW_MIN_LENGTH
 from service.phone_verification_service import normalize_phone
 from service.phone_verification_async_service import async_send_register_code, async_send_verification_code
@@ -91,12 +92,14 @@ class WorkspaceCommandRequest(BaseModel):
 async def login(
         user: LoginUser,
         request: Request,
+        response: Response,
         async_db=Depends(get_async_db),
 ):
     client_ip = request.client.host if request.client else "unknown"
     try:
         # 按 IP 限：防止单一来源脚本化撞库；按用户名限：防止分布式撞同一个账号。
         require_limit(
+            critical=True,
             key=f"login:ip:{client_ip}",
             limit_env="LOGIN_IP_RATE_LIMIT",
             default_limit=20,
@@ -105,6 +108,7 @@ async def login(
             label="登录",
         )
         require_limit(
+            critical=True,
             key=f"login:user:{user.name.strip().lower()}",
             limit_env="LOGIN_USER_RATE_LIMIT",
             default_limit=8,
@@ -114,7 +118,18 @@ async def login(
         )
     except LimitExceeded as e:
         raise _limit_error(e)
-    return await auth_async_service.login(async_db, user.name, user.password)
+    result = await auth_async_service.login(async_db, user.name, user.password)
+    # 浏览器靠这个 HttpOnly Cookie 保持登录。响应体里不返回 JWT：登录时运行的页面脚本（哪怕是被注入的）也读不到令牌。
+    # 脚本 / CLI / 集成需要 Bearer 令牌的，走专用的 POST /auth/token（有单独的限流和审计，生产默认关闭）。
+    session_cookie.issue(response, result["access_token"], ACCESS_TOKEN_EXPIRE_MINUTES * 60)
+    return {key: value for key, value in result.items() if key not in ("access_token", "token_type")}
+
+
+@router.post("/logout", summary="退出登录（清除浏览器里的登录 Cookie）")
+async def logout(response: Response):
+    """不需要登录态：只是让浏览器丢掉两个 Cookie。已经签发的令牌要让它立即失效，用 /user/logout-all。"""
+    session_cookie.clear(response)
+    return {"message": "已退出登录"}
 #注册
 @router.post("/register",summary="用户注册")
 async def register(
@@ -125,6 +140,7 @@ async def register(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"register:ip:{client_ip}",
             limit_env="REGISTER_RATE_LIMIT",
             default_limit=10,
@@ -155,6 +171,7 @@ async def send_register_sms_code(
     # 查库之前先限流：否则对"已注册"的号码可以无限次探测，一次短信都不会发也就不会被发送环节的限制拦住。
     try:
         require_limit(
+            critical=True,
             key=f"sms:register-probe:ip:{client_ip or 'unknown'}",
             limit_env="SMS_CODE_IP_LIMIT",
             default_limit=20,
@@ -180,6 +197,7 @@ async def send_reset_password_sms_code(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"sms:reset-probe:ip:{client_ip}",
             limit_env="SMS_CODE_IP_LIMIT",
             default_limit=20,
@@ -213,6 +231,7 @@ async def reset_password(
     client_ip = request.client.host if request.client else "unknown"
     try:
         require_limit(
+            critical=True,
             key=f"reset-password:ip:{client_ip}",
             limit_env="RESET_PASSWORD_RATE_LIMIT",
             default_limit=10,
@@ -338,6 +357,7 @@ async def change_password(
 
 @router.post("/logout-all", summary="退出所有设备")
 async def logout_all_devices(
+        response: Response,
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_user_async),
 ):
@@ -347,4 +367,5 @@ async def logout_all_devices(
     设备上也登录着"这种场景用的。
     """
     await auth_async_service.logout_all_devices(async_db, current_user.id)
+    session_cookie.clear(response)
     return {"message": "已退出所有设备，请重新登录"}

@@ -17,6 +17,34 @@ from tests._async_helpers import run_async as _run
 from tests.test_enterprise_access import _add_org_member, _create_org
 
 _AVAILABLE, _WHY = rc.route_tests_available()
+_TEMP_ENTERPRISE = None
+
+
+def setUpModule():
+    """这些用例都在“本企业”下建部门。空库（CI 单跑这个文件、scripts/test_fresh_db.py）里还没有企业，
+    以前要靠前面别的测试顺带建出来才能过——单独跑就全挂。没有就临时建一家，跑完删掉。"""
+    global _TEMP_ENTERPRISE
+    if not _AVAILABLE:
+        return
+    with SessionLocal() as db:
+        if db.execute(text("SELECT id FROM organizations LIMIT 1")).scalar() is not None:
+            return
+        owner = rc.create_user("oa-ent-owner")
+        _TEMP_ENTERPRISE = _create_org(db, "oa-test-enterprise", owner["id"])
+        db.commit()
+
+
+def tearDownModule():
+    if _TEMP_ENTERPRISE is None:
+        return
+    with SessionLocal() as db:
+        org = {"o": _TEMP_ENTERPRISE}
+        db.execute(text("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE organization_id = :o)"), org)
+        db.execute(text("DELETE FROM teams WHERE organization_id = :o"), org)
+        db.execute(text("DELETE FROM organization_members WHERE organization_id = :o"), org)
+        db.execute(text("DELETE FROM organizations WHERE id = :o"), org)
+        db.commit()
+    rc.cleanup()
 
 
 def _run_db(fn):
@@ -90,6 +118,66 @@ class TeamCrudTest(unittest.TestCase):
         with self.assertRaises(InvalidInput):
             _run_db(lambda db: svc.update_team(db, created["id"], self.admin["id"], status="deleted"))
 
+    # ---------------- department_code（部门工作台整合打磨新增） ----------------
+
+    def test_create_team_with_valid_department_code(self):
+        import service.organization_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_team(
+            db, "oa-test-dept-sales", self.admin["id"], department_code="sales",
+        ))
+        self.assertEqual(created["department_code"], "sales")
+        teams = _run_db(lambda db: svc.list_teams(db))
+        this_team = next(t for t in teams if t["id"] == created["id"])
+        self.assertEqual(this_team["department_code"], "sales")
+
+    def test_create_team_without_department_code_defaults_to_none(self):
+        import service.organization_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_team(db, "oa-test-dept-none", self.admin["id"]))
+        self.assertIsNone(created["department_code"])
+
+    def test_create_team_with_invalid_department_code_raises_invalid_input(self):
+        import service.organization_admin_service as svc
+
+        with self.assertRaises(InvalidInput):
+            _run_db(lambda db: svc.create_team(
+                db, "oa-test-dept-bad", self.admin["id"], department_code="not-a-real-department",
+            ))
+
+    def test_update_team_sets_department_code(self):
+        import service.organization_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_team(db, "oa-test-dept-update", self.admin["id"]))
+        updated = _run_db(lambda db: svc.update_team(
+            db, created["id"], self.admin["id"], department_code="finance",
+        ))
+        self.assertEqual(updated["department_code"], "finance")
+
+    def test_update_team_without_department_code_kwarg_leaves_it_unchanged(self):
+        # 不传 department_code 参数（sentinel 默认值）——只改名字，业务类型不受影响，
+        # 这是"没传"和"显式传 None 清空"两种语义要能区分的核心断言。
+        import service.organization_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_team(
+            db, "oa-test-dept-untouched", self.admin["id"], department_code="procurement",
+        ))
+        renamed = _run_db(lambda db: svc.update_team(
+            db, created["id"], self.admin["id"], name="oa-test-dept-untouched-2",
+        ))
+        self.assertEqual(renamed["department_code"], "procurement")
+
+    def test_update_team_with_explicit_none_clears_department_code(self):
+        import service.organization_admin_service as svc
+
+        created = _run_db(lambda db: svc.create_team(
+            db, "oa-test-dept-clear", self.admin["id"], department_code="it",
+        ))
+        cleared = _run_db(lambda db: svc.update_team(
+            db, created["id"], self.admin["id"], department_code=None,
+        ))
+        self.assertIsNone(cleared["department_code"])
+
     def test_disabling_team_via_admin_backend_immediately_revokes_access(self):
         # 闭环验证：管理员在这个后台点"停用部门"之后，用之前已经在这个部门的
         # 负责人身份必须立刻失效——不能只是 teams.status 改了，鉴权层没跟上
@@ -142,6 +230,29 @@ class TeamCrudTest(unittest.TestCase):
 
         org_members = _run_db(lambda db: svc.list_org_members(db))
         self.assertIn(self.member1["id"], [m["user_id"] for m in org_members])
+
+        # 部门工作台里程碑1新增：list_org_members 现在还要带上每个人所属的部门
+        # 列表（AdminOrganization.vue 建部门 Agent 时要看"这个人在哪些部门、
+        # 什么角色"）——不能只是"没报错"，要真的能看到刚加的这条部门归属。
+        member_row = next(m for m in org_members if m["user_id"] == self.member1["id"])
+        self.assertEqual(
+            [d["id"] for d in member_row["departments"]], [team["id"]],
+        )
+        self.assertEqual(member_row["departments"][0]["role_code"], "member")
+
+    def test_adding_member_to_another_team_moves_instead_of_duplicating(self):
+        import service.organization_admin_service as svc
+
+        first = _run_db(lambda db: svc.create_team(db, "oa-test-move-from", self.admin["id"]))
+        second = _run_db(lambda db: svc.create_team(db, "oa-test-move-to", self.admin["id"]))
+        _run_db(lambda db: svc.add_team_member(db, first["id"], self.admin["id"], self.member1["id"], "member"))
+        moved = _run_db(lambda db: svc.add_team_member(
+            db, second["id"], self.admin["id"], self.member1["id"], "admin"))
+
+        self.assertEqual(moved["moved_from_team_id"], first["id"])
+        self.assertEqual(_run_db(lambda db: svc.list_team_members(db, first["id"])), [])
+        target = _run_db(lambda db: svc.list_team_members(db, second["id"]))
+        self.assertEqual([(m["user_id"], m["role_code"]) for m in target], [(self.member1["id"], "admin")])
 
     def test_update_and_remove_team_member(self):
         import service.organization_admin_service as svc

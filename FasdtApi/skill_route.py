@@ -308,6 +308,25 @@ def api_reanalyze_skill_scripts(
     return {"code": 200, "msg": f"已检查 {result['checked']} 个，{result['changed']} 个有变化", "data": result}
 
 
+class SkillShelfBatch(BaseModel):
+    skill_ids: List[int] = Field(min_length=1, max_length=500)
+    action: str = Field(pattern="^(publish|unpublish)$")
+
+
+@router.post("/admin/shelf", summary="（管理员）批量上架 / 下架技能")
+def api_batch_shelf(
+    data: SkillShelfBatch,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """上架 = 公开 + 已发布，出现在用户的技能中心；下架 = 退回草稿。部门助手的专属技能会被跳过（见 service/skills_core/shelf.py）。"""
+    from service.skills_core.shelf import batch_set_shelf
+    result = batch_set_shelf(db, data.skill_ids, current_user.id, data.action)
+    verb = "上架" if data.action == "publish" else "下架"
+    msg = f"已{verb} {len(result['changed'])} 个" + (f"，跳过 {len(result['skipped'])} 个" if result["skipped"] else "")
+    return {"code": 200, "msg": msg, "data": result}
+
+
 @router.get("/{skill_id}/versions", summary="（管理员）查看技能的历史版本")
 def api_list_skill_versions(
     skill_id: int,

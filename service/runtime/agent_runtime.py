@@ -138,11 +138,14 @@ def _reassemble_after_policy_filter(allowed_hits, mode: str):
     return _assemble_agent_context(allowed_hits)
 
 
+from service.prompt_guard import UNTRUSTED_RULE  # noqa: E402
+
+
 def _compose_kb_prompt(system_prompt: str, agent, rag: Dict[str, Any]) -> str:
     """把检索上下文 + 引用/拒答规则拼进 system prompt。"""
     context = rag.get("context") or ""
     if context:
-        rules = ["若参考资料不足以回答问题，请如实说明，不要编造。"]
+        rules = ["若参考资料不足以回答问题，请如实说明，不要编造。", UNTRUSTED_RULE]
         if getattr(agent, "kb_force_citation", 1):
             rules.append("引用规则：回答中每处引用了下面资料的内容，都要在句末用【来源N】标注（N 为资料编号）。")
         return (
@@ -160,9 +163,26 @@ def _compose_kb_prompt(system_prompt: str, agent, rag: Dict[str, Any]) -> str:
     return system_prompt
 
 
+_WEEKDAYS = "一二三四五六日"
+
+
+def _today_line(now=None) -> str:
+    """告诉模型今天是哪天。员工说“报销昨天的住宿费”“下周一请假”，模型得先知道今天的日期
+    才能换算；不写的话它只能猜，起草的单据日期会错。按企业所在时区（APP_TIMEZONE，默认北京时间）。"""
+    import os
+    from datetime import timedelta, timezone
+    try:
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(os.getenv("APP_TIMEZONE", "Asia/Shanghai"))
+    except Exception:  # noqa: BLE001 —— 没有时区数据时退回东八区
+        tz = timezone(timedelta(hours=8))
+    local = (now or utcnow()).replace(tzinfo=timezone.utc).astimezone(tz)
+    return f"今天是 {local:%Y-%m-%d}（星期{_WEEKDAYS[local.weekday()]}）。用户说“昨天”“下周一”等相对日期时，按这个日期换算。"
+
+
 async def _compose_system_prompt_async(db, user_id: int, agent_id: int, agent) -> Dict[str, str]:
     """统一组装 Agent 基础提示词、用户画像和长期记忆（画像 / 记忆走 *_async）。"""
-    base_prompt = build_prompt(agent_id) or "你是一个通用智能助理。"
+    base_prompt = (build_prompt(agent_id) or "你是一个通用智能助理。") + "\n\n" + _today_line()
 
     profile_text = ""
     try:
@@ -244,7 +264,7 @@ def _plan_react_steps(step_no_ref: Dict[str, int], step_info: Dict[str, Any],
 # AsyncSession 版（阶段 2）：chat_service.chat_with_agent → 这条
 # ============================================================================
 
-async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = None) -> None:
+async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = None, exc: BaseException = None) -> None:
     """异步失败收尾。run 行在函数开头已 commit，主事务 rollback 后它仍在，
     这里单独把它标记为终态（best-effort，吞二次异常）。"""
     from models.init_db import AgentRun
@@ -256,6 +276,13 @@ async def _finalize_run_async(db, run_id: int, status: str, *, error_msg: str = 
             if error_msg is not None:
                 run_record.error_msg = str(error_msg)[:500]
             run_record.finished_at = utcnow()
+            if status == "failed":
+                # 失败要可追溯：错误码、trace_id、问题编号、事件（同一个事务）；追踪失败不影响收尾本身
+                try:
+                    from service.observability.agent_runs import report_failure
+                    await report_failure(db, run_id, exc, str(error_msg or ""))
+                except Exception:  # noqa: BLE001
+                    logger.warning("Agent 运行失败追踪出错", exc_info=True)
             await db.commit()
     except Exception:  # noqa: BLE001
         await db.rollback()
@@ -330,6 +357,9 @@ async def run_with_history_async(
     agent = await get_usable_agent_async(db, user_id, agent_id)
     if not agent:
         raise ValueError("智能体不存在或无权使用")
+    if getattr(agent, "runtime_type", "builtin") == "external":
+        from service.runtime.external_runtime import run_external_async
+        return await run_external_async(db, agent, user_id, user_message, history, conversation_id)
 
     run = await create_run_async(
         db=db, user_id=user_id, agent_id=agent_id,
@@ -436,7 +466,7 @@ async def run_with_history_async(
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        await _finalize_run_async(db, run_id, "failed", error_msg=str(e))
+        await _finalize_run_async(db, run_id, "failed", error_msg=str(e), exc=e)
         raise
 
 
@@ -469,6 +499,12 @@ async def run_stream_with_history_async(
             return
     except Exception as e:  # noqa: BLE001
         yield make_error(f"查询智能体失败: {e}")
+        return
+
+    if getattr(agent, "runtime_type", "builtin") == "external":
+        from service.runtime.external_runtime import stream_external_async
+        async for chunk in stream_external_async(db, agent, user_id, user_message, history, conversation_id):
+            yield chunk
         return
 
     # 2. 建 AgentRun 并立即 commit
@@ -639,6 +675,6 @@ async def run_stream_with_history_async(
             await db.rollback()
         except Exception:  # noqa: BLE001
             pass
-        await _finalize_run_async(db, run_id, "failed", error_msg=str(e))
+        await _finalize_run_async(db, run_id, "failed", error_msg=str(e), exc=e)
         yield make_error(message="服务暂时异常，请稍后重试", detail=str(e)[:300])
         return

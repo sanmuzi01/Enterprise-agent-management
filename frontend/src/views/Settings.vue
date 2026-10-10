@@ -19,6 +19,7 @@
         <SectionTabs :tabs="[
           { label: '模型连接', path: '/llm-configs' },
           { label: '个性化与系统状态', path: '/settings' },
+          { label: '飞书 / 钉钉', path: '/settings/integrations' },
         ]" />
       </header>
 

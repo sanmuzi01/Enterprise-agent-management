@@ -42,12 +42,14 @@ npm run frontend:dev
 访问地址：
 
 ```text
-前端：http://localhost:5173
+前端：http://127.0.0.1:5173
 后端：http://127.0.0.1:8011
 健康检查：http://127.0.0.1:8011/health
 ```
 
 前端 dev server 会把 `/api/*` 代理到 `http://127.0.0.1:8011`，不用配 CORS。
+根目录的 `frontend:dev` 脚本固定绑定 `127.0.0.1:5173`，并启用 Vite `strictPort`：
+如果 5173 被旧进程占用，启动会明确失败，避免自动换端口或 IPv4/IPv6 地址不一致造成“看似启动、页面打不开”。
 
 ## 3. 生产 / 服务器部署
 
@@ -87,6 +89,22 @@ netstat -ano | findstr :8011
 ```
 
 结束对应进程前确认不是你正在用的服务。
+
+### 5173 端口被占用或页面返回 404
+
+先确认占用者确实是本项目的旧 Vite 进程，再停止它；不要同时开多个 `frontend:dev`：
+
+```powershell
+Get-NetTCPConnection -State Listen -LocalPort 5173 | Select-Object LocalAddress,LocalPort,OwningProcess
+Get-CimInstance Win32_Process -Filter "ProcessId=<上一步的 OwningProcess>" | Select-Object ProcessId,CommandLine
+Stop-Process -Id <确认后的进程号>
+npm run frontend:dev
+```
+
+### 登录后反复加载，日志持续出现 counts / unread-count 401
+
+这是失效会话。当前前端会在首个非登录请求收到 401 后同时清理本地用户信息和 `csrf_token`，然后稳定回到登录页，
+不会再在登录页和业务页之间循环。升级前遗留的页面先按一次 `Ctrl+F5`；仍未刷新时清除该站点的 Cookie 和 Local Storage。
 
 ### 文档 / 组件一直显示处理中
 

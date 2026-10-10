@@ -247,3 +247,62 @@ class GetLeaveStatusTool(BaseTool):
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
         return json.dumps(result, ensure_ascii=False)
+
+
+@ToolRegistry.register
+class GetMyLeaveRequestsTool(BaseTool):
+    """部门工作台里程碑1新增：把之前只挂了 REST 接口没配工具的"我的请假"接上 Agent。"""
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "get_my_leave_requests"
+
+    def get_description(self) -> str:
+        return "查询当前用户自己提交过的所有请假单（不分状态），按创建时间倒序。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        user_id = _current_user_id(self._ctx)
+        try:
+            result = hub.call(
+                "GET", "/oa/leave/requests/mine", user_id, None,
+                ["oa.leave.read"], "get_my_leave_requests",
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)
+
+
+@ToolRegistry.register
+class GetTeamPendingLeaveRequestsTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "get_team_pending_leave_requests"
+
+    def get_description(self) -> str:
+        return "查询当前用户所在部门里所有待审批（已提交、还没批准/拒绝）的请假单（只有部门负责人或企业管理员视角的对话该调用这个工具）。"
+
+    def get_parameters(self) -> dict:
+        return {"type": "object", "properties": {}}
+
+    def execute(self, **kwargs) -> str:
+        user_id = _current_user_id(self._ctx)
+        auth = hub.resolve_caller_context(user_id, self._ctx.agent_id)
+        if not (auth["is_org_admin"] or auth["is_team_admin"]):
+            return json.dumps({"error": "当前用户不是部门负责人或企业管理员，无权查看待审批列表"}, ensure_ascii=False)
+        if auth["team_id"] is None:
+            return json.dumps({"error": "当前对话没有对应到具体部门，无法查询待审批列表"}, ensure_ascii=False)
+        try:
+            result = hub.call(
+                "GET", f"/oa/leave/requests/team-pending?teamId={int(auth['team_id'])}", user_id, auth["team_id"],
+                ["oa.leave.read"], "get_team_pending_leave_requests",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            )
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        return json.dumps(result, ensure_ascii=False)

@@ -25,6 +25,12 @@ class CallSignsRealRequestBytesTest(unittest.TestCase):
     直接 mock `requests.request`，拦下真正发出去的 `data=` 参数，反过来验证
     X-Context 里签的 body_sha256/method/path 是不是跟它一致。"""
 
+    def setUp(self):
+        # 熔断器是进程级状态：前面的测试（Java 没启动时的首页等）可能已经把它打开，会让这里的签名断言误报
+        from service.http_resilience import circuit_breaker
+        circuit_breaker.record_success("enterprise_hub")
+        self.addCleanup(circuit_breaker.record_success, "enterprise_hub")
+
     def _do_call(self, method, path, json_body):
         captured = {}
 
@@ -68,10 +74,8 @@ class CallSignsRealRequestBytesTest(unittest.TestCase):
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")
-class ResolveCallerContextMultiTeamTest(unittest.TestCase):
-    """user 同时是 team_a（先建，id 更小）和 team_b（后建，id 更大）的部门负责人——
-    旧的 `ORDER BY id LIMIT 1` 一定会拿到 team_a，即使这次操作明明是在 team_b 的
-    部门 Agent 下发起的。"""
+class ResolveCallerContextDepartmentTest(unittest.TestCase):
+    """一人一部门：部门 Agent 上下文与用户唯一的部门归属保持一致。"""
 
     @classmethod
     def setUpClass(cls):
@@ -82,8 +86,7 @@ class ResolveCallerContextMultiTeamTest(unittest.TestCase):
 
         cls.team_a = _create_team(cls.db, cls.org_id, "ehc-team-a", cls.user["id"])
         cls.team_b = _create_team(cls.db, cls.org_id, "ehc-team-b", cls.user["id"])
-        # 两边都是负责人（admin），纯粹的"该用哪个部门"问题，不是"有没有权限"问题。
-        _add_team_member(cls.db, cls.team_a, cls.user["id"], "admin")
+        # 用户只属于一个部门；team_a 是同企业里的无关部门。
         _add_team_member(cls.db, cls.team_b, cls.user["id"], "admin")
 
         dept_agent_b = Agent(user_id=cls.user["id"], name="ehc-dept-agent-b",
@@ -104,41 +107,36 @@ class ResolveCallerContextMultiTeamTest(unittest.TestCase):
         cls.db.close()
 
     def test_department_agent_context_uses_agents_own_team(self):
-        # 通过 team_b 的部门 Agent 操作——即使 team_a 的 id 更小，也必须拿到 team_b。
+        # 通过所属部门的 Agent 操作，必须拿到用户唯一的部门。
         auth = hub.resolve_caller_context(self.user["id"], self.dept_agent_b_id)
         self.assertEqual(auth["team_id"], self.team_b)
         self.assertTrue(auth["is_team_admin"])
 
-    def test_no_agent_context_falls_back_to_first_team(self):
-        # 没有部门 Agent 上下文（比如没传 agent_id）——退回旧的"第一个在职部门"兜底行为。
+    def test_no_agent_context_falls_back_to_users_department(self):
         auth = hub.resolve_caller_context(self.user["id"], None)
-        self.assertEqual(auth["team_id"], self.team_a)
+        self.assertEqual(auth["team_id"], self.team_b)
 
-    def test_personal_agent_context_falls_back_to_first_team(self):
-        # 部门 Agent 之外的其它 Agent（agent_type != 'department'）不提供 team_id，同样退回兜底。
+    def test_personal_agent_context_falls_back_to_users_department(self):
         auth = hub.resolve_caller_context(self.user["id"], self.personal_agent_id)
-        self.assertEqual(auth["team_id"], self.team_a)
+        self.assertEqual(auth["team_id"], self.team_b)
 
-    def test_nonexistent_agent_id_falls_back_to_first_team(self):
+    def test_nonexistent_agent_id_falls_back_to_users_department(self):
         auth = hub.resolve_caller_context(self.user["id"], 999_999_999)
-        self.assertEqual(auth["team_id"], self.team_a)
+        self.assertEqual(auth["team_id"], self.team_b)
 
     def test_disabled_department_agent_team_is_skipped(self):
-        # team_b 被停用后，即使还是通过 team_b 的部门 Agent 操作，也不能再拿到
-        # team_b 的 team_id（那是个已经不存在的部门了）——应该退回兜底（team_a）。
+        # 唯一部门被停用后，不能再解析出任何部门。
         from sqlalchemy import text as _sql
         self.db.execute(_sql("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_b})
         self.db.commit()
         try:
             auth = hub.resolve_caller_context(self.user["id"], self.dept_agent_b_id)
-            self.assertEqual(auth["team_id"], self.team_a)
+            self.assertIsNone(auth["team_id"])
         finally:
             self.db.execute(_sql("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_b})
             self.db.commit()
 
-    def test_disabled_first_team_is_skipped_by_fallback(self):
-        # 没有部门 Agent 上下文时，兜底逻辑也不能选中已停用的 team_a——应该跳过它，
-        # 落到仍然启用的 team_b。
+    def test_unrelated_disabled_team_does_not_affect_fallback(self):
         from sqlalchemy import text as _sql
         self.db.execute(_sql("UPDATE teams SET status='disabled' WHERE id=:i"), {"i": self.team_a})
         self.db.commit()
@@ -148,6 +146,36 @@ class ResolveCallerContextMultiTeamTest(unittest.TestCase):
         finally:
             self.db.execute(_sql("UPDATE teams SET status='active' WHERE id=:i"), {"i": self.team_a})
             self.db.commit()
+
+
+class ErrorDetailTest(unittest.TestCase):
+    def response(self, status, body=None, text=""):
+        resp = Mock(status_code=status, text=text, content=b"x")
+        if body is None:
+            resp.json.side_effect = ValueError
+        else:
+            resp.json.return_value = body
+        return resp
+
+    def raised(self, resp):
+        with patch.object(hub, "request_with_retry", return_value=resp), \
+             self.assertRaises(hub.EnterpriseHubError) as ctx:
+            hub.call("POST", "/procurement/requests", 1, 2, ["procurement.write"], "x", json_body={})
+        return ctx.exception
+
+    def test_business_message_is_surfaced(self):
+        exc = self.raised(self.response(400, {"status": 400, "message": "预算不足：还剩 10，申请了 20"}))
+        self.assertEqual((exc.status_code, exc.detail), (400, "预算不足：还剩 10，申请了 20"))
+
+    def test_spring_default_body_is_not_leaked(self):
+        body = {"timestamp": "2026-10-01T00:00:00Z", "status": 404, "error": "Not Found", "path": "/internal/x"}
+        exc = self.raised(self.response(404, body))
+        self.assertNotIn("/internal/x", exc.detail)
+        self.assertIn("404", exc.detail)
+
+    def test_non_json_body_is_not_leaked(self):
+        exc = self.raised(self.response(502, text="<html>stack trace</html>"))
+        self.assertNotIn("stack", exc.detail)
 
 
 if __name__ == "__main__":

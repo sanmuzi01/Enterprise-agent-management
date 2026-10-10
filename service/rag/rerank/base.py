@@ -1,5 +1,9 @@
 from abc import abstractmethod,ABC
 from typing import List
+
+from utils.logger_handler import get_logger
+
+_registry_logger = get_logger("rerank_registry", console_level=40)
 class BaseReranker(ABC):
     """重排序模型抽象基类
     和 BaseEmbedding 的设计一样：
@@ -35,9 +39,9 @@ class RerankRegistry:
             )
         for name in model_names:
             if name in cls._registry:
-                print(f"[RerankRegistry] 覆盖已有模型: {name} → {reranker_class.__name__}")
+                _registry_logger.warning("[RerankRegistry] 覆盖已有模型: %s → %s", name, reranker_class.__name__)
             cls._registry[name] = reranker_class
-            print(f"[RerankRegistry] 注册模型: {name} → {reranker_class.__name__}")
+            _registry_logger.debug("[RerankRegistry] 注册模型: %s → %s", name, reranker_class.__name__)
 
     @classmethod
     def get(cls, model_name: str):

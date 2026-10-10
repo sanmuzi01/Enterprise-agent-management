@@ -21,6 +21,7 @@ release-*/
 .env.*
 !.env.example
 !.env.production.example
+!.env.production.docker.example
 
 data/attachments/
 
@@ -29,6 +30,9 @@ skills/imported/
 skills_packages/imported/
 # 用户在页面上自己创建的 Skill（含本地跑 E2E 冒烟测试时创建的），同样是运行时数据，不入库
 skills/user_created/
+# 部门 Agent 发布时按 agent_id 生成的 Skill 配置（service/agent_admin_service.py），
+# 运行时数据，不是仓库内容——跟 prompt/prompts/*.yaml 同一个道理。
+skills/enterprise/
 # 例外：预制的 Skill 精选包可以入库（上面的 *.zip 规则会忽略其他压缩包）
 !skill-packs/*.zip
 
@@ -40,3 +44,19 @@ tests_e2e/.e2e_data/
 prompt/prompts/*.yaml
 !prompt/prompts/1.yaml
 !prompt/prompts/5.yaml
+
+# 一键演示环境的日志与进程号（scripts/demo.py）
+.demo/
+
+# 根目录的本机产物：依赖目录、本机进程日志、手工导出的补丁，都不是仓库内容
+# （frontend/node_modules 由 frontend/.gitignore 管；根目录 package.json 装依赖时也会生成 node_modules）
+/node_modules/
+/.runlogs/
+/*.log
+/.*.log
+/*.patch
+
+# 本地演示文稿生成/校验产物：保留在磁盘供查看，不进入产品代码提交。
+/.ppt-build/
+/.codex-finalizer/
+/outputs/

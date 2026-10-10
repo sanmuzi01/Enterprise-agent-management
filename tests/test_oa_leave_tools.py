@@ -19,6 +19,8 @@ from service.tools.oa_leave import (
     CreateLeaveDraftTool,
     GetLeaveBalanceTool,
     GetLeaveStatusTool,
+    GetMyLeaveRequestsTool,
+    GetTeamPendingLeaveRequestsTool,
     RejectLeaveRequestTool,
     SubmitLeaveRequestTool,
 )
@@ -91,6 +93,16 @@ class OaLeaveToolsTest(unittest.TestCase):
         self.assertEqual(kwargs["is_org_admin"], False)
         self.assertEqual(kwargs["is_team_admin"], False)
 
+    def test_get_my_leave_requests_uses_read_scope_and_no_team_id(self, _auth_mock):
+        with patch("service.tools.oa_leave.hub.call", return_value=[{"id": 1}]) as mock_call:
+            tool = GetMyLeaveRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_called_once_with(
+            "GET", "/oa/leave/requests/mine", 1001, None, ["oa.leave.read"], "get_my_leave_requests",
+        )
+        self.assertEqual(json.loads(result), [{"id": 1}])
+
     def test_hub_error_becomes_error_json_not_exception(self, _auth_mock):
         with patch("service.tools.oa_leave.hub.call", side_effect=hub.EnterpriseHubError(400, "余额不足")):
             tool = SubmitLeaveRequestTool()
@@ -157,6 +169,43 @@ class ApproveRejectAuthorizationTest(unittest.TestCase):
             "POST", "/oa/leave/requests/42/reject", 1001, 7, ["oa.leave.approve"], "reject_leave_request",
         ))
         self.assertEqual(kwargs["is_org_admin"], True)
+
+    @patch("service.tools.oa_leave.hub.resolve_caller_context",
+           return_value=_auth(is_org_admin=False, is_team_admin=False))
+    def test_team_pending_denied_locally_when_neither_org_nor_team_admin(self, _auth_mock):
+        with patch("service.tools.oa_leave.hub.call") as mock_call:
+            tool = GetTeamPendingLeaveRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_not_called()
+        self.assertIn("error", json.loads(result))
+
+    @patch("service.tools.oa_leave.hub.resolve_caller_context",
+           return_value=_auth(team_id=None, is_org_admin=True, is_team_admin=False))
+    def test_team_pending_denied_locally_when_no_team_context(self, _auth_mock):
+        # 企业管理员视角但没有对应到具体部门（比如通过中央 Agent 直接问，没经过任何
+        # 部门 Agent）——查"某部门待审批"这个动作本身没有意义，不能瞎猜一个部门。
+        with patch("service.tools.oa_leave.hub.call") as mock_call:
+            tool = GetTeamPendingLeaveRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        mock_call.assert_not_called()
+        self.assertIn("error", json.loads(result))
+
+    @patch("service.tools.oa_leave.hub.resolve_caller_context",
+           return_value=_auth(is_org_admin=False, is_team_admin=True))
+    def test_team_pending_proceeds_when_team_admin(self, _auth_mock):
+        with patch("service.tools.oa_leave.hub.call", return_value=[]) as mock_call:
+            tool = GetTeamPendingLeaveRequestsTool()
+            tool.set_context(_ctx())
+            result = tool.execute()
+        args, kwargs = mock_call.call_args
+        self.assertEqual(args[:6], (
+            "GET", "/oa/leave/requests/team-pending?teamId=7", 1001, 7,
+            ["oa.leave.read"], "get_team_pending_leave_requests",
+        ))
+        self.assertEqual(kwargs["is_team_admin"], True)
+        self.assertEqual(json.loads(result), [])
 
 
 class SignContextTest(unittest.TestCase):

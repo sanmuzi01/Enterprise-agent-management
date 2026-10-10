@@ -21,13 +21,28 @@ public final class TeamAccessGuard {
     private TeamAccessGuard() {
     }
 
-    /** 企业管理员可以跨部门；部门负责人只能管自己那个部门（callerTeamId 跟资源的 teamId 一致）。 */
+    /**
+     * 企业管理员可以跨部门，但只限自己所在的企业；部门负责人只能管自己那个部门（callerTeamId 跟资源的 teamId 一致）。
+     *
+     * 企业管理员的范围来自签名上下文里的 {@code org_team_ids}（该企业全部有效部门）。这里读 {@link RequestContextHolder}
+     * 是有意破例：它只用于“企业管理员能不能碰这个部门”这一个判断，其余仍然只吃显式参数。
+     * 请求带了企业管理员标记却没有 org_team_ids（旧版客户端）一律拒绝（宁可误拒也不放行）；
+     * 完全没有请求上下文（纯逻辑单测直接调 Service）沿用原语义——HTTP 入口一定经过 SignedRequestContextFilter。
+     */
     public static boolean canActOnTeam(Long callerTeamId, boolean isOrgAdmin, boolean isTeamAdmin, Long resourceTeamId) {
         if (isOrgAdmin) {
-            return true;
+            return orgAdminCovers(resourceTeamId);
         }
         return isTeamAdmin && resourceTeamId != null && callerTeamId != null
                 && callerTeamId.longValue() == resourceTeamId.longValue();
+    }
+
+    private static boolean orgAdminCovers(Long resourceTeamId) {
+        RequestContext ctx = RequestContextHolder.currentOrNull();
+        if (ctx == null) {
+            return true;
+        }
+        return resourceTeamId != null && ctx.orgTeamIds() != null && ctx.orgTeamIds().contains(resourceTeamId);
     }
 
     /** 审批/处理类操作用这个：只有部门负责人（管得到这个部门）或企业管理员才行，申请人自己不算。 */

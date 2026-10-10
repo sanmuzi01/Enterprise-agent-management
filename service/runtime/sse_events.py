@@ -7,6 +7,7 @@ SSE 格式规则（参考 ExperienceRecall 教训）：
   - 必须禁用代理缓冲 header（X-Accel-Buffering: no）
   - 首次写入前必须 flushHeaders
 事件类型及 payload：
+  - route          { reason, department_code, target_agent_id, matched_keywords, alternatives, unavailable } → 中央 Agent 的转交决定（仅中央 Agent 新建会话时）
   - ready          { run_id }                            → 会话已就绪，开始
   - thinking       { content, tool_calls? }              → Agent 思考步（LLM 返回的 thought）
   - tool_call      { name, args, step_no }               → 决定调用某个工具

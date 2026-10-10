@@ -9,6 +9,7 @@
   DELETE /conversation/{conversation_id}     删除会话（级联删消息）
 路由层职责：鉴权(get_current_user) + 入参校验 + HTTP 异常转换
 """
+from utils.http_headers import attachment_disposition
 from fastapi import APIRouter, Depends, Query, Response
 from service.exceptions import InvalidInput, NotFound
 from typing import Optional
@@ -100,7 +101,7 @@ async def export_conversation(
     return Response(
         content=result["content"],
         media_type=f'{result["media_type"]}; charset=utf-8',
-        headers={"Content-Disposition": f'attachment; filename="{result["filename"]}"'},
+        headers={"Content-Disposition": attachment_disposition(result["filename"])},
     )
 
 @router.put("/{conversation_id}", summary="更新会话标题")

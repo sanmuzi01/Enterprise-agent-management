@@ -65,6 +65,9 @@ jobs:
 
       - name: Dependency vulnerability scan (pip-audit)
         # 只忽略"当前没有可升级版本"的漏洞（每条都写明原因，定期复查——上游出新版本就摘掉对应 --ignore-vuln）。
+        # CVE-2026-85394（python-jose 3.5.0，目前没有修复版本）：只有“拿公钥当 HMAC 密钥验证、且不限定算法”时才能伪造令牌；
+        # 本项目用 HS256 + 服务端私有密钥，并且 jwt.decode 显式写了 algorithms=[ALGORITHM]（service/auth.py），不满足利用条件。
+        # 上游发布修复版本后就摘掉这条 --ignore-vuln，并升级 requirements.txt。
         # 其余漏洞（有修复版本却没升级）会让这一步失败，阻断 PR：见 requirements.txt 和 docs/testing.md「依赖漏洞扫描」。
         run: |
           pip-audit -r requirements.txt \
@@ -73,7 +76,12 @@ jobs:
             --ignore-vuln PYSEC-2026-3814 \
             --ignore-vuln PYSEC-2026-3815 \
             --ignore-vuln PYSEC-2026-3813 \
-            --ignore-vuln PYSEC-2026-1325
+            --ignore-vuln PYSEC-2026-1325 \
+            --ignore-vuln CVE-2026-85394
+
+      - name: Vulnerability exception register (owner / reason / expiry)
+        # 上一步忽略的每条漏洞都要登记在 .github/vuln-exceptions.json（负责人、原因、复查办法、到期日）；到期没复查就失败。
+        run: python scripts/check_vuln_exceptions.py
 
       - name: Wait for MySQL
         run: |
@@ -116,6 +124,25 @@ jobs:
           path: coverage.xml
           retention-days: 14
 
+  frontend-windows:
+    # 本项目主要在 Windows 上开发：前端单测只在 Linux 绿不够（临时文件、路径、行尾这类问题只会在 Windows 上出现）
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Unit tests (Vitest, Windows)
+        run: npm test
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -138,6 +165,10 @@ jobs:
         # 只挡 high/critical；moderate 及以下（目前是 echarts 一条 XSS，升级到 6.x 是破坏性大版本，
         # 见 docs/testing.md）只报告不阻断，避免 CI 被"暂时改不动"的中低危漏洞长期卡住。
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Unit tests (Vitest)
+        # 登录会话 / CSRF 头 / Markdown 安全渲染 / 请求拦截器：纯前端逻辑，不依赖后端，几秒钟跑完。
+        run: npm test
 
       - name: Type-check and build
         run: npm run build

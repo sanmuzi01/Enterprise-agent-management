@@ -30,7 +30,7 @@
               <span v-if="isRouteAgent" class="shrink-0 rounded bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700">正在使用</span>
               <span v-else class="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">默认</span>
             </div>
-            <p class="mt-0.5 truncate text-[11px] text-slate-500">{{ activeAgent.model_name }}</p>
+            <p class="mt-0.5 truncate text-[11px] text-slate-500">{{ modelDisplayName(activeAgent.model_name) }}</p>
           </div>
         </div>
 
@@ -146,7 +146,7 @@
               </span>
               <span class="min-w-0 flex-1">
                 <span class="block truncate text-xs font-semibold text-slate-800">{{ agent.name }}</span>
-                <span class="block truncate text-[11px] text-slate-500">{{ agent.model_name || '未配置模型' }}</span>
+                <span class="block truncate text-[11px] text-slate-500">{{ modelDisplayName(agent.model_name) }}</span>
               </span>
               <span v-if="agent.id === activeAgent?.id" class="shrink-0 rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">当前</span>
             </button>
@@ -163,6 +163,7 @@
 </template>
 
 <script setup lang="ts">
+import { modelDisplayName } from '../utils/displayNames'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { BookOpen, Bot, Brain, Bug, KeyRound, MessageSquare, Shuffle } from 'lucide-vue-next'

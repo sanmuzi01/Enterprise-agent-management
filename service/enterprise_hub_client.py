@@ -35,8 +35,20 @@ class EnterpriseHubError(Exception):
         super().__init__(f"[{status_code}] {detail}")
 
 
+class HubUnavailable(EnterpriseHubError):
+    """业务中心连不上、超时、熔断中，或持续返回 5xx：是依赖故障，不是业务拒绝。status_code 固定 503（持续 500 的是 502）。"""
+
+    def __init__(self, status_code: int = 503, detail: str = "企业业务服务暂时不可用"):
+        super().__init__(status_code, detail)
+
+
 def _base_url() -> str:
     return os.getenv("ENTERPRISE_HUB_BASE_URL", "http://127.0.0.1:8090").rstrip("/")
+
+
+def _current_trace_id():
+    from service.observability.context import current_trace_id
+    return current_trace_id()
 
 
 def _secret() -> str:
@@ -51,6 +63,7 @@ def sign_context(
         *,
         is_org_admin: bool = False,
         is_team_admin: bool = False,
+        org_team_ids: Optional[List[int]] = None,
         method: str,
         path: str,
         body_sha256: str,
@@ -74,7 +87,9 @@ def sign_context(
         "operation": operation,
         "is_org_admin": is_org_admin,
         "is_team_admin": is_team_admin,
-        "trace_id": str(uuid.uuid4()),
+        # 企业管理员的范围：只有该企业的部门（见 enterprise_access.org_admin_scope）；不是企业管理员时为空列表
+        "org_team_ids": list(org_team_ids or []) if is_org_admin else [],
+        "trace_id": _current_trace_id() or str(uuid.uuid4()),
         "timestamp": int(time.time()),
         "nonce": uuid.uuid4().hex,
         "method": method.upper(),
@@ -108,6 +123,7 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
     """
     from models.init_db import SessionLocal
     from sqlalchemy import text
+    from models.enterprise_dao import is_team_member_of_team
     from service import enterprise_access
 
     db = SessionLocal()
@@ -121,12 +137,18 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
                 ),
                 {"aid": agent_id},
             ).first()
-            if row and row[0] is not None:
+            # 部门助手的部门只有在调用者本人是该部门有效成员（或企业管理员）时才采用：
+            # 助手的创建者/管理员不一定是部门成员，不能借助手的部门身份往部门里写业务数据。
+            if row and row[0] is not None and (
+                    is_team_member_of_team(db, user_id, row[0]) or enterprise_access.is_org_admin(db, user_id)):
                 team_id = row[0]
         if team_id is None:
             row = db.execute(
                 text(
                     "SELECT tm.team_id FROM team_members tm JOIN teams t ON tm.team_id = t.id "
+                    "JOIN organizations o ON t.organization_id = o.id AND o.status='active' "
+                    "JOIN organization_members om ON om.organization_id = t.organization_id "
+                    "AND om.user_id = tm.user_id AND om.status='active' "
                     "WHERE tm.user_id=:u AND tm.status='active' AND t.status='active' "
                     "ORDER BY tm.id LIMIT 1"
                 ),
@@ -138,6 +160,31 @@ def resolve_caller_context(user_id: int, agent_id: Optional[int] = None) -> Dict
             "is_org_admin": enterprise_access.is_org_admin(db, user_id),
             "is_team_admin": enterprise_access.is_team_admin(db, user_id, team_id),
         }
+    finally:
+        db.close()
+
+
+def _error_detail(response: requests.Response) -> str:
+    # 只取 Java 有意给用户看的 message/detail；拿不到就给通用说明，不把原始响应体
+    # （时间戳、内部路径之类）原样转给最终用户。
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        for key in ("message", "detail"):
+            value = body.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()[:300]
+    return f"企业业务服务拒绝了请求（HTTP {response.status_code}）"
+
+
+def _org_admin_scope(user_id: int, team_id: Optional[int]):
+    from models.init_db import SessionLocal
+    from service import enterprise_access
+    db = SessionLocal()
+    try:
+        return enterprise_access.org_admin_scope(db, user_id, team_id)
     finally:
         db.close()
 
@@ -165,8 +212,12 @@ def call(
     计算的 body_sha256 就对不上，每个带请求体的调用都会被拒。"""
     body_bytes = b"" if json_body is None else json.dumps(json_body, ensure_ascii=False).encode("utf-8")
     body_sha256 = hashlib.sha256(body_bytes).hexdigest()
+    org_team_ids: List[int] = []
+    if is_org_admin:
+        # 不信任调用方传来的布尔值：按 team_id 所在的企业重新算（只是企业 B 的管理员不能当企业 A 的管理员）
+        is_org_admin, org_team_ids = _org_admin_scope(user_id, team_id)
     headers = sign_context(
-        user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin,
+        user_id, team_id, scopes, operation, is_org_admin=is_org_admin, is_team_admin=is_team_admin, org_team_ids=org_team_ids,
         method=method, path=path, body_sha256=body_sha256,
     )
     headers["Content-Type"] = "application/json"
@@ -178,17 +229,30 @@ def call(
             method, f"{_base_url()}{path}", headers=headers, data=body_bytes, timeout=timeout,
         )
 
-    response = request_with_retry(
-        SERVICE_NAME, sender,
-        timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
-    )
+    from service.http_resilience import CircuitOpenError
+    from service.observability import otel
+    try:
+        with otel.span(f"enterprise_hub {operation}", kind="client",
+                       attributes={"http.request.method": method.upper(), "url.path": path.split("?")[0], "hub.operation": operation}) as current:
+            response = request_with_retry(
+                SERVICE_NAME, sender,
+                timeout_env="ENTERPRISE_HUB_TIMEOUT_SECONDS", default_timeout=timeout_default,
+            )
+            otel.set_attributes(current, **{"http.response.status_code": response.status_code})
+    except CircuitOpenError as exc:
+        raise HubUnavailable(503, str(exc)) from None
+    except (requests.Timeout, requests.ConnectionError):
+        # 不带原始堆栈往上抛：连不上就是连不上，一行说明足够，避免日志里一次故障刷出几十行堆栈
+        raise HubUnavailable(503, "企业业务服务连接失败或超时") from None
+    except requests.HTTPError as exc:
+        # 重试用尽后仍是 408/409/425/429/5xx：按真实状态码交给调用方（409 是幂等键处理中，调用方依赖它）
+        failed = exc.response
+        status = failed.status_code if failed is not None else 502
+        if status >= 500:
+            raise HubUnavailable(503 if status in (502, 503, 504) else 502, _error_detail(failed) if failed is not None else "企业业务服务处理出错") from None
+        raise EnterpriseHubError(status, _error_detail(failed)) from None
     if response.status_code >= 400:
-        detail = response.text
-        try:
-            detail = response.json().get("detail", detail) or response.json().get("message", detail)
-        except (ValueError, AttributeError):
-            pass
-        raise EnterpriseHubError(response.status_code, detail)
+        raise EnterpriseHubError(response.status_code, _error_detail(response))
     if not response.content:
         return None
     return response.json()

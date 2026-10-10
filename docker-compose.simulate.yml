@@ -1,0 +1,73 @@
+# 仿真联调：没有真实的飞书 / 钉钉测试应用和公网 HTTPS 时，用开放平台仿真器把整条链路在容器里跑一遍。
+#
+# 用独立的项目名（-p agentsim）跑：容器和数据卷都和平时的 docker compose 分开，不碰你已有的数据和真实的飞书配置。
+# 仿真环境不占主机端口（联调全在容器网络里进行），平时那套开着也能同时跑。
+#   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml up -d --build
+#   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml exec api python scripts/seed_enterprise_demo.py
+#   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml exec platform-sim python /sim/run_scenarios.py
+#   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml down -v      # 用完整套删掉（含数据卷）
+#
+# 做了什么：api / worker 调飞书 / 钉钉开放接口时改连仿真器（platform-sim:9100）；仿真器像飞书 / 钉钉服务器一样，
+# 把员工的消息签名加密后发到 http://web/api/integrations/...（经 nginx，和公网部署同一条路）。
+# 联调脚本结束时会删掉它建的接入配置和绑定；整套仿真环境用完 down -v 即可，平时那套不受影响。
+# 说明见 docs/real-env-simulation.md。
+
+services:
+  # 不占主机端口：平时那套用着 8011 / 8080 / 18090，两套可以同时开
+  enterprise-hub:
+    ports: !reset []
+  web:
+    ports: !reset []
+  api:
+    ports: !reset []
+    environment:
+      FEISHU_BASE_URL: http://platform-sim:9100
+      DINGTALK_BASE_URL: http://platform-sim:9100
+      DINGTALK_OAPI_URL: http://platform-sim:9100
+      # nginx 转发时 Host 是 web（相当于正式环境的公网域名），必须在白名单里
+      TRUSTED_HOSTS: localhost,127.0.0.1,web
+      INTEGRATION_WEB_BASE_URL: http://localhost:8080
+  worker:
+    environment:
+      FEISHU_BASE_URL: http://platform-sim:9100
+      DINGTALK_BASE_URL: http://platform-sim:9100
+      DINGTALK_OAPI_URL: http://platform-sim:9100
+      TRUSTED_HOSTS: localhost,127.0.0.1,web
+      INTEGRATION_WEB_BASE_URL: http://localhost:8080
+
+  platform-sim:
+    build:
+      context: .
+      args:
+        APT_MIRROR: ${APT_MIRROR:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    command: python /sim/platform_simulator.py
+    volumes:
+      - ./deploy/simulator:/sim:ro
+    environment:
+      SIM_PORT: "9100"
+      SIM_SELF_URL: http://platform-sim:9100
+      SIM_CALLBACK_BASE: http://web/api
+      # 联调脚本在这个容器里直接调用平台代码（例如助手读群聊的工具），开放平台地址也必须指向仿真器，绝不能连到真实的飞书 / 钉钉
+      FEISHU_BASE_URL: http://platform-sim:9100
+      DINGTALK_BASE_URL: http://platform-sim:9100
+      DINGTALK_OAPI_URL: http://platform-sim:9100
+      # 联调脚本要读写平台数据库（建临时管理员、触发整理任务、结束时清理），和 api 用同一套连接配置
+      APP_ENV: dev
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: root
+      DB_PASSWORD: ${DB_PASSWORD:-devpass}
+      DB_NAME: ${DB_NAME:-agent_sql}
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-only-not-a-secret-change-me}
+      LLM_ENCRYPTION_KEY: ${LLM_ENCRYPTION_KEY:-LG5sThiGcVsg9jRbbN_fezONjfKdo3E72yQPYIUwZHQ=}
+      CHROMA_SERVER_HOST: chroma
+      CHROMA_SERVER_PORT: "8000"
+      ENTERPRISE_HUB_BASE_URL: http://enterprise-hub:8090
+      ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:-dev-only-shared-secret-change-me}
+      OFFLINE_DEMO_MODEL: "1"
+      OUTBOX_RUNNER: "0"
+    depends_on:
+      api:
+        condition: service_healthy

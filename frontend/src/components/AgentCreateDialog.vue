@@ -401,7 +401,7 @@
           <div>
             <p class="mb-1 text-xs font-medium text-slate-500">可用工具</p>
             <div class="flex flex-wrap gap-1.5">
-              <span v-for="tool in previewSkillValidation.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ tool }}</span>
+              <span v-for="tool in previewSkillValidation.tool_names" :key="tool" class="rounded bg-blue-50 px-2 py-1 text-xs text-blue-700">{{ toolDisplayName(tool) }}</span>
               <span v-if="previewSkillValidation.tool_names.length === 0" class="text-xs text-slate-400">不需要额外工具</span>
             </div>
           </div>
@@ -420,6 +420,7 @@
 </template>
 
 <script setup lang="ts">
+import { toolDisplayName } from '../utils/displayNames'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { BookmarkPlus, Bot, Database, FileText, Info, KeyRound, Settings, Sparkles, Trash2, X, Zap } from 'lucide-vue-next'

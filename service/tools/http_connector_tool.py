@@ -78,18 +78,32 @@ def build_http_connector_tool(connector) -> LCBaseTool:
                 service_name=f"agent_api_connector:{connector_id}",
                 sender=lambda timeout: requests.request(
                     method, url, headers=headers, params=params, json=body, timeout=timeout,
+                    stream=True, allow_redirects=False,       # 不跟随重定向：校验过的是这个地址，不是它指向的地址
                 ),
                 timeout_env="AGENT_API_CONNECTOR_TIMEOUT_SECONDS",
                 default_timeout=10.0,
             )
+            if 300 <= response.status_code < 400:
+                response.close()
+                return "接口返回了重定向，已拒绝跟随（重定向目标没有经过地址安全校验）；请把连接器地址改成最终地址"
             response.raise_for_status()
         except Exception as e:  # noqa: BLE001
             logger.warning(f"企业接口调用失败: connector_id={connector_id}, error={e}")
             return f"接口调用失败：{e}"
 
-        content = response.content or b""
-        if len(content) > _max_bytes():
-            return f"接口返回内容过大（超过 {_max_bytes()} 字节），无法处理"
+        limit_bytes = _max_bytes()
+        chunks, total = [], 0
+        try:
+            for chunk in response.iter_content(chunk_size=16384):
+                total += len(chunk or b"")
+                if total > limit_bytes:
+                    response.close()
+                    return f"接口返回内容过大（超过 {limit_bytes} 字节），无法处理"
+                chunks.append(chunk)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"企业接口读取失败: connector_id={connector_id}, error={e}")
+            return f"接口调用失败：{e}"
+        content = b"".join(chunks)
 
         text = content.decode(response.encoding or "utf-8", errors="replace")
         limit = _max_response_chars()

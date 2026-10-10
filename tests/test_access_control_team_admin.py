@@ -8,7 +8,8 @@ get_owned_space/get_space_role/user_space_ids 各自有一份同步实现和一�
 """
 import unittest
 
-from models.init_db import EnterpriseRole, KnowledgeSpace, SessionLocal, SpaceMember, Team, TeamMember
+from models.init_db import (EnterpriseRole, KnowledgeSpace, Organization, OrganizationMember, SessionLocal,
+                            SpaceMember, Team, TeamMember)
 from service import access_control
 from tests import _route_client as rc
 from tests._async_helpers import run_async as _run
@@ -28,10 +29,19 @@ class AccessControlTeamAdminTest(unittest.TestCase):
 
         db = SessionLocal()
         try:
-            team = Team(name="ac-test-team", owner_user_id=cls.owner["id"])
+            org = Organization(name="ac-test-org", owner_user_id=cls.owner["id"])
+            db.add(org)
+            db.commit()
+            cls.org_id = org.id
+            team = Team(name="ac-test-team", owner_user_id=cls.owner["id"], organization_id=cls.org_id)
             db.add(team)
             db.commit()
             cls.team_id = team.id
+            org_member_role_id = db.query(EnterpriseRole.id).filter_by(scope="organization", code="member").scalar()
+            for user in (cls.team_admin, cls.team_member):   # 部门权限以有效企业成员身份为前提
+                db.add(OrganizationMember(organization_id=cls.org_id, user_id=user["id"],
+                                           role_id=org_member_role_id, status="active"))
+            db.commit()
 
             admin_role_id = db.query(EnterpriseRole.id).filter_by(scope="team", code="admin").scalar()
             member_role_id = db.query(EnterpriseRole.id).filter_by(scope="team", code="member").scalar()
@@ -60,6 +70,8 @@ class AccessControlTeamAdminTest(unittest.TestCase):
             db.execute(text("DELETE FROM knowledge_spaces WHERE id=:s"), {"s": cls.space_id})
             db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": cls.team_id})
             db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": cls.team_id})
+            db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org_id})
+            db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": cls.org_id})
             db.commit()
         except Exception:
             db.rollback()

@@ -209,19 +209,83 @@ async def admin_export_logs(
     return csv_response(filename, content)
 
 
-@router.get("/knowledge-spaces", summary="企业知识库空间总览")
+@router.get("/knowledge-spaces", summary="企业知识库空间总览（可按部门筛选）")
 async def admin_knowledge_spaces(
         limit: int = Query(default=50, ge=1, le=200),
         offset: int = Query(default=0, ge=0),
+        scope: str | None = Query(default=None, description="all / unassigned / enterprise / team:<部门编号>"),
         async_db=Depends(get_async_db),
         current_user: User = Depends(get_current_admin_user_async),
 ):
-    return await admin_async_service.list_knowledge_spaces(async_db, limit=limit, offset=offset)
+    return await admin_async_service.list_knowledge_spaces(async_db, limit=limit, offset=offset, scope=scope)
+
+
+class LlmConnectionKey(BaseModel):
+    api_key: str = Field(min_length=1, max_length=500)
+
+
+class LlmConnectionToggle(BaseModel):
+    is_active: bool
+
+
+@router.get("/llm-connections", summary="企业统一的模型连接（按服务商）")
+async def admin_list_llm_connections(async_db=Depends(get_async_db), current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.list_connections(async_db)
+
+
+@router.put("/llm-connections/{provider}", summary="连接 / 更换某个服务商的 API Key（全公司共用，只写不读）")
+async def admin_connect_llm(provider: str, data: LlmConnectionKey, async_db=Depends(get_async_db),
+                            current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.connect(async_db, current_user.id, provider, data.api_key)
+
+
+@router.patch("/llm-connections/{provider}", summary="启用 / 停用某个服务商的统一连接")
+async def admin_toggle_llm(provider: str, data: LlmConnectionToggle, async_db=Depends(get_async_db),
+                           current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.set_active(async_db, current_user.id, provider, data.is_active)
+
+
+@router.delete("/llm-connections/{provider}", summary="删除某个服务商的统一连接")
+async def admin_remove_llm(provider: str, async_db=Depends(get_async_db),
+                           current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.remove(async_db, current_user.id, provider)
+
+
+@router.post("/llm-connections/{provider}/test", summary="用统一的密钥真的调一次模型，测试连通性")
+async def admin_test_llm(provider: str, async_db=Depends(get_async_db),
+                         current_user: User = Depends(get_current_admin_user_async)):
+    from service.llm import enterprise_llm_service
+    return await enterprise_llm_service.test_connection(async_db, provider)
+
+
+class AdminSpaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=500)
+    purpose: str | None = Field(default=None, max_length=60)
+    scope: str = Field(default="unassigned", description="unassigned 先不划分 / departments 划分给指定部门 / enterprise 全企业")
+    team_ids: list[int] = Field(default_factory=list, description="scope=departments 时的部门编号（可多个）")
+    sensitivity: str | None = Field(default=None, max_length=20)
+
+
+@router.post("/knowledge-spaces", summary="管理员统一创建知识库空间（可顺便划分给部门 / 全企业）")
+async def admin_create_knowledge_space(
+        data: AdminSpaceCreate,
+        async_db=Depends(get_async_db),
+        current_user: User = Depends(get_current_admin_user_async),
+):
+    return await admin_async_service.admin_create_space(async_db, current_user.id, data.model_dump())
 
 
 class AdminSpaceStatusUpdate(BaseModel):
     is_enabled: bool | None = None
     status: str | None = None
+    scope: str | None = Field(default=None, description="划分方式：unassigned / departments / enterprise")
+    team_ids: list[int] = Field(default_factory=list, description="scope=departments 时的部门编号（可多个）")
+    sensitivity: str | None = Field(default=None, max_length=20)
 
 
 @router.patch("/knowledge-spaces/{space_id}", summary="管理员直接改一个空间的启停/归档状态")

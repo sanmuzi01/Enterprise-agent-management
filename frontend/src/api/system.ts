@@ -77,3 +77,19 @@ export async function getDiagnose(): Promise<HealthStatus> {
   const { data } = await request.get('/system/diagnose')
   return data as HealthStatus
 }
+
+
+export interface ReadinessItem {
+  key: string
+  label: string
+  ok: boolean
+  level: 'ok' | 'warn' | 'error'
+  message: string
+  fix: string
+}
+
+/** 运行就绪检查：数据库、迁移版本、企业业务服务、模型、提醒任务、演示数据；每项独立、带处理办法。 */
+export async function getReadiness(): Promise<{ ok: boolean; checks: ReadinessItem[] }> {
+  const { data } = await request.get('/system/readiness')
+  return data
+}

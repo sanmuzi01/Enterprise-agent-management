@@ -17,7 +17,7 @@ TeamMember（Phase 3B/3D，见 docs/enterprise-rbac-plan.md），但一直没有
 """
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from models.init_db import (
     Agent,
@@ -33,12 +33,39 @@ from service import audit_service
 from service.exceptions import Conflict, InvalidInput, NotFound
 
 
-async def _get_default_organization(db) -> Organization:
+async def find_default_organization(db) -> Optional[Organization]:
+    """平台服务的那家企业（id 最小的那条）；还没初始化时返回 None。只读的列表 / 概览用它，没有企业时照常显示（没有部门）。"""
     result = await db.execute(select(Organization).order_by(Organization.id).limit(1))
-    org = result.scalar_one_or_none()
+    return result.scalar_one_or_none()
+
+
+async def _get_default_organization(db) -> Organization:
+    org = await find_default_organization(db)
     if org is None:
         raise NotFound("企业尚未初始化（没有 Organization 记录），先跑 scripts/backfill_default_organization.py")
     return org
+
+
+async def get_enterprise(db) -> Dict:
+    """本企业的基本信息。平台只服务一个企业：id 最小的那条企业记录就是它。"""
+    org = await _get_default_organization(db)
+    teams = (await db.execute(select(func.count(Team.id)).where(Team.organization_id == org.id, Team.status == "active"))).scalar() or 0
+    members = (await db.execute(select(func.count(OrganizationMember.id)).where(
+        OrganizationMember.organization_id == org.id, OrganizationMember.status == "active"))).scalar() or 0
+    return {"id": org.id, "name": org.name, "team_count": int(teams), "member_count": int(members)}
+
+
+async def rename_enterprise(db, operator_id: int, name: str) -> Dict:
+    name = (name or "").strip()
+    if not name:
+        raise InvalidInput("企业名称不能为空")
+    org = await _get_default_organization(db)
+    org_id, before, after = org.id, org.name, name[:100]
+    await db.execute(update(Organization).where(Organization.id == org_id).values(name=after))
+    await db.commit()
+    await audit_service.record_async(operator_id, "org.enterprise_renamed", resource_type="organization", resource_id=org_id,
+                                     detail={"before": before, "after": after})
+    return {**(await get_enterprise(db)), "name": after}
 
 
 async def _role_id(db, scope: str, code: str) -> int:
@@ -104,6 +131,7 @@ async def list_teams(db) -> List[Dict]:
             "id": t.id,
             "name": t.name,
             "status": t.status,
+            "department_code": t.department_code,
             "member_count": member_counts.get(t.id, 0),
             "leads": leads_by_team.get(t.id, []),
             "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -112,29 +140,45 @@ async def list_teams(db) -> List[Dict]:
     ]
 
 
-async def create_team(db, name: str, owner_user_id: int) -> Dict:
+def _validate_department_code(department_code: Optional[str]) -> None:
+    if department_code is None:
+        return
+    from service.runtime.central_router import VALID_DEPARTMENT_CODES
+    if department_code not in VALID_DEPARTMENT_CODES:
+        raise InvalidInput(f"department_code 只能是 {sorted(VALID_DEPARTMENT_CODES)} 之一或不填")
+
+
+async def create_team(db, name: str, owner_user_id: int, department_code: Optional[str] = None) -> Dict:
     name = (name or "").strip()
     if not name:
         raise InvalidInput("部门名称不能为空")
+    _validate_department_code(department_code)
     org = await _get_default_organization(db)
     existing = await db.execute(
         select(Team.id).where(Team.organization_id == org.id, Team.name == name)
     )
     if existing.scalar_one_or_none() is not None:
         raise Conflict("同名部门已存在")
-    team = Team(organization_id=org.id, name=name, owner_user_id=owner_user_id, status="active")
+    team = Team(organization_id=org.id, name=name, owner_user_id=owner_user_id, status="active",
+                department_code=department_code)
     db.add(team)
     await db.flush()
     await db.commit()
     await audit_service.record_async(
         owner_user_id, "org.team_created", resource_type="team", resource_id=team.id,
-        detail={"name": team.name},
+        detail={"name": team.name, "department_code": department_code},
     )
-    return {"id": team.id, "name": team.name, "status": team.status, "member_count": 0, "leads": []}
+    return {"id": team.id, "name": team.name, "status": team.status, "department_code": team.department_code,
+            "member_count": 0, "leads": []}
+
+
+# sentinel：区分"没传这个参数（不改）"和"显式传了 None（清空业务类型）"——
+# department_code 本身的合法取值就包含 None（未分配业务类型的部门）。
+_UNSET = object()
 
 
 async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = None,
-                       status: Optional[str] = None) -> Dict:
+                       status: Optional[str] = None, department_code: Any = _UNSET) -> Dict:
     team = await _get_team_or_404(db, team_id)
     changes: Dict[str, Any] = {}
     if name is not None:
@@ -150,12 +194,17 @@ async def update_team(db, team_id: int, operator_id: int, name: Optional[str] = 
         if status != team.status:
             changes["status"] = {"from": team.status, "to": status}
         team.status = status
+    if department_code is not _UNSET:
+        _validate_department_code(department_code)
+        if department_code != team.department_code:
+            changes["department_code"] = {"from": team.department_code, "to": department_code}
+        team.department_code = department_code
     await db.commit()
     if changes:
         await audit_service.record_async(
             operator_id, "org.team_updated", resource_type="team", resource_id=team.id, detail=changes,
         )
-    return {"id": team.id, "name": team.name, "status": team.status}
+    return {"id": team.id, "name": team.name, "status": team.status, "department_code": team.department_code}
 
 
 async def _get_team_or_404(db, team_id: int) -> Team:
@@ -174,9 +223,11 @@ async def team_permissions(db, team_id: int) -> Dict:
     team = await _get_team_or_404(db, team_id)
     members = await list_team_members(db, team_id)
 
+    from models.init_db import KnowledgeSpaceDepartment
     space_result = await db.execute(
         select(KnowledgeSpace.id, KnowledgeSpace.name, KnowledgeSpace.status)
-        .where(KnowledgeSpace.team_id == team_id)
+        .where((KnowledgeSpace.team_id == team_id) | KnowledgeSpace.id.in_(
+            select(KnowledgeSpaceDepartment.space_id).where(KnowledgeSpaceDepartment.team_id == team_id)))
     )
     spaces = [{"id": sid, "name": sname, "status": sstatus} for sid, sname, sstatus in space_result.all()]
 
@@ -219,16 +270,22 @@ async def list_team_members(db, team_id: int) -> List[Dict]:
 
 async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role_code: str = "member") -> Dict:
     await _get_team_or_404(db, team_id)
-    user_result = await db.execute(select(User.id).where(User.id == user_id))
+    # 锁用户行，把“查当前部门 + 调岗”串成一个原子操作。即使两个管理员同时把同一人
+    # 分到不同部门，也只会依次完成两次调岗，数据库里始终只有一条部门归属。
+    user_result = await db.execute(select(User.id).where(User.id == user_id).with_for_update())
     if user_result.scalar_one_or_none() is None:
         raise NotFound("用户不存在")
 
     existing = await db.execute(
-        select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
+        select(TeamMember).where(TeamMember.user_id == user_id).with_for_update()
     )
     role_id = await _role_id(db, "team", role_code)
     member = existing.scalar_one_or_none()
+    moved_from_team_id = None
     if member is not None:
+        if member.team_id != team_id:
+            moved_from_team_id = member.team_id
+            member.team_id = team_id
         member.role_id = role_id
         member.status = "active"
     else:
@@ -239,10 +296,12 @@ async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role
     await _ensure_org_member(db, user_id)
     await db.commit()
     await audit_service.record_async(
-        operator_id, "org.team_member_added", resource_type="team", resource_id=team_id,
-        detail={"user_id": user_id, "role_code": role_code},
+        operator_id, "org.team_member_moved" if moved_from_team_id is not None else "org.team_member_added",
+        resource_type="team", resource_id=team_id,
+        detail={"user_id": user_id, "role_code": role_code, "from_team_id": moved_from_team_id},
     )
-    return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
+    return {"user_id": user_id, "team_id": team_id, "role_code": role_code,
+            "moved_from_team_id": moved_from_team_id}
 
 
 async def update_team_member_role(db, team_id: int, operator_id: int, user_id: int, role_code: str) -> Dict:
@@ -295,8 +354,32 @@ async def _ensure_org_member(db, user_id: int) -> None:
 
 # ---------------- 企业成员/企业角色 ----------------
 
+async def _department_map(db, organization_id: int, user_ids: Optional[List[int]] = None) -> Dict[int, List[Dict]]:
+    """用户在本企业各部门里的身份，按用户分组。传 user_ids 时只查这些人。"""
+    stmt = (
+        select(TeamMember.user_id, Team.id, Team.name, Team.status,
+               EnterpriseRole.code, EnterpriseRole.name, TeamMember.status)
+        .join(Team, Team.id == TeamMember.team_id)
+        .join(EnterpriseRole, EnterpriseRole.id == TeamMember.role_id)
+        .where(Team.organization_id == organization_id)
+        .order_by(Team.id)
+    )
+    if user_ids is not None:
+        if not user_ids:
+            return {}
+        stmt = stmt.where(TeamMember.user_id.in_(user_ids))
+    departments: Dict[int, List[Dict]] = {}
+    for uid, tid, name, status, code, role_name, membership_status in (await db.execute(stmt)).all():
+        departments.setdefault(uid, []).append({
+            "id": tid, "name": name, "status": status, "role_code": code,
+            "role_name": role_name, "membership_status": membership_status,
+        })
+    return departments
+
+
 async def list_org_members(db) -> List[Dict]:
     org = await _get_default_organization(db)
+    departments = await _department_map(db, org.id)
     result = await db.execute(
         select(OrganizationMember, User.name, EnterpriseRole.code, EnterpriseRole.name)
         .join(User, User.id == OrganizationMember.user_id)
@@ -311,9 +394,32 @@ async def list_org_members(db) -> List[Dict]:
             "role_code": role_code,
             "role_name": role_name,
             "status": om.status,
+            "departments": departments.get(om.user_id, []),
         }
         for om, uname, role_code, role_name in result.all()
     ]
+
+
+async def member_overview(db, user_ids: List[int]) -> Dict[int, Dict]:
+    """给「用户管理」列表用：这批用户在企业里的角色 / 状态和所属部门（用户管理与组织架构共用同一份数据）。"""
+    if not user_ids:
+        return {}
+    org = await find_default_organization(db)
+    if org is None:   # 企业还没初始化（全新部署）：用户列表照常显示，只是没有部门和企业角色
+        return {}
+    departments = await _department_map(db, org.id, user_ids)
+    rows = await db.execute(
+        select(OrganizationMember.user_id, OrganizationMember.status, EnterpriseRole.code, EnterpriseRole.name)
+        .join(EnterpriseRole, EnterpriseRole.id == OrganizationMember.role_id)
+        .where(OrganizationMember.organization_id == org.id, OrganizationMember.user_id.in_(user_ids))
+    )
+    overview = {
+        uid: {"org_role_code": code, "org_role_name": name, "org_status": status, "departments": []}
+        for uid, status, code, name in rows.all()
+    }
+    for uid, items in departments.items():
+        overview.setdefault(uid, {"org_role_code": None, "org_role_name": None, "org_status": None})["departments"] = items
+    return overview
 
 
 async def _count_active_owners(db, organization_id: int, exclude_user_id: Optional[int] = None) -> int:
