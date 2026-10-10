@@ -59,6 +59,7 @@ REQUIRED_FILES = [
     "service/session_renewal.py",
     "service/enterprise_bootstrap.py",
     "scripts/test_fresh_db.py",
+    "scripts/test_counts.py",
     "service/data_health.py",
     "scripts/data_health_check.py",
     "service/data_retention.py",
@@ -397,6 +398,8 @@ def main() -> None:
     else:
         run([python, "scripts/test_fresh_db.py"])
     run(["npm.cmd" if sys.platform.startswith("win") else "npm", "run", "frontend:build"])
+    # 文档里的测试数量必须是统计出来的最新值（只记在 docs/testing.md 一处），不能是哪天手填的旧数
+    run([python, "scripts/test_counts.py", "--check"])
     print("\n发布自检完成")
 
 

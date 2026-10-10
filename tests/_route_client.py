@@ -30,6 +30,20 @@ if "testserver" not in os.environ["TRUSTED_HOSTS"]:
     os.environ["TRUSTED_HOSTS"] = os.environ["TRUSTED_HOSTS"] + ",testserver"
 os.environ.setdefault("CORS_ALLOW_ORIGINS", "http://testserver")
 
+# 测试一律用临时的提示词目录，不碰真实的 prompt/prompts/：
+# 测试库是空库时（CI、deploy/test-services）助手编号从 1 开始，测试建的 1 号助手会覆盖、清理时再删掉
+# 开发库 1 号助手的提示词（踩过：prompt/prompts/1.yaml、5.yaml 被删）。按编号命名的文件和开发库共用目录，编号再怎么避让都不保险。
+# prompt_manager 的函数每次调用都读模块里的 PROMPT_DIR，所以这里改了之后，无论谁先导入都生效。
+import shutil as _shutil  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+import prompt.prompt_manager as _prompt_manager  # noqa: E402
+
+TEST_PROMPT_DIR = _Path(_tempfile.mkdtemp(prefix="agent_test_prompts_"))
+_prompt_manager.PROMPT_DIR = TEST_PROMPT_DIR
+atexit.register(_shutil.rmtree, TEST_PROMPT_DIR, True)
+
 _SUFFIX = f"{int(time.time()) % 100000}{uuid.uuid4().hex[:4]}"
 _created_user_ids: list[int] = []
 _created_issue_ids: list[int] = []
@@ -218,7 +232,7 @@ def _purge_users(where_users: str) -> int:
         # 专业技能配置以前漏删了：数据体检（service/data_health.py）在开发库里查出几十个没有对应智能体的配置文件，就是这里来的。
         root = pathlib.Path(__file__).resolve().parents[1]
         for aid in [r[0] for r in db.execute(text(f"SELECT id FROM agent WHERE user_id IN {inc}")).all()]:
-            (root / "prompt" / "prompts" / f"{aid}.yaml").unlink(missing_ok=True)
+            (_prompt_manager.PROMPT_DIR / f"{aid}.yaml").unlink(missing_ok=True)   # 测试用的临时目录，见文件开头
             (root / "skills" / "enterprise" / f"agent_{aid}.yml").unlink(missing_ok=True)
         krows = db.execute(text(f"SELECT id, file_path FROM knowledge WHERE user_id IN {inc}")).all()
         for _kid, fpath in krows:

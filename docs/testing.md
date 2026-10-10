@@ -1,6 +1,10 @@
 # Testing
 
-项目当前使用 Python `unittest`，1990 条（2026-10-09 更新）；前端 Vitest 116 条（含部门助手组件交互测试）；Java 143 条。纯逻辑单测（TTL 缓存、重试熔断、
+<!-- test-counts:start -->
+**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2006** 条、前端 Vitest **121** 条、Java **143** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
+<!-- test-counts:end -->
+
+项目使用 Python `unittest`、前端 Vitest（含部门助手组件交互测试）、Java JUnit，数量以上面的统计块为准（其他文档只链接到这里，不各写一个数）。纯逻辑单测（TTL 缓存、重试熔断、
 短信校验、模型厂商适配等）不依赖任何外部资源；但大部分测试是**真实路由级测试**
 （`TestClient` + 真 JWT + 真 MySQL），需要本机能连上一个空的 MySQL 库才能跑——没有 MySQL 时
 这部分会被跳过（`OK (skipped=N)`），不是全量绿。真实企业业务中心（`enterprise-business-hub`）
@@ -97,7 +101,7 @@ npm run test:coverage
 - 工具 / 重排序注册由 `print` 改为 `logger.debug`（只进文件日志）。
 - 控制台日志级别可由环境变量 `CONSOLE_LOG_LEVEL` 即时抬高（`utils/logger_handler.py::ConsoleLevelFilter`，不依赖导入顺序；
   文件日志仍完整记录）。`tests/_route_client.py` 默认把它设成 `CRITICAL`；要看细节：`TEST_LOG_LEVEL=INFO`。
-- 全量结果始终看最后的 `Ran N tests ... OK`；当前是 **1990 项、全部通过，17 项跳过**（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
+- 全量结果始终看最后的 `Ran N tests ... OK`，数量见文首统计块（跳过的是依赖外部服务、本机没有时自动跳过的用例，其中 8 项是真实 Redis 并发 / 缓存安全测试，设置 `REDIS_URL` 才会跑，见下面“测试用的 MySQL 和 Redis”）。
 
 ## 异步测试的 asyncmy 连接关闭噪音（已修）
 
