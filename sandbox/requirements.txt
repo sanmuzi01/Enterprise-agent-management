@@ -32,7 +32,7 @@ defusedxml>=0.7
 #  - moviepy：官方 Skill 用的是 1.0.3 的 `moviepy.editor`，而 1.0.3 与新版 Pillow（resize 用了已删除的 Image.ANTIALIAS）
 #    和 NumPy 2 有已知不兼容，在能实机验证兼容之前不装，避免"标了可运行、实际一跑就报错"
 opencv-python-headless>=4.9
-imageio-ffmpeg>=0.4
+imageio-ffmpeg>=0.6.0
 scipy>=1.11
 soundfile>=0.12
 pyloudnorm>=0.1
