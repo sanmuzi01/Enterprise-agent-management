@@ -20,7 +20,7 @@ numpy==2.3.5
 pillow==12.3.0
 pyyaml==6.0.2
 lxml==6.1.1
-beautifulsoup4>=4.12
+beautifulsoup4>=4.15.0
 markdown==3.10.3
 defusedxml>=0.7
 
