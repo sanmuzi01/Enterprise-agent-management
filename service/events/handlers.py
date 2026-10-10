@@ -2,6 +2,7 @@
 
 - batch_item_worker：整理批量材料里的一份（automation.job.v1）；重启后会接着处理没做完的，重试用尽标成失败。
 - issue_notifier：问题中心出现严重/高优先级的新问题或问题复发时，通知所有管理员（platform.issue.v1）。
+- external_notifier：站内通知推送到员工绑定的飞书 / 钉钉（notification.command.v1），失败重试、用尽进死信。
 """
 from typing import Any, Dict, List
 
@@ -41,3 +42,9 @@ async def notify_admins_of_issue(event: Dict[str, Any]) -> None:
 
 
 register(Consumer(name="issue_notifier", topics=["platform.issue.v1"], handler=notify_admins_of_issue, max_attempts=5))
+
+
+from service.integrations import notify_push  # noqa: E402
+
+register(Consumer(name="external_notifier", topics=["notification.command.v1"], handler=notify_push.handle,
+                  max_attempts=notify_push.MAX_ATTEMPTS, concurrency=4, timeout_seconds=30))

@@ -91,6 +91,14 @@
             <p class="text-lg font-semibold tabular-nums" :class="cell.tone">{{ cell.value }}</p>
           </div>
         </div>
+        <p v-if="health?.push" class="mt-3 text-xs text-slate-500" data-testid="integration-push">
+          站内通知推送到{{ providerLabel }}：24 小时内处理 {{ health.push.done_24h }} 条 ·
+          <span :class="health.push.retrying ? 'text-amber-700' : ''">重试中 {{ health.push.retrying }}</span> ·
+          <span :class="health.push.dead ? 'font-medium text-red-600' : ''">死信 {{ health.push.dead }}</span>
+          <template v-if="health.push.retrying || health.push.dead">
+            （平台恢复后会自动补发；重试用尽的在<RouterLink to="/admin/issues" class="text-indigo-600 hover:underline">问题中心 → 死信</RouterLink>里修好后重新投递）
+          </template>
+        </p>
         <ul v-if="health?.recent_failures.length" class="mt-3 space-y-1 text-xs text-red-600">
           <li v-for="f in health.recent_failures" :key="f.received_at + f.event_type">{{ f.received_at.slice(0, 16).replace('T', ' ') }} · {{ integrationEventLabel(f.event_type) }} · {{ f.error }}</li>
         </ul>

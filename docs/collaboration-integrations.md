@@ -73,6 +73,18 @@
 没开通前者时，机器人只收得到 @ 它的消息——网页上会提示“开启超过 10 分钟还没收到消息”。
 开通了这个权限后，所有群的消息都会推给平台；没开启记录的群，平台收到后直接丢弃，不保存内容（`external_event_inbox` 只记事件编号和“已忽略”）。
 
+## 站内通知推送到飞书 / 钉钉
+
+员工绑定了飞书 / 钉钉后，站内通知（审批等待、待办到期、工单、责任协同……）同时由机器人私聊发给本人。
+
+- **业务不受平台影响**：通知和推送事件在同一个数据库事务里写入（发件箱），先存进站内；飞书 / 钉钉不可用时业务照常。
+- **失败自动重试、恢复后补发**：发送失败按 2、4、8……秒退避重试（最长 5 分钟一次），平台恢复后自动补发，
+  晚到的消息注明“这是 xx:xx 的通知，平台恢复后补发”。每个绑定一条事件，不会因为另一个平台失败而重复发。
+- **死信**：连续 10 次失败（约 25 分钟）进死信，并在问题中心记一条问题。管理员修好配置后到“问题中心 → 死信”重新投递。
+  后台“飞书 / 钉钉接入”页显示推送情况：24 小时处理数、重试中、死信。
+- **发送前再判断一次**：通知已在网页上读过、绑定已停用、接入已关闭，就不再发；免打扰时段内产生的通知不推送（站内照常）。
+- 关闭推送：`.env` 设置 `INTEGRATION_PUSH_NOTIFICATIONS=0`。
+
 ## 环境变量
 
 | 变量 | 说明 |
@@ -82,6 +94,7 @@
 | `INTEGRATION_PUBLIC_BASE_URL` | 飞书 / 钉钉能访问到的后端地址（公网 HTTPS，经 nginx 时带 `/api`）；后台按它显示回调地址，一键授权用它拼回调 |
 | `INTEGRATION_WEB_BASE_URL` | 网页工作台地址；机器人回复里的绑定指引、授权后跳回、卡片“在网页中查看”都用它 |
 | `TRUSTED_HOSTS` | **必须包含公网域名**，否则平台的回调会被 Host 白名单拒绝（HTTP 400） |
+| `INTEGRATION_PUSH_NOTIFICATIONS` | 站内通知是否同时推送到员工绑定的飞书 / 钉钉，默认开启（`0` 关闭） |
 | `INTEGRATION_BIND_RATE_LIMIT` / `INTEGRATION_BIND_RATE_WINDOW_SECONDS` | 同一外部账号试绑定码的次数上限，默认 15 分钟 5 次 |
 | `FEISHU_BASE_URL` / `DINGTALK_BASE_URL` / `DINGTALK_OAPI_URL` | 开放平台地址（私有化部署、测试时替换） |
 
@@ -144,4 +157,4 @@ cloudflared tunnel --url http://127.0.0.1:8011
 - 一键授权用的飞书 `authen/v2/oauth/token`、钉钉 `oauth2/userAccessToken` + `topapi/user/getbyunionid` 按文档实现，真机授权后确认一次。
 - 合并转发：按飞书“获取指定消息的内容”接口（返回 1 条合并转发 + N 条子消息，子消息用 `upper_message_id` 指向它）实现；真机转发一次，确认外部联系人（客户）的发送人显示为“外部成员 1、2……”、本企业员工显示姓名。
 
-测试：`tests/test_integrations.py`、`tests/test_integration_binding.py`、`tests/test_crm_chat_capture.py`（验签解密按两家文档的算法自行构造请求；不连真实平台）。
+测试：`tests/test_integrations.py`、`tests/test_integration_binding.py`、`tests/test_crm_chat_capture.py`、`tests/test_notification_push.py`（验签解密按两家文档的算法自行构造请求；不连真实平台）。

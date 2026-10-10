@@ -22,6 +22,7 @@ export interface IntegrationHealth extends IntegrationApp {
   bindings: Record<string, number>
   recent_failures: { event_type: string; received_at: string; error: string | null }[]
   public_base_url?: string | null
+  push?: { done_24h: number; retrying: number; dead: number }
   callback_paths: { events: string; card_actions: string }
 }
 

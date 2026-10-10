@@ -415,6 +415,22 @@ def health_sync(db, provider: str) -> Dict[str, Any]:
                     ExternalEventInbox.provider == provider, ExternalEventInbox.status == "failed")
                     .order_by(ExternalEventInbox.id.desc()).limit(10)).scalars().all()]
     return {**apps.describe(row, provider), "events_24h": events, "bindings": bindings, "recent_failures": failures,
+            "push": _push_backlog(db, provider, since),
             "public_base_url": oauth.public_base_url() or None,
             "callback_paths": {"events": f"/integrations/{provider}/events",
                                "card_actions": f"/integrations/{provider}/card-actions"}}
+
+
+def _push_backlog(db, provider: str, since) -> Dict[str, int]:
+    """站内通知推送到这个平台的情况：24 小时内处理完的、正在退避重试的、进了死信等管理员处理的。"""
+    from sqlalchemy import func, select
+    from models.init_db import ConsumerInbox, ConsumerRetry, DeadLetter, OutboxEvent
+    mine = OutboxEvent.payload_json.like(f'%"provider": "{provider}"%')
+    consumer = "external_notifier"
+    done = db.execute(select(func.count()).select_from(ConsumerInbox).join(OutboxEvent, OutboxEvent.event_id == ConsumerInbox.event_id)
+                      .where(ConsumerInbox.consumer == consumer, ConsumerInbox.processed_at >= since, mine)).scalar() or 0
+    retrying = db.execute(select(func.count()).select_from(ConsumerRetry).join(OutboxEvent, OutboxEvent.event_id == ConsumerRetry.event_id)
+                          .where(ConsumerRetry.consumer == consumer, ConsumerRetry.attempts > 0, mine)).scalar() or 0
+    dead = db.execute(select(func.count()).select_from(DeadLetter).join(OutboxEvent, OutboxEvent.event_id == DeadLetter.event_id)
+                      .where(DeadLetter.consumer == consumer, DeadLetter.status == "pending", mine)).scalar() or 0
+    return {"done_24h": int(done), "retrying": int(retrying), "dead": int(dead)}
