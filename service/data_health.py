@@ -154,6 +154,16 @@ def check_orphan_private_skills(db) -> Optional[Finding]:
                     "删除助手时遗留的，会出现在技能列表里但没有任何助手使用。确认后在「技能管理」里删除，或用 SQL 删除这些 skill 及其 skill_version")
 
 
+def check_public_skills_not_published(db) -> Optional[Finding]:
+    """勾了公开、状态却还是草稿：后台看起来像上架了，用户的技能中心里其实没有（批量导入的技能默认就是这样）。"""
+    rows = _rows(db, r"""
+        SELECT id, name FROM skill
+        WHERE is_public = 1 AND lifecycle_status <> 'published' AND config_file NOT LIKE 'enterprise/agent\_%'
+        ORDER BY id""")
+    return _finding("public_skills_not_published", "公开但没发布的技能（用户的技能中心看不到）", "warn", rows,
+                    "用户的技能中心只显示“公开 + 已发布”的技能。审核后在后台「技能管理」勾选，点“批量上架”")
+
+
 def check_test_accounts(db) -> Optional[Finding]:
     rows = _rows(db, r"SELECT id, name FROM `user` WHERE name LIKE 'rt\_%' ORDER BY id")
     return _finding("test_accounts_left", "残留的自动化测试账号", "info", rows,
@@ -163,7 +173,7 @@ def check_test_accounts(db) -> Optional[Finding]:
 CHECKS: List[Callable] = [
     check_enterprise, check_users_not_in_enterprise, check_department_members_without_enterprise,
     check_published_agents_on_disabled_teams, check_department_agents_outdated, check_spaces_without_enterprise,
-    check_orphan_skill_configs, check_orphan_private_skills, check_test_accounts,
+    check_orphan_skill_configs, check_orphan_private_skills, check_public_skills_not_published, check_test_accounts,
 ]
 
 

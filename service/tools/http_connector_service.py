@@ -91,3 +91,69 @@ def delete_connector(db, user_id: int, connector_id: int) -> None:
         raise NotFound("连接器不存在或无权限")
     dao.delete_connector(db, row)
     db.commit()
+
+
+# ---------------------------------------------------------------- 管理员：给企业智能体配置接口工具
+# 以前只能在用户端“我的助手 → 运行检查 → 接口工具”里配，而且要求助手是操作人自己建的——
+# 企业智能体、部门助手通常不在管理员本人名下，管理员打开只会看到“不存在或无权限”，后台也没有入口。
+# 这里按“企业管理的智能体”（中央 / 部门）授权，任何管理员都能维护；每次变更写审计（不记认证头）。
+
+def _managed_agent(db, agent_id: int):
+    from models.init_db import Agent
+    from service.agent_admin_service import VALID_MANAGED_AGENT_TYPES
+    agent = db.query(Agent).filter(Agent.id == agent_id, Agent.agent_type.in_(VALID_MANAGED_AGENT_TYPES)).first()
+    if agent is None:
+        raise NotFound("智能体不存在，或不是企业管理的中央 / 部门智能体")
+    return agent
+
+
+def _connector_of(db, agent_id: int, connector_id: int):
+    row = next((r for r in dao.list_connectors_by_agent(db, agent_id) if r.id == connector_id), None)
+    if row is None:
+        raise NotFound("接口工具不存在")
+    return row
+
+
+def _audit_detail(row) -> Dict[str, Any]:
+    from urllib.parse import urlsplit
+    parts = urlsplit(row.url)
+    return {"connector_id": row.id, "name": row.name, "method": row.method,
+            "url": f"{parts.scheme}://{parts.netloc}{parts.path}",   # 不记查询串，里面可能有令牌
+            "has_headers": bool(row.headers_encrypted), "is_enabled": bool(row.is_enabled)}
+
+
+def admin_list_connectors(db, agent_id: int) -> List[Dict[str, Any]]:
+    _managed_agent(db, agent_id)
+    return [_to_dict(r) for r in dao.list_connectors_by_agent(db, agent_id)]
+
+
+def admin_create_connector(db, operator_id: int, agent_id: int, **fields) -> Dict[str, Any]:
+    from service import audit_service
+    _managed_agent(db, agent_id)
+    if any(r.name == (fields.get("name") or "").strip() for r in dao.list_connectors_by_agent(db, agent_id)):
+        raise InvalidInput("这个智能体已经有同名的接口工具了（工具名会原样交给大模型，不能重复）")
+    created = create_connector(db, operator_id, agent_id, **fields)
+    audit_service.record(operator_id, "agent.api_connector_created", resource_type="agent", resource_id=agent_id,
+                         detail=_audit_detail(_connector_of(db, agent_id, created["id"])))
+    return created
+
+
+def admin_set_connector_enabled(db, operator_id: int, agent_id: int, connector_id: int, enabled: bool) -> Dict[str, Any]:
+    from service import audit_service
+    _managed_agent(db, agent_id)
+    row = _connector_of(db, agent_id, connector_id)
+    row.is_enabled = 1 if enabled else 0
+    db.commit()
+    audit_service.record(operator_id, "agent.api_connector_enabled" if enabled else "agent.api_connector_disabled",
+                         resource_type="agent", resource_id=agent_id, detail=_audit_detail(row))
+    return _to_dict(row)
+
+
+def admin_delete_connector(db, operator_id: int, agent_id: int, connector_id: int) -> None:
+    from service import audit_service
+    _managed_agent(db, agent_id)
+    row = _connector_of(db, agent_id, connector_id)
+    detail = _audit_detail(row)
+    dao.delete_connector(db, row)
+    db.commit()
+    audit_service.record(operator_id, "agent.api_connector_deleted", resource_type="agent", resource_id=agent_id, detail=detail)

@@ -268,6 +268,11 @@
             </div>
           </section>
 
+          <!-- ========== 接口工具：让它能查企业已有的系统（订单、工单、库存…），地址和认证由管理员配，模型改不了 ========== -->
+          <section v-if="currentId" v-show="section === 'tools'" class="space-y-3">
+            <ApiConnectorManager :agent-id="currentId" mode="managed" can-create />
+          </section>
+
           <!-- ========== 发布与试运行 ========== -->
           <section v-show="section === 'publish'" class="space-y-5">
             <div>
@@ -320,6 +325,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { AlertTriangle, CheckCircle2, X } from 'lucide-vue-next'
 import EmbeddedAgentChatPanel from '../EmbeddedAgentChatPanel.vue'
+import ApiConnectorManager from '../agent/ApiConnectorManager.vue'
 import * as orgApi from '../../api/organizationAdmin'
 import type { AgentConfig, AgentOptions, AgentTemplate, ManagedAgentDetail, ManagedAgentType } from '../../api/organizationAdmin'
 import { modelDisplayName } from '../../utils/displayNames'
@@ -339,7 +345,7 @@ const PERSONA_FIELDS: { key: PersonaKey; label: string; rows: number; placeholde
   { key: 'output', label: '输出格式', rows: 2, placeholder: '例如：先给结论，再列依据；金额用表格。', hint: '回答的结构和格式，让不同使用者看到一致的结果。' },
 ]
 
-type Section = 'basic' | 'persona' | 'model' | 'knowledge' | 'skills' | 'publish'
+type Section = 'basic' | 'persona' | 'model' | 'knowledge' | 'skills' | 'tools' | 'publish'
 const section = ref<Section>('basic')
 const loading = ref(false)
 const saving = ref(false)
@@ -402,6 +408,8 @@ const sections = computed(() => {
     { key: 'model' as Section, label: '模型与记忆', disabled: external },
     { key: 'knowledge' as Section, label: '知识库', disabled: external, badge: gaps ? `${gaps}` : form.rag_enabled ? `${form.space_ids.length}` : '', badgeClass: gaps ? 'bg-red-50 text-red-600' : 'bg-slate-100 text-slate-500' },
     { key: 'skills' as Section, label: '技能', disabled: external, badge: form.skill_ids.length ? `${form.skill_ids.length}` : '', badgeClass: 'bg-slate-100 text-slate-500' },
+    // 外部服务自己带工具；新建时还没有 id，保存后才能配
+    { key: 'tools' as Section, label: '接口工具', disabled: external || !currentId.value },
     { key: 'publish' as Section, label: '发布与试运行', disabled: !currentId.value, badge: errors ? `${errors}` : '', badgeClass: 'bg-red-50 text-red-600' },
   ]
 })

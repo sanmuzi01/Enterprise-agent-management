@@ -72,10 +72,8 @@ class AgentConfigTest(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         db = cls.db
-        db.execute(text("DELETE FROM agent_skill WHERE agent_id IN (SELECT id FROM agent WHERE name LIKE 'acf-%')"))
-        db.execute(text("DELETE FROM agent_knowledge_space WHERE agent_id IN (SELECT id FROM agent WHERE name LIKE 'acf-%')"))
-        db.execute(text("DELETE FROM agent_external_endpoint WHERE agent_id IN (SELECT id FROM agent WHERE name LIKE 'acf-%')"))
-        db.execute(text("DELETE FROM agent WHERE name LIKE 'acf-%'"))
+        from tests._dept_agent_cleanup import purge_agents_named
+        purge_agents_named(db, "acf-%")   # 连同专属技能和 skills/enterprise/agent_<id>.yml 一起删
         db.execute(text("DELETE FROM skill WHERE name LIKE 'acf-%'"))
         db.execute(text("DELETE FROM knowledge_spaces WHERE name LIKE 'acf-%'"))
         for team_id in (cls.a, cls.x):

@@ -132,6 +132,22 @@ class DataHealthTest(unittest.TestCase):
                 db.execute(text("DELETE FROM organizations WHERE id = :i"), {"i": extra})
                 db.commit()
 
+    def test_public_skill_left_as_draft_is_reported(self):
+        """勾了公开、却还是草稿：用户的技能中心看不到。部门助手的专属技能不算。"""
+        from models.init_db import Skill
+        with self.SessionLocal() as db:
+            draft = Skill(user_id=self.owner["id"], name="dh-公开草稿", config_file="imported/dh.yml", is_public=1, lifecycle_status="draft")
+            own = Skill(user_id=self.owner["id"], name="dh-助手专属", config_file="enterprise/agent_987654.yml", is_public=1, lifecycle_status="draft")
+            db.add_all([draft, own])
+            db.commit()
+            ids = (draft.id, own.id)
+        type(self).cleanup_sql.append(("DELETE FROM skill WHERE id IN (:a, :b)", {"a": ids[0], "b": ids[1]}))
+        with mock.patch("service.data_health.SAMPLE_LIMIT", 10_000):
+            found = _codes(self.run_checks())["public_skills_not_published"]
+        self.assertIn(f"#{ids[0]} dh-公开草稿", found.samples)
+        self.assertNotIn(f"#{ids[1]} dh-助手专属", found.samples)
+        self.assertFalse(found.fixable, "上不上架要人审核")
+
     def test_cli_exit_code_reflects_errors(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location("data_health_check", ROOT / "scripts" / "data_health_check.py")

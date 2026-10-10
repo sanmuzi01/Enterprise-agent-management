@@ -9,12 +9,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from models.async_db import get_async_db
-from models.init_db import User
+from models.init_db import User, get_db
 from service import agent_admin_service, department_agent_service
 from service import organization_admin_service as svc
-from service.dependencies import get_current_admin_user_async
+from service.dependencies import get_current_admin_user, get_current_admin_user_async
 from service.exceptions import InvalidInput
 
 router = APIRouter(prefix="/admin/org", tags=["企业组织管理"])
@@ -441,3 +442,67 @@ async def update_managed_agent(
         space_ids=data.space_ids, skill_ids=data.skill_ids,
         description=data.description, maintainer=data.maintainer,
     )
+
+
+# ---- 企业智能体的接口工具（管理员统一配置；见 service/tools/http_connector_service.py 的管理员部分）----
+
+class ManagedApiConnectorCreate(BaseModel):
+    name: str = Field(min_length=2, max_length=64)
+    description: str = Field(min_length=1, max_length=500)
+    url: str = Field(min_length=1, max_length=1000)
+    method: str = Field(default="GET")
+    headers: Optional[dict] = None
+    param_schema: Optional[dict] = None
+    static_query: Optional[dict] = None
+
+
+class ManagedApiConnectorEnabled(BaseModel):
+    is_enabled: bool
+
+
+@router.get("/agents/{agent_id}/api-connectors", summary="企业智能体的接口工具列表")
+def list_managed_api_connectors(
+        agent_id: int,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_admin_user),
+):
+    from service.tools import http_connector_service
+    return http_connector_service.admin_list_connectors(db, agent_id)
+
+
+@router.post("/agents/{agent_id}/api-connectors", summary="给企业智能体配一个接口工具（写审计）")
+def create_managed_api_connector(
+        agent_id: int,
+        data: ManagedApiConnectorCreate,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_admin_user),
+):
+    from service.tools import http_connector_service
+    return http_connector_service.admin_create_connector(
+        db, current_user.id, agent_id, name=data.name, description=data.description, url=data.url,
+        method=data.method, headers=data.headers, param_schema=data.param_schema, static_query=data.static_query,
+    )
+
+
+@router.patch("/agents/{agent_id}/api-connectors/{connector_id}", summary="启用 / 停用企业智能体的接口工具（写审计）")
+def set_managed_api_connector_enabled(
+        agent_id: int,
+        connector_id: int,
+        data: ManagedApiConnectorEnabled,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_admin_user),
+):
+    from service.tools import http_connector_service
+    return http_connector_service.admin_set_connector_enabled(db, current_user.id, agent_id, connector_id, data.is_enabled)
+
+
+@router.delete("/agents/{agent_id}/api-connectors/{connector_id}", summary="删除企业智能体的接口工具（写审计）")
+def delete_managed_api_connector(
+        agent_id: int,
+        connector_id: int,
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_admin_user),
+):
+    from service.tools import http_connector_service
+    http_connector_service.admin_delete_connector(db, current_user.id, agent_id, connector_id)
+    return {"message": "删除成功"}

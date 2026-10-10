@@ -48,11 +48,8 @@ class AgentRoutesTest(unittest.TestCase):
         cls.enterprise.stop()
         cls.env.stop()
         db = cls.db
-        mine = "SELECT id FROM agent WHERE name LIKE 'arr-%'"
-        db.execute(text(f"DELETE FROM agent_knowledge_space WHERE agent_id IN ({mine})"))
-        db.execute(text(f"DELETE FROM agent_skill WHERE agent_id IN ({mine})"))
-        db.execute(text(f"DELETE FROM agent_external_endpoint WHERE agent_id IN ({mine})"))
-        db.execute(text("DELETE FROM agent WHERE name LIKE 'arr-%'"))
+        from tests._dept_agent_cleanup import purge_agents_named
+        purge_agents_named(db, "arr-%")   # 连同专属技能和 skills/enterprise/agent_<id>.yml 一起删
         db.execute(text("DELETE FROM skill WHERE name LIKE 'arr-%'"))
         db.execute(text("DELETE FROM knowledge_spaces WHERE name LIKE 'arr-%'"))
         db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": cls.team_id})

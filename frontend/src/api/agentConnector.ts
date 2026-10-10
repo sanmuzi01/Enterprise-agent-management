@@ -54,3 +54,43 @@ export async function deleteApiConnector(connectorId: number): Promise<{ message
   const { data } = await request.delete(`/agent/api-connectors/${connectorId}`)
   return data
 }
+
+// ---- 管理员：企业智能体（中央 / 部门）的接口工具，在后台「企业智能体 → 编辑 → 接口工具」里维护，写审计 ----
+
+export async function listManagedApiConnectors(agentId: number): Promise<ApiConnector[]> {
+  const { data } = await request.get(`/admin/org/agents/${agentId}/api-connectors`)
+  return data as ApiConnector[]
+}
+
+export async function createManagedApiConnector(agentId: number, payload: CreateApiConnectorPayload): Promise<ApiConnector> {
+  const { data } = await request.post(`/admin/org/agents/${agentId}/api-connectors`, payload)
+  return data as ApiConnector
+}
+
+export async function setManagedApiConnectorEnabled(agentId: number, connectorId: number, isEnabled: boolean): Promise<ApiConnector> {
+  const { data } = await request.patch(`/admin/org/agents/${agentId}/api-connectors/${connectorId}`, { is_enabled: isEnabled })
+  return data as ApiConnector
+}
+
+export async function deleteManagedApiConnector(agentId: number, connectorId: number): Promise<{ message: string }> {
+  const { data } = await request.delete(`/admin/org/agents/${agentId}/api-connectors/${connectorId}`)
+  return data
+}
+
+/** 两套接口（用户自己的助手 / 管理员维护的企业智能体）统一成一个形状，给 ApiConnectorManager 用 */
+export function connectorApi(mode: 'personal' | 'managed') {
+  if (mode === 'managed') {
+    return {
+      list: listManagedApiConnectors,
+      create: createManagedApiConnector,
+      setEnabled: setManagedApiConnectorEnabled,
+      remove: deleteManagedApiConnector,
+    }
+  }
+  return {
+    list: listApiConnectors,
+    create: createApiConnector,
+    setEnabled: (_agentId: number, connectorId: number, isEnabled: boolean) => setApiConnectorEnabled(connectorId, isEnabled),
+    remove: (_agentId: number, connectorId: number) => deleteApiConnector(connectorId),
+  }
+}
