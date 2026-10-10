@@ -129,6 +129,22 @@ def _execute_tool_sync(tool_name: str, user_id: int, agent_id: Optional[int],
         return json.dumps({"error": f"执行失败: {e}"}, ensure_ascii=False)
 
 
+async def list_pending_async(user_id: int) -> list:
+    """当前用户还没处理、也没过期的确认单（网页“待确认操作”页面用；飞书 / 钉钉里没法点按钮时到这里确认）。"""
+    from sqlalchemy import select
+    from models.async_db import AsyncSessionLocal
+    from models.init_db import ToolConfirmation
+
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(ToolConfirmation).where(ToolConfirmation.user_id == user_id, ToolConfirmation.status == "pending",
+                                           ToolConfirmation.expires_at > utcnow())
+            .order_by(ToolConfirmation.id.desc()).limit(50)
+        )).scalars().all()
+    return [{"token": r.token, "tool_name": r.tool_name, "tool_args": json.loads(r.tool_args or "{}"),
+             "created_at": r.created_at.isoformat(), "expires_at": r.expires_at.isoformat()} for r in rows]
+
+
 async def reject_async(token: str, user_id: int) -> None:
     from sqlalchemy import update
     from models.async_db import AsyncSessionLocal

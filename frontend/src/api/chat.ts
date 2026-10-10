@@ -220,3 +220,17 @@ export async function confirmToolCall(token: string): Promise<{ tool_name: strin
 export async function rejectToolCall(token: string): Promise<void> {
   await request.post(`/chat/tool-confirmations/${token}/reject`)
 }
+
+export interface PendingToolConfirmation {
+  token: string
+  tool_name: string
+  tool_args: Record<string, any>
+  created_at: string
+  expires_at: string
+}
+
+/** 我还没处理、也没过期的确认单（飞书 / 钉钉里没法点按钮时，到网页“待确认操作”里处理） */
+export async function listToolConfirmations(): Promise<PendingToolConfirmation[]> {
+  const { data } = await request.get('/chat/tool-confirmations')
+  return data
+}

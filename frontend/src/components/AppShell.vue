@@ -129,7 +129,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
-import { Building2, ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, ListTodo, LogOut, Menu, MessageSquare, Settings, Sparkles, Workflow, Zap } from 'lucide-vue-next'
+import { Building2, ChevronRight, Compass, Layers3, LayoutGrid, Library, ListChecks, ListTodo, LogOut, Menu, MessageSquare, Settings, ShieldCheck, Sparkles, Workflow, Zap } from 'lucide-vue-next'
 import { useUserStore } from '../stores/user'
 import { useAgentSessionStore } from '../stores/agentSession'
 import ThemeToggle from './ThemeToggle.vue'
@@ -174,6 +174,7 @@ const moreItems = computed(() => [
   { label: '技能中心', path: '/skills', icon: Zap, active: route.path.startsWith('/skills') },
   { label: 'Agent 流水线', path: '/pipelines', icon: Workflow, active: route.path.startsWith('/pipelines') },
   { label: '任务中心', path: '/tasks', icon: ListChecks, active: route.path.startsWith('/tasks') },
+  { label: '待确认操作', path: '/confirmations', icon: ShieldCheck, active: route.path.startsWith('/confirmations') },
   { label: '设置', path: '/settings', icon: Settings, active: route.path.startsWith('/settings') || route.path.startsWith('/llm-configs') },
 ])
 

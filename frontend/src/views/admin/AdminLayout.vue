@@ -87,7 +87,7 @@ import { useRoute, RouterLink, RouterView } from 'vue-router'
 import {
   LayoutDashboard, Users, ListChecks, BarChart3, ScrollText,
   Stethoscope, ShieldCheck, LogOut, Library, Wallet, Menu, Zap, Building2, KeyRound,
-  Bug, Bot,
+  Bug, Bot, MessagesSquare,
 } from 'lucide-vue-next'
 import { useUserStore } from '../../stores/user'
 import ThemeToggle from '../../components/ThemeToggle.vue'
@@ -111,6 +111,7 @@ const navGroups = [
   { label: '人员与组织', items: [
     { path: '/admin/users', label: '用户管理', icon: Users },
     { path: '/admin/organization', label: '组织架构', icon: Building2 },
+    { path: '/admin/integrations', label: '外部协作平台', icon: MessagesSquare },
   ] },
   { label: 'AI 能力', items: [
     { path: '/admin/agents', label: '企业智能体', icon: Bot },

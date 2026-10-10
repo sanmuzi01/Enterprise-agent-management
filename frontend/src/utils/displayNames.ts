@@ -199,6 +199,20 @@ export function eventTypeLabel(type?: string | null): string {
   return (type && EVENT_TYPES[type]) || '后台事件'
 }
 
+// 飞书 / 钉钉回调的事件类型（外部协作平台页的“最近失败”）
+const INTEGRATION_EVENTS: Record<string, string> = {
+  'im.message.receive_v1': '员工消息',
+  'robot.message': '员工消息',
+  'card.action': '卡片按钮',
+  'card.action.trigger': '卡片按钮',
+  'contact.user.deleted_v3': '员工离职',
+  'contact.user.updated_v3': '员工信息变动',
+  user_leave_org: '员工离职',
+}
+export function integrationEventLabel(type?: string | null): string {
+  return (type && INTEGRATION_EVENTS[type]) || '其他事件'
+}
+
 // 系统诊断页里每个检查项的名字。后端的检查项用配置项名字（DB_PASSWORD、JWT_SECRET_KEY……）当标识，直接显示给人看就是露出代码里的名字。
 // 页面上显示中文，原始标识只放在鼠标悬停的提示里。tests/test_frontend_display_names.py 会核对：后端能产生的每个检查项这里都有中文名。
 export const DIAGNOSE_CHECKS: Record<string, string> = {

@@ -82,8 +82,8 @@ def list_bindings_sync(db, provider: str, organization_id: int) -> List[Dict[str
     names = {}
     ids = [r.local_user_id for r in rows if r.local_user_id]
     if ids:
-        marks = ",".join(str(int(i)) for i in ids)
-        names = {int(i): n for i, n in db.execute(text(f"SELECT id, name FROM `user` WHERE id IN ({marks})")).all()}
+        from models.init_db import User
+        names = {int(i): n for i, n in db.execute(select(User.id, User.name).where(User.id.in_(ids))).all()}
     return [{"id": r.id, "external_user_id": r.external_user_id, "external_name": r.external_name, "status": r.status,
              "local_user_id": r.local_user_id, "local_user_name": names.get(r.local_user_id),
              "last_synced_at": r.last_synced_at.isoformat() if r.last_synced_at else None} for r in rows]

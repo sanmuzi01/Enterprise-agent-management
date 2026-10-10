@@ -34,6 +34,12 @@ const router = createRouter({
       component: () => import('../views/Settings.vue'),
     },
     {
+      // 助手要执行的高风险操作（飞书 / 钉钉卡片里的“在网页中查看”也指向这里）
+      path: '/confirmations',
+      name: 'Confirmations',
+      component: () => import('../views/Confirmations.vue'),
+    },
+    {
       path: '/admin',
       component: () => import('../views/admin/AdminLayout.vue'),
       children: [
@@ -47,6 +53,7 @@ const router = createRouter({
         { path: 'llm', name: 'AdminLlm', component: () => import('../views/admin/AdminLlm.vue') },
         { path: 'agents', name: 'AdminAgents', component: () => import('../views/admin/AdminAgents.vue') },
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
+        { path: 'integrations', name: 'AdminIntegrations', component: () => import('../views/admin/AdminIntegrations.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },
         { path: 'issues', name: 'AdminIssues', component: () => import('../views/admin/AdminIssues.vue') },

@@ -168,6 +168,11 @@ async def get_history(
     return await chat_async_service.list_legacy_history(async_db, current_user.id, agent_id, limit=20)
 
 
+@router.get("/tool-confirmations", summary="我待确认的高风险操作")
+async def list_tool_confirmations(current_user: User = Depends(get_current_user_async)):
+    return await tool_confirmation_service.list_pending_async(current_user.id)
+
+
 @router.post("/tool-confirmations/{token}/confirm", summary="确认并执行一次高风险 Agent 工具调用")
 async def confirm_tool_call(token: str, current_user: User = Depends(get_current_user_async)):
     """第五轮审计 P0-2：submit/approve/reject 这类高风险工具在 ReAct 循环里只会生成一条
