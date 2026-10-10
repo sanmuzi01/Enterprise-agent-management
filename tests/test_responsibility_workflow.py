@@ -17,7 +17,7 @@ from service.exceptions import InvalidInput
 from service.llm import offline_demo
 from service.workflows import get_workflow
 from service.workflows.date_text import resolve_due
-from service.workflows.responsibility import completeness, resolve_name
+from service.workflows.responsibility import alias_lessons, completeness, grounded, match_people, resolve_name
 from tests.test_enterprise_access import _add_org_member, _add_team_member, _create_org, _create_team
 
 _AVAILABLE, _WHY = rc.route_tests_available()
@@ -176,6 +176,9 @@ class ResponsibilityWorkflowFlowTest(unittest.TestCase):
     def setUpClass(cls):
         cls.db = SessionLocal()
         cls.client = rc.make_client()
+        # 整理接口每人每分钟最多 6 次（AUTOMATION_RATE_LIMIT）；这一组用例同一个负责人要整理七八次，测试里放宽
+        cls.rate = patch.dict("os.environ", {"AUTOMATION_RATE_LIMIT": "1000"})
+        cls.rate.start()
         cls.owner = rc.create_user("rwf-owner")
         cls.u = {n: rc.create_user(f"rwf-{n}") for n in ("head", "zhang", "li", "wang", "zhao1", "outsider")}
         # 账号名全局唯一（平台里员工的唯一标识）：用带随机后缀的账号名代替原文里的"张三"等
@@ -194,11 +197,13 @@ class ResponsibilityWorkflowFlowTest(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.rate.stop()
         rc.cleanup()
         cls.db.execute(text("DELETE FROM automation_work WHERE team_id=:t"), {"t": cls.team})
         cls.db.execute(text("DELETE FROM team_members WHERE team_id=:t"), {"t": cls.team})
         cls.db.execute(text("DELETE FROM teams WHERE id=:t"), {"t": cls.team})
         cls.db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org})
+        cls.db.execute(text("DELETE FROM attendance_alias WHERE organization_id=:o"), {"o": cls.org})
         cls.db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": cls.org})
         cls.db.commit()
         cls.db.close()
@@ -294,6 +299,30 @@ class ResponsibilityWorkflowFlowTest(unittest.TestCase):
         self.assertIn(self.uid("zhang"), body["eligible"]["memberIds"])
         self.assertNotIn(self.uid("outsider"), body["eligible"]["memberIds"])
 
+    def test_head_choice_for_an_unknown_full_name_is_remembered_and_used_next_time(self):
+        """会议纪要写“钱多多”（真实姓名），账号名却是 ww…：第一次匹配不上，负责人选了王五后，下次自动匹配。"""
+        source = "钱多多负责整理客户反馈清单，月底前完成。"
+        answer = {"title": "反馈整理", "source_type": "MEETING", "summary": "", "decisions": [],
+                  "tasks": [{"title": "整理客户反馈清单", "responsible_name": "钱多多", "due_text": "月底",
+                             "evidence": "钱多多负责整理客户反馈清单，月底前完成"}], "unresolved": []}
+        work = self.generate(answer, source=source)
+        self.assertIsNone(work["proposal"]["tasks"][0]["responsible_user_id"])
+        proposal = work["proposal"]
+        proposal["tasks"][0]["responsible_user_id"] = self.uid("wang")
+        with patch.object(hub, "call", return_value={"id": 78, "title": "反馈整理", "status": "DRAFT", "tasks": [{}], "blockerCount": 3}):
+            saved = self.client.post(f"/enterprise/automation/{work['id']}/apply", headers=self.h("head"), json={"proposal": proposal})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["business_result"]["learnedAliases"], ["钱多多"])
+        self.db.commit()
+        row = self.db.execute(text("SELECT user_id FROM attendance_alias WHERE organization_id=:o AND alias='钱多多'"),
+                              {"o": self.org}).scalar()
+        self.assertEqual(row, self.uid("wang"))
+
+        again = self.generate(answer, source=source + "（第二次）")
+        task = again["proposal"]["tasks"][0]
+        self.assertEqual(task["responsible_user_id"], self.uid("wang"), "按员工别名自动匹配")
+        self.assertIn("按员工别名匹配", task["match_text"])
+
     def test_client_cannot_inject_a_fake_ai_suggestion(self):
         work = self.generate(self.model_answer())
         proposal = work["proposal"]
@@ -338,6 +367,89 @@ class ResponsibilityWorkflowFlowTest(unittest.TestCase):
         tasks_field = next(f for f in item["form"] if f.get("key") == "tasks")
         self.assertEqual({f["options_from"] for f in tasks_field["fields"] if f.get("options_from")}, {"members", "reviewers"})
         self.assertIsNotNone(get_workflow("responsibility").apply)
+
+
+class DueTextMoreTest(unittest.TestCase):
+    """会议纪要里常见、以前换算不了的期限说法（今天 = 2026-10-06 周二）。"""
+    CASES = {
+        "3个工作日内": date(2026, 10, 9), "五个工作日": date(2026, 10, 13), "10个工作日后": date(2026, 10, 20),
+        "半个月内": date(2026, 10, 21), "两个月内": date(2026, 12, 6), "1个月后": date(2026, 11, 6),
+        "季度末": date(2026, 12, 31), "下季度末": date(2027, 3, 31), "Q4底": date(2026, 12, 31), "第一季度末": date(2027, 3, 31),
+        "月中": date(2026, 10, 15), "中旬": date(2026, 10, 20), "本月下旬": date(2026, 10, 31),
+        "下月上旬": date(2026, 11, 10), "11月中旬": date(2026, 11, 20),
+        "下周内": None, "节后": None,
+    }
+
+    def test_more_phrases(self):
+        for phrase, expected in self.CASES.items():
+            with self.subTest(phrase=phrase):
+                self.assertEqual(resolve_due(phrase, TODAY), expected)
+
+    def test_workdays_skip_the_weekend(self):
+        self.assertEqual(resolve_due("2个工作日内", date(2026, 10, 9)), date(2026, 10, 13))   # 周五说两个工作日 → 下周二
+
+
+class AliasAndTitleMatchTest(unittest.TestCase):
+    PEOPLE = [{"user_id": 1, "name": "zhangsan", "aliases": ["张三", "E001"]},
+              {"user_id": 2, "name": "lisi", "aliases": ["李四"]},
+              {"user_id": 3, "name": "wangwu", "aliases": ["王五"]},
+              {"user_id": 4, "name": "王小明", "aliases": []}]
+    SOURCE = "张三负责联调，老李验收，E001 补充，小王跟进，张工确认，lisi 汇总"
+
+    def match(self, name):
+        return resolve_name(name, self.PEOPLE, self.SOURCE)
+
+    def test_real_name_or_employee_number_matches_through_aliases(self):
+        self.assertEqual(self.match("张三")[0], 1)
+        self.assertIn("员工别名", self.match("张三")[1])
+        self.assertEqual(self.match("E001")[0], 1)
+
+    def test_title_forms_are_inferred_only_when_unique_and_flagged(self):
+        uid, note = self.match("老李")
+        self.assertEqual(uid, 2)
+        self.assertIn("请确认", note)
+        self.assertEqual(self.match("张工")[0], 1)
+        uid, note = self.match("小王")
+        self.assertIsNone(uid, "两位姓王的同事，不猜")
+        self.assertIn("2 位姓王", note)
+
+    def test_account_name_still_wins_and_names_must_be_in_the_source(self):
+        self.assertEqual(self.match("lisi"), (2, None))
+        self.assertIn("没有出现在原文中", self.match("老赵")[1])
+
+
+class GroundingTest(unittest.TestCase):
+    SRC = "张三负责新版首页联调，下周五前提交可部署的前端构建包，验收标准是测试环境回归通过且无阻断问题，由李四验收。"
+
+    def test_light_rewording_is_grounded_but_made_up_criteria_are_not(self):
+        self.assertTrue(grounded("可部署的前端构建包", self.SRC))
+        self.assertTrue(grounded("回归测试通过，无阻断问题", self.SRC))
+        self.assertFalse(grounded("性能提升30%", self.SRC))
+        self.assertFalse(grounded("上线后用户满意度达到90%", self.SRC))
+
+    def test_ungrounded_deliverable_and_criteria_are_cleared_with_a_note(self):
+        data = {"tasks": [{"title": "联调", "responsible_name": None, "evidence": "张三负责新版首页联调",
+                           "deliverable": "可部署的前端构建包", "acceptance_criteria": "用户满意度达到90%"}]}
+        task = match_people(data, self.SRC, [], [], TODAY)["tasks"][0]
+        self.assertEqual(task["deliverable"], "可部署的前端构建包")
+        self.assertIsNone(task["acceptance_criteria"])
+        self.assertIn("验收标准「用户满意度达到90%」在原文里找不到依据", task["match_text"])
+
+
+class AliasLessonTest(unittest.TestCase):
+    def test_only_unmatched_full_names_with_a_consistent_choice_are_learned(self):
+        original = [
+            {"evidence": "a", "responsible_name": "钱多多", "responsible_user_id": None},          # 学
+            {"evidence": "b", "responsible_name": "老李", "responsible_user_id": None},            # 称呼不学
+            {"evidence": "c", "responsible_name": "张三", "responsible_user_id": 1},               # AI 已经匹配上，不学
+            {"evidence": "d", "responsible_name": "孙小美", "responsible_user_id": None},
+            {"evidence": "e", "responsible_name": "孙小美", "responsible_user_id": None},          # 同名被选成两个人，不学
+            {"evidence": "f", "reviewer_name": "周验收", "reviewer_user_id": None},                 # 验收人同样学
+        ]
+        saved = [{"evidence": "a", "responsible_user_id": 7}, {"evidence": "b", "responsible_user_id": 8},
+                 {"evidence": "c", "responsible_user_id": 9}, {"evidence": "d", "responsible_user_id": 10},
+                 {"evidence": "e", "responsible_user_id": 11}, {"evidence": "f", "reviewer_user_id": 12}]
+        self.assertEqual(alias_lessons(original, saved), [("周验收", 12), ("钱多多", 7)])
 
 
 if __name__ == "__main__":

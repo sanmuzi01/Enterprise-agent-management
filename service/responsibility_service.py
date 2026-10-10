@@ -120,16 +120,30 @@ def eligible_sync(organization_id: int, team_id: int) -> Dict[str, List[int]]:
     return {"memberIds": members, "reviewerIds": sorted(set(members) | set(admins))}
 
 
+# 员工别名（真实姓名、工号、常用叫法 → 平台账号）：人事导入考勤时确认过的对应，和整理责任时负责人手动选过的对应，
+# 存在同一张表里（attendance_alias，按企业唯一）。平台账号名常常是 zhangsan、demo_emp，会议纪要里写的却是“张三”。
+_ALIAS_SQL = "SELECT user_id, alias FROM attendance_alias WHERE organization_id = :o ORDER BY id"
+
+
+def _alias_map(rows) -> Dict[int, List[str]]:
+    result: Dict[int, List[str]] = {}
+    for uid, alias in rows:
+        result.setdefault(int(uid), []).append(alias)
+    return result
+
+
 async def candidates_async(db, user_id: int, team_id: int) -> Dict[str, Any]:
-    """整理文本和指派时的下拉/姓名匹配范围：本部门有效成员（主责/协办）与可验收的人。"""
+    """整理文本和指派时的下拉/姓名匹配范围：本部门有效成员（主责/协办）与可验收的人，带上他们的员工别名。"""
     actor = await actor_for(db, user_id, team_id)
     eligible = await eligible_async(db, actor["organization_id"], team_id)
     heads = {int(r[0]) for r in (await db.execute(text(
         "SELECT tm.user_id FROM team_members tm JOIN enterprise_role er ON er.id = tm.role_id "
         "WHERE tm.team_id = :t AND tm.status = 'active' AND er.code = 'admin'"), {"t": team_id})).all()}
     names = await user_names(db, eligible["reviewerIds"])
-    members = [{"user_id": u, "name": names.get(u) or f"用户 {u}", "is_head": u in heads} for u in eligible["memberIds"]]
-    reviewers = [{"user_id": u, "name": names.get(u) or f"用户 {u}"} for u in eligible["reviewerIds"]]
+    aliases = _alias_map((await db.execute(text(_ALIAS_SQL), {"o": actor["organization_id"]})).all())
+    members = [{"user_id": u, "name": names.get(u) or f"用户 {u}", "is_head": u in heads, "aliases": aliases.get(u, [])}
+               for u in eligible["memberIds"]]
+    reviewers = [{"user_id": u, "name": names.get(u) or f"用户 {u}", "aliases": aliases.get(u, [])} for u in eligible["reviewerIds"]]
     return {"members": members, "reviewers": reviewers,
             "me": {"user_id": user_id, "is_head": team_id in actor["heads"]}}
 
@@ -145,10 +159,13 @@ def candidates_sync(user_id: int, team_id: int) -> Dict[str, Any]:
         heads = {int(r[0]) for r in db.execute(text(
             "SELECT tm.user_id FROM team_members tm JOIN enterprise_role er ON er.id = tm.role_id "
             "WHERE tm.team_id = :t AND tm.status = 'active' AND er.code = 'admin'"), {"t": team_id}).all()}
+        aliases = _alias_map(db.execute(text(_ALIAS_SQL), {"o": actor["organization_id"]}).all())
     finally:
         db.close()
-    return {"members": [{"user_id": u, "name": names.get(u) or f"用户 {u}", "is_head": u in heads} for u in eligible["memberIds"]],
-            "reviewers": [{"user_id": u, "name": names.get(u) or f"用户 {u}"} for u in eligible["reviewerIds"]],
+    return {"members": [{"user_id": u, "name": names.get(u) or f"用户 {u}", "is_head": u in heads, "aliases": aliases.get(u, [])}
+                        for u in eligible["memberIds"]],
+            "reviewers": [{"user_id": u, "name": names.get(u) or f"用户 {u}", "aliases": aliases.get(u, [])}
+                          for u in eligible["reviewerIds"]],
             "organization_id": actor["organization_id"], "actor": actor, "eligible": eligible}
 
 

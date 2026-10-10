@@ -94,20 +94,70 @@ def _in_source(name: str, source: str) -> bool:
     return name in source
 
 
+# 中文里点人常用“称呼”而不是全名：老张、小王、张总、李工、王经理……只按姓推断，而且只在本部门恰好一位同姓时才用。
+# 下面的汉字区间是 U+4E00–U+9FA5（常用汉字）。
+_TITLE_FORMS = (re.compile(r"^(?:老|小|阿)([一-龥])$"),
+                re.compile(r"^([一-龥])(?:总|工|经理|老师|主管|总监|主任|姐|哥|助理|会计|律师)$"))
+_CHINESE_NAME = re.compile(r"^[一-龥·]{2,5}$")
+
+
+def title_surname(name: str) -> Optional[str]:
+    """“老张”“张工”这类称呼里的姓；不是称呼返回 None。"""
+    for pattern in _TITLE_FORMS:
+        m = pattern.match(name)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _labels(person) -> List[str]:
+    return [person["name"], *[a for a in person.get("aliases", []) if a]]
+
+
 def resolve_name(name: Optional[str], people, source: str):
-    """原文里的姓名 → 本企业有效成员（平台里员工的唯一标识是账号名）。返回 (user_id 或 None, 提示或 None)；
-    姓名必须逐字出现在原文，且必须唯一匹配。"""
+    """原文里的姓名 → 本企业有效成员。返回 (user_id 或 None, 提示或 None)。
+    姓名必须逐字出现在原文；依次按：账号名 → 员工别名（真实姓名、工号，人事或负责人确认过的）→ 称呼（老张 / 张工，
+    只按姓推断）匹配，每一步都必须唯一，按别名、称呼匹配到的会写明依据，交给负责人核对。"""
     clean = (name or "").strip()
     if not clean:
         return None, None
     if not _in_source(clean, source):
         return None, f"姓名「{clean}」没有出现在原文中，已忽略"
-    matches = [p for p in people if p["name"] == clean]
-    if len(matches) == 1:
-        return int(matches[0]["user_id"]), None
-    if len(matches) > 1:
-        return None, f"有 {len(matches)} 位同名员工「{clean}」，请手动选择"
-    return None, f"没有匹配到名为「{clean}」的有效成员（可能不在本部门或已离职），请手动选择"
+    by_account = [p for p in people if p["name"] == clean]
+    if len(by_account) == 1:
+        return int(by_account[0]["user_id"]), None
+    if len(by_account) > 1:
+        return None, f"有 {len(by_account)} 位同名员工「{clean}」，请手动选择"
+    by_alias = [p for p in people if clean in p.get("aliases", [])]
+    if len(by_alias) == 1:
+        return int(by_alias[0]["user_id"]), f"「{clean}」按员工别名匹配到 {by_alias[0]['name']}"
+    if len(by_alias) > 1:
+        return None, f"别名「{clean}」对应多位员工，请手动选择"
+    surname = title_surname(clean)
+    if surname:
+        same = [p for p in people if any(_CHINESE_NAME.match(label) and label.startswith(surname) for label in _labels(p))]
+        if len(same) == 1:
+            return int(same[0]["user_id"]), f"「{clean}」是称呼，按姓推断为 {same[0]['name']}，请确认"
+        if len(same) > 1:
+            return None, f"「{clean}」是称呼，本部门有 {len(same)} 位姓{surname}的同事，请手动选择"
+    return None, f"没有匹配到名为「{clean}」的有效成员（可能不在本部门、已离职，或还没有登记真实姓名），请手动选择"
+
+
+_PUNCT = re.compile(r"[\s，。、；：,.;:!?！？“”\"'（）()\[\]【】《》<>—\-]+")
+GROUNDED_RATIO = 0.6
+
+
+def grounded(value: Optional[str], source: str) -> bool:
+    """交付物 / 验收标准有没有原文依据：去掉标点空白后逐字包含，或者至少 60% 的相邻两字在原文里出现过
+    （允许模型稍微改写语序，不允许凭空编一条原文没说的标准）。"""
+    text = _PUNCT.sub("", value or "")
+    if not text:
+        return True
+    plain = _PUNCT.sub("", source or "")
+    if text in plain:
+        return True
+    pairs = [text[i:i + 2] for i in range(len(text) - 1)] or [text]
+    return sum(1 for pair in pairs if pair in plain) / len(pairs) >= GROUNDED_RATIO
 
 
 def match_people(data, source: str, members, reviewers, today: date):
@@ -132,6 +182,10 @@ def match_people(data, source: str, members, reviewers, today: date):
         task["due_date"] = resolved.isoformat() if resolved else None
         if due_text and resolved is None:
             notes.append(f"原文写的期限「{due_text}」无法换算成具体日期，请补充")
+        for key, label in (("deliverable", "交付物"), ("acceptance_criteria", "验收标准")):
+            if task.get(key) and not grounded(task[key], source):
+                notes.append(f"{label}「{task[key][:40]}」在原文里找不到依据，已清空，请按原文补充")
+                task[key] = None
         if collaborators:
             notes.append("协办：" + "、".join(names.get(c, f"用户 {c}") for c in collaborators))
         task["match_text"] = "；".join(n for n in notes if n)[:600]
@@ -213,8 +267,56 @@ async def _apply(db, user_id, work, data):
             "summary": data["summary"], "decisions": data["decisions"], "unresolved": data["unresolved"],
             "tasks": tasks, "automation_work_id": work.id}
     plan = await rs.create_plan_async(db, user_id, work.team_id, body, idempotency_key=f"automation-{work.id}")
+    learned = []
+    try:
+        learned = await remember_aliases(db, user_id, work.team_id, original.get("tasks", []), data["tasks"])
+    except Exception:  # noqa: BLE001 —— 记不住别名不影响这次保存
+        await db.rollback()
     return {"id": plan["id"], "title": plan["title"], "status": plan["status"],
-            "taskCount": len(plan["tasks"]), "blockerCount": plan.get("blockerCount", 0)}
+            "taskCount": len(plan["tasks"]), "blockerCount": plan.get("blockerCount", 0), "learnedAliases": learned}
+
+
+def alias_lessons(original_tasks, saved_tasks) -> List[tuple]:
+    """原文里写的全名没匹配上、负责人在草稿里手动选了人 → (名字, user_id)。称呼（老张、张工）不记：同一个称呼过一阵可能指别人。
+    按原文依据对应同一项责任；主责人和验收人都算。"""
+    by_evidence = {t.get("evidence"): t for t in original_tasks}
+    lessons: dict = {}
+    for task in saved_tasks:
+        orig = by_evidence.get(task.get("evidence"))
+        if not orig:
+            continue
+        for name_key, id_key in (("responsible_name", "responsible_user_id"), ("reviewer_name", "reviewer_user_id")):
+            name = (orig.get(name_key) or "").strip()
+            chosen = task.get(id_key)
+            if (name and chosen is not None and orig.get(id_key) is None and len(name) <= 80
+                    and title_surname(name) is None and _CHINESE_NAME.match(name)):
+                lessons.setdefault(name, set()).add(int(chosen))
+    # 同一个名字这次被选成了不同的人：说明不是同一个人的别名，不记
+    return sorted((name, next(iter(uids))) for name, uids in lessons.items() if len(uids) == 1)
+
+
+async def remember_aliases(db, operator_id, team_id, original_tasks, saved_tasks) -> List[str]:
+    """把负责人确认过的“姓名 → 账号”记成员工别名，下次整理自动匹配（和考勤导入用的是同一份别名）。已有的别名不覆盖。"""
+    from sqlalchemy import text
+    lessons = alias_lessons(original_tasks, saved_tasks)
+    if not lessons:
+        return []
+    org = (await db.execute(text("SELECT organization_id FROM teams WHERE id = :t"), {"t": team_id})).scalar()
+    if org is None:
+        return []
+    learned = []
+    for name, uid in lessons:
+        exists = (await db.execute(text("SELECT user_id FROM attendance_alias WHERE organization_id = :o AND alias = :a"),
+                                   {"o": org, "a": name})).first()
+        # 这个名字本身就是某个账号（比如别的部门的同事）：负责人改选别人是“换人”，不是“这个名字指的是他”
+        account = (await db.execute(text("SELECT id FROM `user` WHERE name = :a"), {"a": name})).first()
+        if exists or account:
+            continue
+        await db.execute(text("INSERT INTO attendance_alias (organization_id, alias, user_id, created_by) VALUES (:o, :a, :u, :c)"),
+                         {"o": org, "a": name, "u": uid, "c": operator_id})
+        learned.append(name)
+    await db.commit()
+    return learned
 
 
 INSTRUCTIONS = (
@@ -223,8 +325,8 @@ INSTRUCTIONS = (
     "责任事项，写入 unresolved。tasks 只写原文明确要某人去做的具体动作：title 必须是可执行的动作，避免“做好相关工作”这类空泛表述；"
     "responsible_name 只写原文里出现的人名，原文没有明确责任人就写 null，一项责任只能有一个主责人（多人共同负责时，原文点名的第一位为主责，"
     "其余写入 collaborator_names）；reviewer_name 只在原文明确了验收/审核/确认的人时填写；due_text 摘录原文里的期限说法"
-    "（如“下周五前”“10月15日”“月底”），原文没有就写 null，不要自己推算日期，due_date 一律写 null；deliverable、acceptance_criteria "
-    "只在原文提到时填写，不要替用户编造；priority 只在原文强调紧急或重要时调高；depends_on 填原文明确“在某事之后”的前置事项在 tasks 中的"
+    "（如“下周五前”“10月15日”“月底”），原文没有就写 null，不要自己推算日期，due_date 一律写 null；deliverable（要交出来的东西：报告、构建包、清单、方案……）、acceptance_criteria（怎样算完成：通过什么测试、达到什么指标、"
+    "谁确认）只在原文提到时填写，尽量摘录原文措辞，不要替用户编造（没有原文依据的会被系统清空）；priority 只在原文强调紧急或重要时调高；depends_on 填原文明确“在某事之后”的前置事项在 tasks 中的"
     "序号（从 1 开始）。每个 evidence 必须是原文里逐字存在的片段。unresolved 写原文没有说清的事（没有责任人、没有期限、验收人不明、"
     "是否已作出决定）。match_text、*_user_id 字段一律留空。")
 
