@@ -4,7 +4,7 @@
 import json
 import unittest
 import uuid
-from datetime import date, timedelta
+from datetime import date
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 

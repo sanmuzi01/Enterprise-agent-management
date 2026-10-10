@@ -3,7 +3,6 @@
 
 业务系统（Java）用替身：客户、联系人、客户摘要都从 mock 返回；平台自己的表用真实测试库。
 """
-import json
 import unittest
 import uuid
 from datetime import date, datetime, timedelta, timezone

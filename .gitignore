@@ -55,3 +55,8 @@ prompt/prompts/*.yaml
 /*.log
 /.*.log
 /*.patch
+
+# 本地演示文稿生成/校验产物：保留在磁盘供查看，不进入产品代码提交。
+/.ppt-build/
+/.codex-finalizer/
+/outputs/

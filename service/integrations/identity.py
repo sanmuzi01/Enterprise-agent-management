@@ -18,7 +18,10 @@ from service.exceptions import InvalidInput
 from utils.timeutil import utcnow
 
 REASONS = {
-    "unbound": "你的{platform}账号还没有绑定平台账号，请联系管理员在后台“外部协作平台”里绑定后再使用。",
+    "unbound": ("你的{platform}账号还没有绑定平台账号。绑定只要两步：\n"
+                "1. 登录平台，打开“设置 → 飞书 / 钉钉”，点“获取绑定码”；\n"
+                "2. 回到这里私聊我，发送“绑定 绑定码”（例如：绑定 123456）。\n"
+                "{web_hint}也可以请管理员在后台直接帮你绑定。"),
     "disabled": "你的{platform}账号绑定已停用（可能已离职或被管理员停用），如有疑问请联系管理员。",
     "not_member": "你的平台账号已停用或已不在本企业，不能使用助手。",
 }

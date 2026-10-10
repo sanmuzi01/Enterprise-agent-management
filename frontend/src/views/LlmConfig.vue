@@ -5,6 +5,7 @@
         <SectionTabs class="mb-3" :tabs="[
           { label: '我的模型密钥', path: '/llm-configs' },
           { label: '个性化与系统状态', path: '/settings' },
+          { label: '飞书 / 钉钉', path: '/settings/integrations' },
         ]" />
         <div class="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>

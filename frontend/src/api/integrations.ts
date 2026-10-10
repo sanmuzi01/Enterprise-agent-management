@@ -21,6 +21,7 @@ export interface IntegrationHealth extends IntegrationApp {
   events_24h: Record<string, number>
   bindings: Record<string, number>
   recent_failures: { event_type: string; received_at: string; error: string | null }[]
+  public_base_url?: string | null
   callback_paths: { events: string; card_actions: string }
 }
 
@@ -89,5 +90,57 @@ export async function changeBinding(provider: Provider, externalUserId: string, 
   const { data } = await request.put(`/admin/integrations/${provider}/bindings`, {
     external_user_id: externalUserId, local_user_id: localUserId,
   })
+  return data
+}
+
+// ------------------------------------------------------------------ 员工自助绑定
+
+export interface MyIntegration {
+  provider: Provider
+  label: string
+  available: boolean
+  status: 'unavailable' | 'unbound' | 'bound' | 'disabled'
+  external_name?: string | null
+  bot_link?: string | null
+  oauth_available?: boolean
+}
+
+export async function myIntegrations(): Promise<MyIntegration[]> {
+  const { data } = await request.get('/me/integrations')
+  return data.items
+}
+
+export async function getBindCode(provider: Provider): Promise<{ code: string; expires_in: number; command: string; bot_link: string | null }> {
+  const { data } = await request.post(`/me/integrations/${provider}/bind-code`)
+  return data
+}
+
+export async function unbindMine(provider: Provider) {
+  await request.delete(`/me/integrations/${provider}/binding`)
+}
+
+export async function oauthStart(provider: Provider): Promise<string> {
+  const { data } = await request.get(`/me/integrations/${provider}/oauth/start`)
+  return data.url
+}
+
+// ------------------------------------------------------------------ 管理员自检
+
+export interface ReadinessCheck {
+  key: string
+  label: string
+  ok: boolean
+  level: 'ok' | 'error' | 'warning' | 'info'
+  detail: string
+  fix: string
+}
+
+export async function integrationReadiness(provider: Provider): Promise<{ ready: boolean; checks: ReadinessCheck[]; oauth_redirect_uri: string | null }> {
+  const { data } = await request.get(`/admin/integrations/${provider}/readiness`)
+  return data
+}
+
+export async function inviteUnbound(provider: Provider): Promise<{ sent: number; unbound: number }> {
+  const { data } = await request.post(`/admin/integrations/${provider}/invite-unbound`)
   return data
 }

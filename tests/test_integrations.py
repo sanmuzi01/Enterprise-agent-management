@@ -8,7 +8,7 @@ import unittest
 import uuid
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from service.integrations import base
 from service.integrations.base import (BusinessCard, CardAction, CardField, ConfirmAction, Handshake, Ignored,
@@ -21,6 +21,7 @@ from service.integrations.dingtalk.cards import DingTalkCardRenderer
 from service.integrations.feishu import callback as fs_callback
 from service.integrations.feishu import signature as fs_sig
 from service.integrations.feishu.cards import FeishuCardRenderer
+from service.exceptions import InvalidInput
 from tests import _route_client as rc
 
 _AVAILABLE, _WHY = rc.route_tests_available()
@@ -79,6 +80,41 @@ def dingtalk_event_request(app, event):
     query = {"msg_signature": dt_sig.event_signature(app.verification_token, ts, nonce, encrypted), "timestamp": ts,
              "nonce": nonce}
     return query, json.dumps({"encrypt": encrypted}).encode()
+
+
+class IntegrationAppConfigTest(unittest.TestCase):
+    def test_feishu_cannot_be_enabled_without_callback_security_fields(self):
+        from service.integrations import apps
+
+        with patch.object(apps, "get_row_sync", return_value=None):
+            with self.assertRaisesRegex(InvalidInput, "Verification Token、Encrypt Key"):
+                apps.save_sync(
+                    MagicMock(), "feishu", 1, app_id="cli_test", app_secret="secret",
+                    verification_token=None, encrypt_key=None, robot_code=None,
+                    card_template_id=None, enabled=True,
+                )
+
+    def test_verification_token_is_encrypted_at_rest(self):
+        from service.integrations import apps
+        from utils.crypto import encrypt
+
+        row = SimpleNamespace(
+            id=1, organization_id=1, provider="feishu", app_id="cli_old",
+            encrypted_app_secret=encrypt("secret"), verification_token=None,
+            encrypted_encrypt_key=encrypt("encrypt-key"), robot_code=None,
+            card_template_id=None, enabled=0, updated_by=None,
+            last_health_at=None, last_error=None,
+        )
+        db = MagicMock()
+        with patch.object(apps, "get_row_sync", return_value=row), patch("service.audit_service.record"):
+            apps.save_sync(
+                db, "feishu", 1, app_id="cli_old", app_secret=None,
+                verification_token="verify-token", encrypt_key=None, robot_code=None,
+                card_template_id=None, enabled=True,
+            )
+        self.assertNotEqual(row.verification_token, "verify-token")
+        self.assertTrue(row.verification_token.startswith("fernet:"))
+        self.assertEqual(apps.credentials(row).verification_token, "verify-token")
 
 
 # ------------------------------------------------------------------ 纯算法 / 解析

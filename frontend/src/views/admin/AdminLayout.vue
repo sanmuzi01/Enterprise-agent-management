@@ -111,7 +111,7 @@ const navGroups = [
   { label: '人员与组织', items: [
     { path: '/admin/users', label: '用户管理', icon: Users },
     { path: '/admin/organization', label: '组织架构', icon: Building2 },
-    { path: '/admin/integrations', label: '外部协作平台', icon: MessagesSquare },
+    { path: '/admin/integrations', label: '飞书 / 钉钉接入', icon: MessagesSquare },
   ] },
   { label: 'AI 能力', items: [
     { path: '/admin/agents', label: '企业智能体', icon: Bot },

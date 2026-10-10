@@ -16,6 +16,22 @@
 
     <p v-if="error" class="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700" role="alert">{{ error }}</p>
 
+    <section v-if="provider === 'feishu'" class="mb-4 rounded-lg border border-indigo-100 bg-indigo-50/50 p-4" data-testid="feishu-setup-guide">
+      <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">按下面 4 步完成飞书接入</h2>
+          <ol class="mt-2 grid gap-2 text-xs leading-5 text-slate-600 sm:grid-cols-2 xl:grid-cols-4">
+            <li><strong class="text-slate-800">1. 创建应用</strong><br />创建企业自建应用，并开启机器人能力。</li>
+            <li><strong class="text-slate-800">2. 填写凭证</strong><br />从“凭证与基础信息”复制 App ID 和 App Secret。</li>
+            <li><strong class="text-slate-800">3. 开启回调加密</strong><br />在“事件与回调 → 加密策略”获取 Token 和 Encrypt Key。</li>
+            <li><strong class="text-slate-800">4. 配置并验证</strong><br />填写下方 HTTPS 回调地址，保存后测试连接。</li>
+          </ol>
+        </div>
+        <a href="https://open.feishu.cn/app" target="_blank" rel="noopener noreferrer"
+          class="shrink-0 text-xs font-medium text-indigo-600 hover:underline">打开飞书开放平台 ↗</a>
+      </div>
+    </section>
+
     <div class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <!-- 应用配置 -->
       <section class="rounded-lg border border-slate-200 bg-white p-4" data-testid="integration-config">
@@ -34,10 +50,13 @@
             <p v-if="field.hint" class="mt-1 text-[11px] text-slate-400">{{ field.hint }}</p>
           </div>
           <label class="flex items-center gap-2 text-sm text-slate-700">
-            <input id="f-enabled" v-model="form.enabled" type="checkbox" class="h-4 w-4" />启用（启用后才接收回调）
+            <input id="f-enabled" v-model="form.enabled" type="checkbox" class="h-4 w-4" />启用接入（完整配置后才能启用）
           </label>
+          <p v-if="form.enabled && missingForEnable.length" class="rounded bg-amber-50 px-3 py-2 text-xs text-amber-700" role="alert">
+            还缺少：{{ missingForEnable.join('、') }}。可以先取消“启用接入”保存草稿。
+          </p>
           <div class="flex flex-wrap gap-2">
-            <button type="submit" :disabled="saving || !form.app_id" data-testid="integration-save"
+            <button type="submit" :disabled="saving || !canSave" data-testid="integration-save"
               class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50">{{ saving ? '保存中…' : '保存' }}</button>
             <button type="button" :disabled="!current?.configured || testing" @click="runTest" data-testid="integration-test"
               class="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">{{ testing ? '测试中…' : '测试连接' }}</button>
@@ -63,6 +82,9 @@
           </div>
         </dl>
         <p class="mt-2 text-[11px] text-slate-400">地址必须是公网 HTTPS，填到{{ provider === 'feishu' ? '飞书开放平台“事件与回调”' : '钉钉开放平台“机器人”和“事件订阅”' }}里。</p>
+        <p v-if="isLocalOrigin" class="mt-2 rounded bg-amber-50 px-2.5 py-2 text-xs text-amber-700">
+          当前是本地地址，飞书 / 钉钉无法从公网访问。联调前请使用反向代理或内网穿透生成公网 HTTPS 地址。
+        </p>
         <div v-if="health" class="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <div v-for="cell in healthCells" :key="cell.label" class="rounded bg-slate-50 px-2.5 py-2">
             <p class="text-[11px] text-slate-500">{{ cell.label }}</p>
@@ -75,6 +97,34 @@
         <p v-if="current?.last_error" class="mt-3 text-xs text-red-600">最近一次连接测试失败：{{ current.last_error }}</p>
       </section>
     </div>
+
+    <!-- 接入自检：员工为什么还用不了 -->
+    <section class="mt-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="integration-readiness">
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <h2 class="text-sm font-semibold text-slate-900">接入自检</h2>
+          <p class="mt-0.5 text-xs text-slate-500">逐项检查员工能不能在{{ providerLabel }}里用上助手；没通过的项按提示处理。</p>
+        </div>
+        <div class="flex gap-2">
+          <button :disabled="!readiness" @click="refreshReadiness" class="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">重新检查</button>
+          <button :disabled="inviting || !current?.enabled" @click="invite" data-testid="integration-invite"
+            class="rounded border border-indigo-200 px-3 py-1.5 text-sm text-indigo-700 hover:bg-indigo-50 disabled:opacity-50">{{ inviting ? '发送中…' : '提醒未绑定员工' }}</button>
+        </div>
+      </div>
+      <ul v-if="readiness" class="space-y-1.5">
+        <li v-for="c in readiness.checks" :key="c.key" class="flex items-start gap-2 rounded px-2 py-1.5 text-xs" :class="checkRow[c.level]">
+          <span class="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-white" :class="checkDot[c.level]">{{ c.ok ? '✓' : c.level === 'info' ? 'i' : '!' }}</span>
+          <div class="min-w-0">
+            <p class="font-medium text-slate-800">{{ c.label }}<span class="ml-2 font-normal text-slate-500">{{ c.detail }}</span></p>
+            <p v-if="c.fix" class="mt-0.5 text-slate-600">处理：{{ c.fix }}</p>
+          </div>
+        </li>
+      </ul>
+      <p v-if="readiness?.oauth_redirect_uri" class="mt-2 text-xs text-slate-500">
+        一键授权绑定的回调地址（填到{{ provider === 'feishu' ? '飞书“安全设置 → 重定向 URL”' : '钉钉“登录与分享 → 回调域名”' }}）：
+        <code class="break-all rounded bg-slate-100 px-1.5 py-0.5 text-slate-700">{{ readiness.oauth_redirect_uri }}</code>
+      </p>
+    </section>
 
     <!-- 人员绑定 -->
     <section class="mt-4 rounded-lg border border-slate-200 bg-white p-4" data-testid="integration-bindings">
@@ -185,17 +235,18 @@ const filter = ref('')
 const manualExternal = ref('')
 const manualUser = ref<number | null>(null)
 // 后端接口在 /api 下（nginx / Vite 代理去掉这个前缀再转给后端），平台回调地址也要带上
-const origin = `${window.location.origin}/api`
+// 回调地址：配置了 INTEGRATION_PUBLIC_BASE_URL 时用它（飞书 / 钉钉实际访问的地址）；否则按当前页面地址推算（经 nginx / Vite 代理带 /api）
+const origin = computed(() => health.value?.public_base_url || `${window.location.origin}/api`)
 const form = reactive<Record<FormKey, string> & { enabled: boolean }>({
   app_id: '', app_secret: '', verification_token: '', encrypt_key: '', robot_code: '', card_template_id: '', enabled: false,
 })
 
 const FIELDS: Record<Provider, Field[]> = {
   feishu: [
-    { key: 'app_id', label: 'App ID' },
-    { key: 'app_secret', label: 'App Secret', secret: true },
-    { key: 'verification_token', label: 'Verification Token', hint: '“事件与回调 → 加密策略”里的 Verification Token' },
-    { key: 'encrypt_key', label: 'Encrypt Key（必填）', secret: true, hint: '不配置加密时飞书不给回调签名，所以这里要求必须配置' },
+    { key: 'app_id', label: 'App ID（必填）', hint: '在“凭证与基础信息 → 应用凭证”中复制' },
+    { key: 'app_secret', label: 'App Secret（首次配置必填）', secret: true, hint: '与 App ID 位于同一页面，属于敏感信息，请勿泄露' },
+    { key: 'verification_token', label: 'Verification Token（启用前必填）', secret: true, hint: '在“事件与回调 → 加密策略”中复制，用于确认回调属于当前飞书应用' },
+    { key: 'encrypt_key', label: 'Encrypt Key（启用前必填）', secret: true, hint: '在“事件与回调 → 加密策略”中开启加密后复制；本系统只接收加密并签名的回调，以防消息被伪造' },
   ],
   dingtalk: [
     { key: 'app_id', label: 'AppKey（Client ID）' },
@@ -209,6 +260,34 @@ const FIELDS: Record<Provider, Field[]> = {
 const fields = computed(() => FIELDS[provider.value])
 const current = computed(() => apps.value.find((a) => a.provider === provider.value))
 const providerLabel = computed(() => (provider.value === 'feishu' ? '飞书' : '钉钉'))
+const isLocalOrigin = computed(() => ['localhost', '127.0.0.1'].includes(window.location.hostname))
+const hasCredential = (key: FormKey) => {
+  if (form[key].trim()) return true
+  const app = current.value
+  if (!app?.configured) return false
+  if (key === 'app_secret') return Boolean(app.app_secret)
+  if (key === 'verification_token') return Boolean(app.has_verification_token)
+  if (key === 'encrypt_key') return Boolean(app.encrypt_key)
+  if (key === 'robot_code') return Boolean(app.robot_code)
+  return false
+}
+const missingForEnable = computed(() => {
+  const required: { key: FormKey; label: string }[] = provider.value === 'feishu'
+    ? [
+        { key: 'app_secret', label: 'App Secret' },
+        { key: 'verification_token', label: 'Verification Token' },
+        { key: 'encrypt_key', label: 'Encrypt Key' },
+      ]
+    : [
+        { key: 'app_secret', label: 'AppSecret' },
+      ]
+  return required.filter((item) => !hasCredential(item.key)).map((item) => item.label)
+})
+const canSave = computed(() => Boolean(
+  form.app_id.trim()
+  && (current.value?.configured || form.app_secret.trim())
+  && (!form.enabled || missingForEnable.value.length === 0),
+))
 const statusText = computed(() => (!current.value?.configured ? '未配置' : current.value.enabled ? '已启用' : '已停用'))
 const statusClass = computed(() => (!current.value?.configured ? 'bg-slate-100 text-slate-500'
   : current.value.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'))
@@ -248,6 +327,31 @@ const fillForm = () => {
   form.enabled = !!app?.enabled
 }
 
+const readiness = ref<Awaited<ReturnType<typeof api.integrationReadiness>> | null>(null)
+const inviting = ref(false)
+const checkRow: Record<string, string> = { ok: 'bg-emerald-50/50', error: 'bg-red-50', warning: 'bg-amber-50', info: 'bg-slate-50' }
+const checkDot: Record<string, string> = { ok: 'bg-emerald-500', error: 'bg-red-500', warning: 'bg-amber-500', info: 'bg-slate-400' }
+
+async function refreshReadiness() {
+  try {
+    readiness.value = await api.integrationReadiness(provider.value)
+  } catch {
+    readiness.value = null
+  }
+}
+
+async function invite() {
+  inviting.value = true
+  try {
+    const result = await api.inviteUnbound(provider.value)
+    toastSuccess(result.unbound ? `已提醒 ${result.sent} 位还没绑定的员工（今天已提醒过的不重复发）` : '所有员工都已绑定')
+  } catch (e: any) {
+    error.value = getErrorMessage(e, '发送失败')
+  } finally {
+    inviting.value = false
+  }
+}
+
 const loadProvider = async () => {
   loaded.value = false
   testResult.value = null
@@ -257,6 +361,7 @@ const loadProvider = async () => {
   health.value = h
   bindings.value = b
   loaded.value = true
+  await refreshReadiness()
 }
 
 const load = async () => {
@@ -281,6 +386,10 @@ const save = async () => {
   saving.value = true
   error.value = ''
   try {
+    if (!current.value?.configured && !form.app_secret.trim()) throw new Error('第一次配置需要填写 App Secret')
+    if (form.enabled && missingForEnable.value.length) {
+      throw new Error(`启用${providerLabel.value}前请先填写：${missingForEnable.value.join('、')}`)
+    }
     const payload: api.IntegrationAppForm = { app_id: form.app_id.trim(), enabled: form.enabled,
       robot_code: form.robot_code, card_template_id: form.card_template_id }
     if (form.app_secret.trim()) payload.app_secret = form.app_secret.trim()

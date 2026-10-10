@@ -50,7 +50,7 @@ from FasdtApi.notification_channel import router as notification_channel_router
 from FasdtApi.agent_pipeline import router as agent_pipeline_router
 from FasdtApi.attachment_route import router as attachment_router
 from FasdtApi.approval_route import router as approval_router
-from FasdtApi.integrations import admin_router as integrations_admin_router, public_router as integrations_public_router
+from FasdtApi.integrations import admin_router as integrations_admin_router, me_router as integrations_me_router, public_router as integrations_public_router
 from FasdtApi.crm_copilot import router as crm_copilot_router
 from FasdtApi.finance_it_extras import router as finance_it_extras_router
 from FasdtApi.productivity import router as productivity_router
@@ -166,6 +166,7 @@ app.include_router(attachment_router)
 app.include_router(approval_router)
 app.include_router(integrations_public_router)
 app.include_router(integrations_admin_router)
+app.include_router(integrations_me_router)
 app.include_router(crm_copilot_router)
 app.include_router(finance_it_extras_router)
 app.include_router(productivity_router)

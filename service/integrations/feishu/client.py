@@ -11,6 +11,35 @@ def base_url() -> str:
     return os.getenv("FEISHU_BASE_URL", "https://open.feishu.cn").rstrip("/")
 
 
+_bot_ids: dict = {}
+
+
+def bot_open_id(app) -> str:
+    """本应用机器人的 open_id（判断群消息 @ 的是不是自己）。查不到返回空字符串，调用方按“不确定”处理。"""
+    cached = _bot_ids.get(app.app_id)
+    if cached:
+        return cached
+    try:
+        token = auth.tenant_token(app)
+        data = call_json("feishu", "GET", base_url() + "/open-apis/bot/v3/info",
+                         headers={"Authorization": f"Bearer {token}"})
+        open_id = str((data.get("bot") or {}).get("open_id") or "")
+    except IntegrationError:
+        return ""
+    if open_id:
+        _bot_ids[app.app_id] = open_id
+    return open_id
+
+
+def user_name(app, open_id: str) -> str:
+    """员工姓名（需要“获取通讯录基本信息”权限）。查不到返回空字符串。"""
+    try:
+        data = call(app, "GET", f"/open-apis/contact/v3/users/{open_id}", params={"user_id_type": "open_id"})
+    except IntegrationError:
+        return ""
+    return str((data.get("user") or {}).get("name") or "")
+
+
 def call(app, method: str, path: str, *, json_body: Optional[Dict[str, Any]] = None,
          params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     token = auth.tenant_token(app)

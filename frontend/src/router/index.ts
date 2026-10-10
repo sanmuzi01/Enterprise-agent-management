@@ -34,6 +34,12 @@ const router = createRouter({
       component: () => import('../views/Settings.vue'),
     },
     {
+      // 员工绑定自己的飞书 / 钉钉账号（一键授权回调也跳回这里）
+      path: '/settings/integrations',
+      name: 'IntegrationSettings',
+      component: () => import('../views/IntegrationSettings.vue'),
+    },
+    {
       path: '/department/productivity',
       name: 'DepartmentProductivity',
       component: () => import('../views/DepartmentProductivity.vue'),

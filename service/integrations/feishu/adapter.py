@@ -27,5 +27,17 @@ class FeishuAdapter(ProviderAdapter):
         auth.forget(app)
         auth.tenant_token(app)
 
+    def user_name(self, app, external_user_id: str) -> str:
+        from service.integrations.feishu import client
+        return client.user_name(app, external_user_id)
+
+    def addressed_to_bot(self, app, message) -> bool:
+        # 应用开了“读取群内所有消息”权限时，@ 别人的消息也会推过来：只处理 @ 本机器人的
+        if message.chat_type == "p2p":
+            return True
+        from service.integrations.feishu import client
+        bot = client.bot_open_id(app)
+        return not bot or bot in message.mention_ids
+
     def fetch_organization(self, app) -> Dict[str, Any]:
         return contacts.fetch_organization(app)

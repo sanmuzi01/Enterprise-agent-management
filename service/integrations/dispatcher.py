@@ -143,10 +143,27 @@ def _safe_send(adapter, app, context: Dict[str, Any], text: str) -> None:
 
 
 async def _process_message(app, adapter, msg: InboundMessage) -> None:
+    from service.integrations import oauth, self_binding
     label = PROVIDER_LABELS[msg.provider]
+    if not await asyncio.to_thread(adapter.addressed_to_bot, app, msg):
+        return                                   # 群里 @ 的不是本机器人：不处理、不回复
+    code = self_binding.parse_command(msg.text)
+    if code is not None:
+        if msg.chat_type != "p2p":
+            reply = "绑定码请私聊我发送，不要发在群里。"
+        else:
+            name = await asyncio.to_thread(adapter.user_name, app, msg.external_user_id)
+            reply = await _in_thread(self_binding.redeem_sync, msg.provider, msg.tenant_id, msg.external_user_id, code, name)
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
+        return
     user_id, reason = await _in_thread(identity.resolve_sync, msg.provider, msg.tenant_id, msg.external_user_id)
     if user_id is None:
-        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, identity.REASONS[reason].format(platform=label))
+        if reason == "unbound":
+            name = await asyncio.to_thread(adapter.user_name, app, msg.external_user_id)
+            await _in_thread(self_binding.remember_visitor_sync, msg.provider, msg.tenant_id, msg.external_user_id, name)
+        web = oauth.web_base_url()
+        reply = identity.REASONS[reason].format(platform=label, web_hint=f"平台地址：{web}/settings/integrations\n" if web else "")
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
         return
     if not msg.text:
         await asyncio.to_thread(adapter.send_text, app, msg.reply_context, "目前只支持文字消息，请直接用文字描述你要办的事。")
@@ -264,7 +281,8 @@ async def process_card_action(app, action: CardAction, inbox_id: int) -> None:
     try:
         user_id, reason = await _in_thread(identity.resolve_sync, action.provider, action.tenant_id, action.external_user_id)
         if user_id is None:
-            await asyncio.to_thread(adapter.send_text, app, action.reply_context, identity.REASONS[reason].format(platform=label))
+            await asyncio.to_thread(adapter.send_text, app, action.reply_context,
+                                    identity.REASONS[reason].format(platform=label, web_hint=""))
             status, error = "ignored", reason
         else:
             try:
@@ -320,6 +338,7 @@ def sync_organization_sync(db, provider: str, operator_id: int) -> Dict[str, Any
 
 
 def health_sync(db, provider: str) -> Dict[str, Any]:
+    from service.integrations import oauth
     from datetime import timedelta
     from sqlalchemy import func, select
     from models.init_db import ExternalEventInbox, ExternalUserBinding
@@ -335,5 +354,6 @@ def health_sync(db, provider: str) -> Dict[str, Any]:
                     ExternalEventInbox.provider == provider, ExternalEventInbox.status == "failed")
                     .order_by(ExternalEventInbox.id.desc()).limit(10)).scalars().all()]
     return {**apps.describe(row, provider), "events_24h": events, "bindings": bindings, "recent_failures": failures,
+            "public_base_url": oauth.public_base_url() or None,
             "callback_paths": {"events": f"/integrations/{provider}/events",
                                "card_actions": f"/integrations/{provider}/card-actions"}}

@@ -1403,7 +1403,8 @@ class CollaborationApp(Base):
     provider = Column(String(20), nullable=False)                 # feishu / dingtalk
     app_id = Column(String(120), nullable=False)                  # 飞书 App ID；钉钉 AppKey（ClientId）
     encrypted_app_secret = Column(Text, nullable=False)
-    verification_token = Column(String(200), nullable=True)       # 飞书 Verification Token；钉钉事件订阅的签名 token
+    # 以 Fernet 密文保存。历史版本曾经明文保存；service/integrations/apps.py 在首次读取时会自动迁移。
+    verification_token = Column(Text, nullable=True)              # 飞书 Verification Token；钉钉事件订阅的签名 token
     encrypted_encrypt_key = Column(Text, nullable=True)           # 飞书 Encrypt Key；钉钉事件订阅的 aes_key
     robot_code = Column(String(120), nullable=True)               # 钉钉机器人 robotCode（主动发消息用）
     card_template_id = Column(String(120), nullable=True)         # 钉钉互动卡片模板（按钮回调需要）
@@ -1448,6 +1449,24 @@ class ExternalDepartmentBinding(Base):
     external_parent_id = Column(String(120), nullable=True)
     local_team_id = Column(Integer, nullable=True)
     last_synced_at = Column(DateTime, nullable=True)
+
+
+class ExternalBindCode(Base):
+    """员工自助绑定飞书 / 钉钉账号用的一次性绑定码：员工在平台设置里领取，在飞书 / 钉钉里发给机器人“绑定 123456”。
+    只存 HMAC 摘要（code_hash），不存明文；10 分钟过期，只能用一次；同一员工同一平台领新码时旧码作废。"""
+    __tablename__ = "external_bind_code"
+    __table_args__ = (
+        Index("idx_external_bind_code_hash", "provider", "code_hash"),
+        Index("idx_external_bind_code_user", "user_id", "provider"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    user_id = Column(Integer, nullable=False)
+    code_hash = Column(String(64), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+    used_by_external_id = Column(String(120), nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
 class ExternalEventInbox(Base):

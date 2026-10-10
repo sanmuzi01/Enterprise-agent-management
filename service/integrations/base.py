@@ -38,6 +38,7 @@ class InboundMessage:
     reply_context: Dict[str, Any] = field(default_factory=dict)   # 回复用的信息（飞书 message_id，钉钉 sessionWebhook 等）
     event_type: str = "message"
     ack: Dict[str, Any] = field(default_factory=dict)             # 立即回给平台的应答（钉钉事件订阅要加密的 success）
+    mention_ids: List[str] = field(default_factory=list)          # 群消息里被 @ 的人（飞书 open_id），用来确认 @ 的是本机器人
 
 
 @dataclass
@@ -248,6 +249,14 @@ class ProviderAdapter:
     def test_connection(self, app) -> None:
         """用配置的凭证换一次访问令牌；失败抛 IntegrationError。"""
         raise NotImplementedError
+
+    def user_name(self, app, external_user_id: str) -> str:
+        """外部账号的姓名（用于“待绑定来访者”列表）；查不到返回空字符串，不抛错。"""
+        return ""
+
+    def addressed_to_bot(self, app, message: "InboundMessage") -> bool:
+        """群消息是不是 @ 了本机器人；单聊一律是。确认不了时按“是”处理（不漏掉员工的消息）。"""
+        return True
 
     def fetch_organization(self, app) -> Dict[str, List[Dict[str, Any]]]:
         """{"tenant_id": str, "departments": [{id, name, parent_id}], "users": [{user_id, union_id, name, mobile, email, department_ids, active}]}"""

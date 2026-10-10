@@ -107,7 +107,8 @@ def _message(tenant: str, event_id: str, event: Dict[str, Any]) -> ParsedEvent:
         union_id=ids.get("union_id"), text=text, chat_id=message.get("chat_id"),
         chat_type="p2p" if chat_type == "p2p" else "group", message_id=message.get("message_id"),
         reply_context={"message_id": message.get("message_id"), "open_id": ids.get("open_id"), "chat_id": message.get("chat_id")},
-        event_type="im.message.receive_v1")
+        event_type="im.message.receive_v1",
+        mention_ids=[str((m.get("id") or {}).get("open_id")) for m in message.get("mentions") or [] if (m.get("id") or {}).get("open_id")])
 
 
 def _card(tenant: str, event_id: str, event: Dict[str, Any]) -> CardAction:

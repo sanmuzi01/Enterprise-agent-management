@@ -14,6 +14,21 @@ from service.integrations.base import PROVIDER_LABELS, PROVIDERS
 from utils.crypto import decrypt, encrypt
 
 
+_ENCRYPTED_PREFIX = "fernet:"
+
+
+def _encrypt_token(value: str) -> str:
+    return _ENCRYPTED_PREFIX + encrypt(value)
+
+
+def _decrypt_token(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    if value.startswith(_ENCRYPTED_PREFIX):
+        return decrypt(value[len(_ENCRYPTED_PREFIX):])
+    return value  # 兼容升级前保存的明文；get_row_sync 会立即将它改写为密文。
+
+
 @dataclass
 class AppCredentials:
     id: int
@@ -37,7 +52,7 @@ def check_provider(provider: str) -> str:
 def credentials(row: CollaborationApp) -> AppCredentials:
     return AppCredentials(
         id=row.id, organization_id=row.organization_id, provider=row.provider, app_id=row.app_id,
-        app_secret=decrypt(row.encrypted_app_secret), verification_token=row.verification_token or "",
+        app_secret=decrypt(row.encrypted_app_secret), verification_token=_decrypt_token(row.verification_token),
         encrypt_key=decrypt(row.encrypted_encrypt_key) if row.encrypted_encrypt_key else "",
         robot_code=row.robot_code or "", card_template_id=row.card_template_id or "", enabled=bool(row.enabled))
 
@@ -66,8 +81,13 @@ def enterprise_id_sync(db) -> int:
 
 def get_row_sync(db, provider: str) -> Optional[CollaborationApp]:
     check_provider(provider)
-    return db.execute(select(CollaborationApp).where(CollaborationApp.organization_id == enterprise_id_sync(db),
-                                                     CollaborationApp.provider == provider)).scalar_one_or_none()
+    row = db.execute(select(CollaborationApp).where(CollaborationApp.organization_id == enterprise_id_sync(db),
+                                                    CollaborationApp.provider == provider)).scalar_one_or_none()
+    # 老版本把 Verification Token 明文存在同一列。首次读取即原位加密，不让历史数据长期裸存。
+    if row is not None and row.verification_token and not row.verification_token.startswith(_ENCRYPTED_PREFIX):
+        row.verification_token = _encrypt_token(row.verification_token)
+        db.commit()
+    return row
 
 
 def load_enabled_sync(db, provider: str) -> Optional[AppCredentials]:
@@ -84,11 +104,25 @@ def save_sync(db, provider: str, operator_id: int, *, app_id: str, app_secret: O
     app_id = (app_id or "").strip()
     if not app_id:
         raise InvalidInput("请填写应用的 App ID（钉钉为 AppKey）")
+    old = credentials(row) if row is not None else None
+    resolved_app_secret = (app_secret or "").strip() or (old.app_secret if old else "")
+    resolved_token = (verification_token or "").strip() if verification_token is not None else (old.verification_token if old else "")
+    resolved_encrypt_key = (encrypt_key or "").strip() if encrypt_key is not None else (old.encrypt_key if old else "")
+    if enabled:
+        required = {
+            "feishu": (("App Secret", resolved_app_secret), ("Verification Token", resolved_token),
+                       ("Encrypt Key", resolved_encrypt_key)),
+            # 钉钉入站机器人可以只依赖 AppSecret；robotCode 仅在主动推送时需要，不能一刀切为启用前必填。
+            "dingtalk": (("AppSecret", resolved_app_secret),),
+        }[provider]
+        missing = [label for label, value in required if not value]
+        if missing:
+            raise InvalidInput(f"启用{PROVIDER_LABELS[provider]}前请先填写：{'、'.join(missing)}")
     if row is None:
-        if not app_secret:
+        if not resolved_app_secret:
             raise InvalidInput("第一次配置需要填写 App Secret")
         row = CollaborationApp(organization_id=enterprise_id_sync(db), provider=provider, app_id=app_id,
-                               encrypted_app_secret=encrypt(app_secret.strip()), enabled=0)
+                               encrypted_app_secret=encrypt(resolved_app_secret), enabled=0)
         db.add(row)
     row.app_id = app_id
     changed = ["app_id"]
@@ -96,7 +130,7 @@ def save_sync(db, provider: str, operator_id: int, *, app_id: str, app_secret: O
         row.encrypted_app_secret = encrypt(app_secret.strip())
         changed.append("app_secret")
     if verification_token is not None:
-        row.verification_token = verification_token.strip() or None
+        row.verification_token = _encrypt_token(verification_token.strip()) if verification_token.strip() else None
         changed.append("verification_token")
     if encrypt_key is not None:
         row.encrypted_encrypt_key = encrypt(encrypt_key.strip()) if encrypt_key.strip() else None

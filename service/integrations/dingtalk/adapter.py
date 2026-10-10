@@ -24,5 +24,13 @@ class DingTalkAdapter(ProviderAdapter):
         auth.forget(app)
         auth.access_token(app)
 
+    def user_name(self, app, external_user_id: str) -> str:
+        from service.integrations.base import IntegrationError
+        from service.integrations.dingtalk import client
+        try:
+            return str(client.oapi(app, "/topapi/v2/user/get", {"userid": external_user_id}).get("name") or "")
+        except IntegrationError:
+            return ""
+
     def fetch_organization(self, app) -> Dict[str, Any]:
         return contacts.fetch_organization(app)
