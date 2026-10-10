@@ -1,6 +1,6 @@
 import axios, { type AxiosInstance, type AxiosResponse } from 'axios'
 import { toastError } from './toast'
-import { csrfHeaders } from './session'
+import { clearSessionMarker, csrfHeaders } from './session'
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -100,6 +100,7 @@ request.interceptors.response.use(
     const isLoginRequest = url.includes('/user/login')
     if (err.response?.status === 401 && !isLoginRequest) {
       localStorage.removeItem('user')
+      clearSessionMarker()
       if (location.pathname !== '/login') {
         location.href = '/login'
       }

@@ -64,6 +64,7 @@ describe('request（统一的 Axios 实例）', () => {
     }
     await expect(request.get('/user/me', { skipErrorToast: true } as any)).rejects.toBeTruthy()
     expect(localStorage.getItem('user')).toBeNull()
+    expect(document.cookie).not.toContain('csrf_token=')
     expect(assign).toHaveBeenCalledWith('/login')
 
     localStorage.setItem('user', '{"id":1}')

@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import request from '../utils/request'
-import { hasSession, removeLegacyToken } from '../utils/session'
+import { clearSessionMarker, hasSession, removeLegacyToken } from '../utils/session'
 
 export interface User {
   id: number
@@ -98,6 +98,7 @@ export const useUserStore = defineStore('user', {
       try {
         await request.post('/user/logout', null, { skipErrorToast: true } as any)
       } catch { /* 网络失败时 Cookie 会在到期后自然失效 */ }
+      clearSessionMarker()
       this.user = null
       localStorage.removeItem(USER_KEY)
       if (location.pathname !== '/login') {

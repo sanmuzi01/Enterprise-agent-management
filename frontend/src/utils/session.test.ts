@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { CSRF_COOKIE, csrfHeaders, hasSession, readCookie, readCsrfToken, removeLegacyToken } from './session'
+import { CSRF_COOKIE, clearSessionMarker, csrfHeaders, hasSession, readCookie, readCsrfToken, removeLegacyToken } from './session'
 
 function clearCookies() {
   for (const part of document.cookie.split('; ')) {
@@ -34,6 +34,13 @@ describe('session（令牌在 HttpOnly Cookie 里，页面只看得到 csrf_toke
     for (const method of ['GET', 'get', 'HEAD', 'OPTIONS', undefined]) {
       expect(csrfHeaders(method as string | undefined)).toEqual({})
     }
+  })
+
+  it('会话失效时会清除页面可读的会话标记', () => {
+    document.cookie = `${CSRF_COOKIE}=stale; path=/`
+    expect(hasSession()).toBe(true)
+    clearSessionMarker()
+    expect(hasSession()).toBe(false)
   })
 
   it('读 Cookie 不会被名字相近的 Cookie 或特殊字符搞混', () => {

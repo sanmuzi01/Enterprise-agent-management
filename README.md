@@ -82,7 +82,7 @@ npm --prefix frontend install
 ```bash
 npm run backend:dev      # API  → http://127.0.0.1:8011
 npm run backend:worker   # 定时调度 + 知识库入库
-npm run frontend:dev     # 前端 → http://localhost:5173
+npm run frontend:dev     # 前端 → http://127.0.0.1:5173（端口占用会直接报错，不会静默换端口）
 ```
 
 **塞一份演示数据**（可选，用本地向量模型，不需要任何 Key）：
@@ -91,7 +91,7 @@ npm run frontend:dev     # 前端 → http://localhost:5173
 npm run seed:demo        # 建 demo/demo12345 + 示例助手 + 一份已入库的知识库文档
 ```
 
-打开 `http://localhost:5173`，用 `demo / demo12345` 登录——知识库检索、调试台、健康分
+打开 `http://127.0.0.1:5173`，用 `demo / demo12345` 登录——知识库检索、调试台、健康分
 开箱即用；聊天再去「模型连接」填一个聊天模型 Key 即可。或直接注册新账号从零开始。
 
 详见 [`docs/startup-guide.md`](docs/startup-guide.md)。

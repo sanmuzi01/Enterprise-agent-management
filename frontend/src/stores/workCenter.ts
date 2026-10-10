@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import * as api from '../api/workCenter'
+import { hasSession } from '../utils/session'
 
 let timer: ReturnType<typeof setInterval> | null = null
 
@@ -15,6 +16,7 @@ export const useWorkCenterStore = defineStore('workCenter', {
   actions: {
     /** background：定时轮询发起的（不是用户操作），不让服务端因此续期登录 */
     async refresh(background = false) {
+      if (!hasSession()) return
       try {
         const [counts, unread] = await Promise.all([api.getWorkItemCounts({ background }), api.getUnreadCount({ background })])
         this.counts = counts
@@ -24,6 +26,7 @@ export const useWorkCenterStore = defineStore('workCenter', {
       }
     },
     startPolling(intervalMs = 60000) {
+      if (!hasSession()) return
       this.refresh()
       if (timer) return
       timer = setInterval(() => {

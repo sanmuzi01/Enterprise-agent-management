@@ -25,6 +25,19 @@ export function hasSession(): boolean {
   return readCsrfToken() !== ''
 }
 
+/**
+ * 清除页面可读的会话标记。
+ *
+ * session_token 是 HttpOnly Cookie，只能由后端清除；但当它已经过期或失效时，
+ * csrf_token 可能仍短暂留在浏览器里。若不清掉，路由守卫会把用户误判成已登录，
+ * 在登录页和受保护页面之间反复跳转并持续产生 401。
+ */
+export function clearSessionMarker(): void {
+  try {
+    document.cookie = `${CSRF_COOKIE}=; Max-Age=0; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`
+  } catch { /* ignore */ }
+}
+
 /** 会改数据的请求需要带上 CSRF 头；读取类请求不需要。 */
 export function csrfHeaders(method: string | undefined): Record<string, string> {
   const token = readCsrfToken()
