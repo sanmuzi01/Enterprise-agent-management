@@ -335,7 +335,7 @@ def main() -> int:
 
 def print_hint():
     print("\n" + "-" * 60)
-    print(f"  登录 http://localhost:5173，所有演示账号密码：{PASSWORD}")
+    print(f"  Docker 登录 http://localhost:8080（本地前端开发：http://localhost:5173），所有演示账号密码：{PASSWORD}")
     for name, (purpose, team, _, org_role) in ACCOUNTS.items():
         print(f"   {name:<12} {TEAMS[team]:<6} {purpose}")
     print("  演示脚本见 docs/demo-script.md")

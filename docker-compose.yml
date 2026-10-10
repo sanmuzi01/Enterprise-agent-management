@@ -1,8 +1,18 @@
-# 一条命令跑起整套：MySQL + Redis + 后端 API + 后台 Worker + 前端。
-#   docker compose up -d --build
-#   # 首启后端会自动建表；想要演示数据：
-#   docker compose exec api python scripts/seed_demo.py
-#   # 打开 http://localhost:8080
+# 一条命令跑起整套：MySQL + Redis + Chroma + 后端 API + 后台 Worker + 企业业务中心（Java）+ 前端。
+#   docker compose up -d --build            # 第一次要下载 / 构建镜像（Python、Maven、Node），需要几分钟
+#   # 首启后端会自动建表；想要演示数据（一家虚构公司：5 个部门、11 个固定账号、一批进行中的业务单据）：
+#   docker compose exec api python scripts/seed_enterprise_demo.py
+#   # 打开 http://localhost:8080 ，演示账号和密码见 docs/demo-script.md（密码都是 Demo@12345，例如 demo_emp / demo_head）
+#   docker compose down        # 停掉（数据保留在卷里）；docker compose down -v 连数据一起清掉
+#
+# 和本机直接跑（python scripts/demo.py start）互不影响：这里的 MySQL 是容器自己的，数据在 Docker 卷里，不碰你本机的数据库；
+# 但两种方式用的端口有重叠（后端 8011、Java 8090），不要同时跑——先停掉一边。
+#
+# 国内网络：apt / PyPI / npm / Maven 访问官方源不稳时，在项目根目录的 .env 里加上（也可以只加需要的）：
+#   APT_MIRROR=mirrors.aliyun.com
+#   PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+#   NPM_REGISTRY=https://registry.npmmirror.com
+#   MAVEN_MIRROR_URL=https://maven.aliyun.com/repository/public
 #
 # 仅用于本地体验 / 演示。生产部署见 docs/deployment.md（用 systemd，不用 compose）。
 # 下面的密钥是公开的演示值，正式用请在项目根目录建 .env 覆盖。
@@ -29,6 +39,23 @@ x-backend-env: &backend-env
   TRUSTED_HOSTS: localhost,127.0.0.1
   CORS_ALLOW_ORIGINS: http://localhost:8080
   WIDGET_SCHEDULER_ENABLED: "1"
+  # 企业业务中心（Java）：部门工作台的请假、采购、CRM、报销、IT、责任协同都要它。
+  # 两边的签名密钥必须一致；这是公开的演示值，正式用请在 .env 里覆盖。
+  ENTERPRISE_HUB_BASE_URL: http://enterprise-hub:8090
+  ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:-dev-only-shared-secret-change-me}
+  ENTERPRISE_DB_HOST: db
+  ENTERPRISE_DB_PORT: "3306"
+  ENTERPRISE_DB_NAME: enterprise_business
+  ENTERPRISE_DB_USER: root
+  ENTERPRISE_DB_PASSWORD: ${DB_PASSWORD:-devpass}
+  # 离线演示模型：不联网、不需要 API Key，演示账号和“试一试”都能直接用；要接真实模型就在页面里配置自己的 Key。
+  OFFLINE_DEMO_MODEL: ${OFFLINE_DEMO_MODEL:-1}
+
+x-backend-build: &backend-build
+  context: .
+  args:
+    APT_MIRROR: ${APT_MIRROR:-}
+    PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
 
 services:
   chroma:
@@ -36,7 +63,8 @@ services:
     volumes:
       - chroma_data:/chroma/chroma
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/api/v2/heartbeat"]
+      # Chroma 1.5.9 镜像不带 curl/wget；用镜像内置 Bash 检查服务端口。
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000"]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -49,6 +77,8 @@ services:
       MYSQL_DATABASE: ${DB_NAME:-agent_sql}
     volumes:
       - mysql_data:/var/lib/mysql
+      # 第一次初始化（数据卷为空）时给企业业务中心建它自己的库 enterprise_business
+      - ./deploy/mysql-init/01-create-enterprise-business-db.sql:/docker-entrypoint-initdb.d/01-create-enterprise-business-db.sql:ro
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${DB_PASSWORD:-devpass}"]
       interval: 5s
@@ -60,8 +90,33 @@ services:
     volumes:
       - redis_data:/data
 
+  enterprise-hub:
+    build:
+      context: ./enterprise-business-hub
+      args:
+        MAVEN_MIRROR_URL: ${MAVEN_MIRROR_URL:-}
+    environment:
+      ENTERPRISE_DB_HOST: db
+      ENTERPRISE_DB_PORT: "3306"
+      ENTERPRISE_DB_NAME: enterprise_business
+      ENTERPRISE_DB_USER: root
+      ENTERPRISE_DB_PASSWORD: ${DB_PASSWORD:-devpass}
+      ENTERPRISE_HUB_HMAC_SECRET: ${ENTERPRISE_HUB_HMAC_SECRET:-dev-only-shared-secret-change-me}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      # 容器内部仍是 8090；主机改用 18090，避开 Windows/Hyper-V 保留端口冲突。
+      - "127.0.0.1:18090:8090"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8090/actuator/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+
   api:
-    build: .
+    build: *backend-build
+    command: sh -c "python -m alembic upgrade head && python -m uvicorn FasdtApi.main:app --host 0.0.0.0 --port 8000"
     environment: *backend-env
     volumes:
       - app_data:/app/data
@@ -69,6 +124,8 @@ services:
       db:
         condition: service_healthy
       chroma:
+        condition: service_healthy
+      enterprise-hub:
         condition: service_healthy
     ports:
       - "8011:8000"       # 直连后端（调 API / 看 /metrics）
@@ -79,20 +136,20 @@ services:
       retries: 12
 
   worker:
-    build: .
+    build: *backend-build
     command: python -m service.background_worker
     environment: *backend-env
     volumes:
       - app_data:/app/data       # 与 api 共享：worker 写入库文件/原始文档，api 读
     depends_on:
-      db:
-        condition: service_healthy
-      chroma:
+      api:
         condition: service_healthy
 
   web:
     build:
       context: ./frontend
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-}
     ports:
       - "8080:80"
     depends_on:

@@ -12,7 +12,16 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # pdf/docx 解析、lxml、chromadb 的编译依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# APT_MIRROR：访问 Debian 官方源不稳（国内常见 502）时，构建参数里指定镜像站，例如 mirrors.aliyun.com；默认不改。
+# Acquire::Retries：临时的 502 / 超时自动重试几次。
+ARG APT_MIRROR=
+RUN if [ -n "$APT_MIRROR" ]; then \
+        for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+            if [ -f "$f" ]; then sed -i "s#deb.debian.org#${APT_MIRROR}#g; s#security.debian.org#${APT_MIRROR}#g" "$f"; fi; \
+        done; \
+    fi \
+    && apt-get -o Acquire::Retries=5 update \
+    && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
         build-essential libgl1 libglib2.0-0 curl \
     && rm -rf /var/lib/apt/lists/*
 
