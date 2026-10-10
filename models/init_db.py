@@ -1394,6 +1394,82 @@ class BootstrapMarker(Base):
     detail = Column(String(200), nullable=True)
 
 
+class CollaborationApp(Base):
+    """企业在飞书 / 钉钉上建的自建应用（机器人）。密钥、加密 Key 只存密文，页面和接口都不回显。"""
+    __tablename__ = "collaboration_app"
+    __table_args__ = (UniqueConstraint("organization_id", "provider", name="uq_collaboration_app"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)                 # feishu / dingtalk
+    app_id = Column(String(120), nullable=False)                  # 飞书 App ID；钉钉 AppKey（ClientId）
+    encrypted_app_secret = Column(Text, nullable=False)
+    verification_token = Column(String(200), nullable=True)       # 飞书 Verification Token；钉钉事件订阅的签名 token
+    encrypted_encrypt_key = Column(Text, nullable=True)           # 飞书 Encrypt Key；钉钉事件订阅的 aes_key
+    robot_code = Column(String(120), nullable=True)               # 钉钉机器人 robotCode（主动发消息用）
+    card_template_id = Column(String(120), nullable=True)         # 钉钉互动卡片模板（按钮回调需要）
+    enabled = Column(Integer, nullable=False, default=0)
+    last_health_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    updated_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
+
+
+class ExternalUserBinding(Base):
+    """外部平台的人 ↔ 平台账号。只有绑定了、状态是 active 的人，才能在飞书 / 钉钉里用助手。"""
+    __tablename__ = "external_user_binding"
+    __table_args__ = (
+        UniqueConstraint("provider", "external_tenant_id", "external_user_id", name="uq_external_user"),
+        Index("idx_external_user_local", "local_user_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)
+    external_tenant_id = Column(String(120), nullable=False)      # 飞书 tenant_key；钉钉 corpId
+    external_user_id = Column(String(120), nullable=False)        # 飞书 open_id；钉钉 userid（staffId）
+    external_union_id = Column(String(120), nullable=True)
+    external_name = Column(String(120), nullable=True)
+    local_user_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="active")  # active / disabled（离职、被管理员停用）/ unmatched（同步到了但没对上账号）
+    last_synced_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ExternalDepartmentBinding(Base):
+    """外部平台的部门 ↔ 平台部门。同步组织架构时按名称对上，对不上的留给管理员处理。"""
+    __tablename__ = "external_department_binding"
+    __table_args__ = (UniqueConstraint("provider", "external_tenant_id", "external_department_id", name="uq_external_department"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    provider = Column(String(20), nullable=False)
+    external_tenant_id = Column(String(120), nullable=False)
+    external_department_id = Column(String(120), nullable=False)
+    external_name = Column(String(200), nullable=True)
+    external_parent_id = Column(String(120), nullable=True)
+    local_team_id = Column(Integer, nullable=True)
+    last_synced_at = Column(DateTime, nullable=True)
+
+
+class ExternalEventInbox(Base):
+    """收到的外部回调：(provider, tenant_id, event_id) 唯一，飞书 / 钉钉重复推送同一个事件只处理一次，
+    不会因为重试建出两张单子、两条跟进或两次报销。"""
+    __tablename__ = "external_event_inbox"
+    __table_args__ = (
+        UniqueConstraint("provider", "tenant_id", "event_id", name="uq_external_event"),
+        Index("idx_external_event_status", "status", "received_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    provider = Column(String(20), nullable=False)
+    tenant_id = Column(String(120), nullable=False)
+    event_id = Column(String(120), nullable=False)
+    event_type = Column(String(80), nullable=False)
+    status = Column(String(20), nullable=False, default="received")   # received / processing / done / ignored / failed
+    received_at = Column(DateTime, nullable=False, default=utcnow)
+    processed_at = Column(DateTime, nullable=True)
+    trace_id = Column(String(64), nullable=True)
+    last_error = Column(String(500), nullable=True)
+
+
 class AgentPipeline(Base):
     """Agent 流水线：把多个 Agent 串成一条固定顺序的处理链——上一步的回答自动作为
 

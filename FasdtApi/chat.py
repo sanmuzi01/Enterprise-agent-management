@@ -19,7 +19,7 @@ from typing import List, Optional
 from models.async_db import get_async_db
 from models.init_db import User
 from service.dependencies import get_current_user_async
-from service import attachment_service, chat_async_service, chat_service, quota_service, tool_confirmation_service
+from service import attachment_service, chat_async_service, chat_pipeline, chat_service, quota_service, tool_confirmation_service
 from service.runtime import central_router
 from fastapi.responses import StreamingResponse
 from service.runtime.sse_events import SSE_HEADERS, format_event
@@ -68,53 +68,18 @@ async def chat(
         current_user: User = Depends(get_current_user_async),
 ):
     """同步对话。conversation_id=None 时自动新建会话并返回 conversation_id。"""
-    # 提前把 id 存成普通 int：下面这次请求里 service 层会提交好几次事务（AsyncSession 默认
-    # expire_on_commit=True，每提交一次就把 current_user 这个 ORM 对象的所有属性标记为"过期"），
-    # 之后再读 current_user.id 会触发一次隐式懒加载去刷新它——如果这次访问发生在请求本来的
-    # greenlet 上下文之外（比如流式响应收尾、生成器清理阶段），SQLAlchemy 找不到桥接的
-    # greenlet 就会直接崩：MissingGreenlet。先存成 int，后面全用这个值，彻底不碰那次懒加载。
-    user_id = current_user.id
-    try:
-        require_limit(
-            key=f"chat:user:{user_id}",
-            limit_env="CHAT_RATE_LIMIT",
-            default_limit=20,
-            window_env="CHAT_RATE_WINDOW_SECONDS",
-            default_window=60,
-            label="聊天请求",
-        )
-    except LimitExceeded as e:
-        raise _limit_error(e)
+    # user.id 在 chat_pipeline.run_turn 一开始就存成普通 int（service 层会提交好几次事务，之后再读
+    # current_user.id 会触发懒加载，在请求的 greenlet 之外就是 MissingGreenlet）。
     user_message = _message_with_attachments(current_user, request)
-    # Phase 3D 阶段3：只有 agent_id 指向的是 agent_type="central" 的 Agent 才会真的路由，
-    # 现存所有 Agent 默认值都是 personal，这一步对它们是原样返回 agent_id 的空操作。
-    plan = await central_router.plan_route_async(db, user_id, agent_id, user_message, request.conversation_id)
-    agent_id = plan.target_agent_id
-    await central_router.record_handoff_async(db, user_id, plan, user_message)
-    quota_before = await quota_service.enforce_quota_async(db, user_id)
+    # 限流、中央 Agent 路由、额度、并发上限都在 chat_pipeline 里（飞书 / 钉钉的消息走同一条）
     try:
-        with concurrency_guard(
-            key=f"agent_run:user:{user_id}",
-            limit_env="USER_MAX_CONCURRENT_AGENT_RUNS",
-            default_limit=2,
-            ttl_env="AGENT_RUN_CONCURRENCY_TTL_SECONDS",
-            default_ttl=300,
-            label="Agent",
-        ):
-            result =  await chat_service.chat_with_agent(
-                db=db,
-                user=current_user,
-                agent_id=agent_id,
-                user_message=user_message,
-                conversation_id=request.conversation_id,
-            )
+        result, plan = await chat_pipeline.run_turn(db, current_user, agent_id, user_message, request.conversation_id)
     except LimitExceeded as e:
         raise _limit_error(e)
     except ValueError as e:
         raise PermissionDenied(str(e))
     if "message" in result and "answer" not in result:
         raise InvalidInput(result["message"])
-    await quota_service.check_and_notify_threshold_async(db, user_id, quota_before["used_tokens"])
     if plan.public():
         result["routing"] = plan.public()
     return result
