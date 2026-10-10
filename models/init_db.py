@@ -819,11 +819,11 @@ class OrganizationMember(Base):
 
 
 class TeamMember(Base):
-    """部门成员。role_id 必须指向 scope="team" 的 EnterpriseRole 行（同上，应用层校验）。"""
+    """部门成员。一名用户只能属于一个部门；role_id 必须指向 scope="team" 的 EnterpriseRole 行。"""
     __tablename__ = "team_members"
     __table_args__ = (
-        Index("uq_team_member", "team_id", "user_id", unique=True),
-        Index("idx_team_member_user", "user_id"),
+        Index("uq_team_member_user", "user_id", unique=True),
+        Index("idx_team_member_team", "team_id"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     team_id = Column(Integer, ForeignKey("teams.id", name="fk_tm_team"), nullable=False)

@@ -81,7 +81,7 @@ class ResponsibilityAccessTest(unittest.TestCase):
         cls.db = SessionLocal()
         cls.client = rc.make_client()
         cls.owner = rc.create_user("rsp-owner")
-        cls.u = {n: rc.create_user(f"rsp-{n}") for n in ("head", "emp", "emp2", "gone", "it1", "admin", "out")}
+        cls.u = {n: rc.create_user(f"rsp-{n}") for n in ("head", "emp", "emp2", "gone", "it1", "it2", "admin", "out")}
         cls.org = _create_org(cls.db, "rsp-org-" + uuid.uuid4().hex[:6], cls.owner["id"])
         cls.other_org = _create_org(cls.db, "rsp-org2-" + uuid.uuid4().hex[:6], cls.u["out"]["id"])
         cls.t = {}
@@ -94,9 +94,9 @@ class ResponsibilityAccessTest(unittest.TestCase):
         for n in ("emp", "emp2", "gone", "admin"):
             _add_team_member(cls.db, cls.t["sales"], cls.u[n]["id"], "member")
         _add_team_member(cls.db, cls.t["it"], cls.u["it1"]["id"], "member")
-        _add_team_member(cls.db, cls.t["it"], cls.u["emp2"]["id"], "member")
+        _add_team_member(cls.db, cls.t["it"], cls.u["it2"]["id"], "member")   # 一人一部门：IT 部的第二个人单独建
         _add_team_member(cls.db, cls.other_team, cls.u["out"]["id"], "member")
-        for n in ("head", "emp", "emp2", "gone", "it1"):
+        for n in ("head", "emp", "emp2", "gone", "it1", "it2"):
             _add_org_member(cls.db, cls.org, cls.u[n]["id"], "member")
         _add_org_member(cls.db, cls.org, cls.u["admin"]["id"], "admin")
         _add_org_member(cls.db, cls.other_org, cls.u["out"]["id"], "member")
@@ -165,7 +165,7 @@ class ResponsibilityAccessTest(unittest.TestCase):
         cases = (("head", "sales", [str(self.t["sales"])], [str(self.t["sales"])]),
                  ("emp", "sales", [str(self.t["sales"])], None),
                  ("it1", "it", [str(self.t["it"])], None),
-                 ("emp2", "sales", sorted([str(self.t["sales"]), str(self.t["it"])]), None))
+                 ("emp2", "sales", [str(self.t["sales"])], None))
         for name, team, members, heads in cases:
             with self.subTest(name=name):
                 self.calls.clear()
@@ -180,14 +180,23 @@ class ResponsibilityAccessTest(unittest.TestCase):
         self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['sales']}", headers=self.h("admin"))
         self.assertEqual(sorted(self.params(self.calls[-1])["headTeamIds"]), sorted(str(t) for t in self.t.values()))
 
-    def test_leaving_a_department_drops_it_from_member_teams(self):
-        self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['sales']}", headers=self.h("emp2"))
-        self.assertIn(str(self.t["it"]), self.params(self.calls[-1])["memberTeamIds"])
-        self.db.execute(text("UPDATE team_members SET status='disabled' WHERE team_id=:t AND user_id=:u"),
-                        {"t": self.t["it"], "u": self.uid("emp2")})
-        self.db.commit()
+    def test_transfer_moves_member_teams_with_the_person(self):
+        """一人一部门：调岗后按新部门算身份，原部门的入口立刻失效。"""
         self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['sales']}", headers=self.h("emp2"))
         self.assertEqual(self.params(self.calls[-1])["memberTeamIds"], [str(self.t["sales"])])
+        move = "UPDATE team_members SET team_id=:to WHERE team_id=:frm AND user_id=:u"
+        self.db.execute(text(move), {"to": self.t["it"], "frm": self.t["sales"], "u": self.uid("emp2")})
+        self.db.commit()
+        try:
+            self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['it']}", headers=self.h("emp2"))
+            self.assertEqual(self.params(self.calls[-1])["memberTeamIds"], [str(self.t["it"])])
+            self.calls.clear()
+            response = self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['sales']}", headers=self.h("emp2"))
+            self.assertEqual(response.status_code, 403, "调走之后不能再进原部门")
+            self.assertFalse(self.calls)
+        finally:
+            self.db.execute(text(move), {"to": self.t["sales"], "frm": self.t["it"], "u": self.uid("emp2")})
+            self.db.commit()
 
     def test_non_members_and_disabled_members_are_rejected_before_java(self):
         self.assertEqual(self.client.get(f"/enterprise/responsibility/mine?team_id={self.t['sales']}", headers=self.h("out")).status_code, 403)
@@ -216,7 +225,7 @@ class ResponsibilityAccessTest(unittest.TestCase):
 
     def test_eligible_reviewers_include_org_admins_who_are_not_team_members(self):
         eligible = rs.eligible_sync(self.org, self.t["it"])
-        self.assertEqual(set(eligible["memberIds"]), {self.uid("it1"), self.uid("emp2")})
+        self.assertEqual(set(eligible["memberIds"]), {self.uid("it1"), self.uid("it2")})
         self.assertIn(self.uid("admin"), eligible["reviewerIds"])
         self.assertNotIn(self.uid("admin"), eligible["memberIds"])
         self.assertNotIn(self.uid("out"), eligible["reviewerIds"])

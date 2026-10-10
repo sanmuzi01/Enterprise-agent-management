@@ -141,6 +141,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         cls.db = SessionLocal()
         cls.owner = rc.create_user("aw-owner")
         cls.other = rc.create_user("aw-other")
+        cls.buyer = rc.create_user("aw-buyer")   # 一人一部门：采购部的人单独一个，不再让 owner 同时在销售部和采购部
         cls.org = _create_org(cls.db, "aw-org-" + uuid.uuid4().hex[:8], cls.owner["id"])
         cls.team = _create_team(cls.db, cls.org, "aw-sales", cls.owner["id"])
         cls.proc_team = _create_team(cls.db, cls.org, "aw-proc", cls.owner["id"])
@@ -150,7 +151,8 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         for user in (cls.owner, cls.other):
             _add_org_member(cls.db, cls.org, user["id"], "member")
             _add_team_member(cls.db, cls.team, user["id"], "member")
-        _add_team_member(cls.db, cls.proc_team, cls.owner["id"], "member")
+        _add_org_member(cls.db, cls.org, cls.buyer["id"], "member")
+        _add_team_member(cls.db, cls.proc_team, cls.buyer["id"], "member")
 
     @classmethod
     def tearDownClass(cls):
@@ -162,6 +164,11 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         cls.db.execute(text("DELETE FROM organizations WHERE id=:id"), {"id": cls.org})
         cls.db.commit()
         cls.db.close()
+
+    def actor(self, team_or_work):
+        """按部门选操作人：采购部的单子由采购部的人办（一人一部门）。参数是部门 id 或工作成果 dict。"""
+        team = team_or_work["team_id"] if isinstance(team_or_work, dict) else team_or_work
+        return self.buyer["id"] if team == self.proc_team else self.owner["id"]
 
     def request(self, kind="crm", team=None, **kwargs):
         team = team or (self.proc_team if kind == "procurement" else self.team)
@@ -177,7 +184,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
              patch.object(svc, "async_chat_with_usage", AsyncMock(return_value=(json.dumps(response), {"total_tokens": 100}))), \
              patch.object(svc, "run_checks", AsyncMock(return_value=[])), \
              patch("service.crm_workspace_service.get_customer_summary_async", AsyncMock(return_value={"id": 42})):
-            return run_db(lambda db: svc.generate(db, self.owner["id"], request))
+            return run_db(lambda db: svc.generate(db, self.actor(request.team_id), request))
 
     def test_generate_saves_reviewable_output_without_business_write(self):
         with patch.object(svc.hub, "call") as call:
@@ -185,7 +192,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         self.assertEqual(work["status"], "ready")
         self.assertEqual(work["total_tokens"], 100)
         call.assert_not_called()
-        stored = run_db(lambda db: svc.get_work(db, self.owner["id"], work["id"]))
+        stored = run_db(lambda db: svc.get_work(db, self.actor(work), work["id"]))
         self.assertIn("发送方案", stored.proposal_json)
 
     def test_same_request_does_not_call_model_twice(self):
@@ -223,8 +230,8 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
     def test_apply_creates_only_draft_and_repeat_is_noop(self):
         work = self.generate()
         with patch.object(svc.hub, "call", return_value={"id": 123, "status": "DRAFT"}) as call:
-            result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
-            repeat = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
+            result = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
+            repeat = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
         self.assertEqual(result["status"], "applied")
         self.assertEqual(repeat["business_result"]["id"], 123)
         self.assertEqual(call.call_count, 1)
@@ -234,13 +241,13 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
     def test_retry_keeps_key_and_body_and_blocks_edits(self):
         work = self.generate(self.request("expense"))
         with patch.object(svc.hub, "call", side_effect=TimeoutError) as first:
-            result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], EXPENSE))
+            result = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], EXPENSE))
         self.assertEqual(result["status"], "retry")
         changed = {"lines": [{**EXPENSE["lines"][0], "amount": "261.00"}]}
         with self.assertRaises(Conflict):
-            run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], changed))
+            run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], changed))
         with patch.object(svc.hub, "call", return_value={"id": 456}) as second:
-            result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], EXPENSE))
+            result = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], EXPENSE))
         self.assertEqual(result["status"], "applied")
         self.assertEqual(first.call_args.kwargs["idempotency_key"], second.call_args.kwargs["idempotency_key"])
         self.assertEqual(first.call_args.kwargs["json_body"], second.call_args.kwargs["json_body"])
@@ -250,7 +257,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         self.db.execute(text("UPDATE team_members SET status='disabled' WHERE user_id=:u AND team_id=:t"), {"u": self.owner["id"], "t": self.team}); self.db.commit()
         try:
             with patch.object(svc.hub, "call") as call, self.assertRaises(PermissionDenied):
-                run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
+                run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
             call.assert_not_called()
         finally:
             self.db.execute(text("UPDATE team_members SET status='active' WHERE user_id=:u AND team_id=:t"), {"u": self.owner["id"], "t": self.team}); self.db.commit()
@@ -258,8 +265,8 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
     def test_tasks_persist_and_stats_are_user_scoped(self):
         work = self.generate()
         with patch.object(svc.hub, "call", return_value={"id": 123}):
-            run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
-        result = run_db(lambda db: svc.complete_task(db, self.owner["id"], work["id"], 0, True))
+            run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
+        result = run_db(lambda db: svc.complete_task(db, self.actor(work), work["id"], 0, True))
         self.assertEqual(result["completed_tasks"], [0])
         other = run_db(lambda db: svc.history(db, self.other["id"], self.team))
         self.assertEqual(other["stats"]["total"], 0)
@@ -273,7 +280,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
             await db.commit()
         run_db(interrupt)
         result = run_db(lambda db: svc.history(db, self.owner["id"], self.team))
-        recovered = run_db(lambda db: svc.get_work(db, self.owner["id"], work["id"]))
+        recovered = run_db(lambda db: svc.get_work(db, self.actor(work), work["id"]))
         self.assertEqual(recovered.status, "failed")
         self.assertGreaterEqual(result["stats"]["failed"], 1)
 
@@ -286,10 +293,10 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
             await db.commit()
         run_db(set_claim)
         with self.assertRaises(Conflict):
-            run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
+            run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
         run_db(lambda db: set_claim(db, True))
         with patch.object(svc.hub, "call", return_value={"id": 123}):
-            result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], CRM))
+            result = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], CRM))
         self.assertEqual(result["status"], "applied")
 
     def test_business_checks_are_stored_and_recheck_uses_edited_draft(self):
@@ -301,31 +308,31 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
             seen.append([i["sku"] for i in data["items"]])
             return first if len(seen) == 1 else []
         with patch.object(svc, "run_checks", side_effect=fake_checks):
-            checked = run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], PURCHASE))
+            checked = run_db(lambda db: svc.recheck(db, self.actor(work), work["id"], PURCHASE))
             self.assertEqual(checked["business_checks"], first)
             fixed = {"items": [PURCHASE["items"][0]], "warnings": []}
-            again = run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], fixed))
+            again = run_db(lambda db: svc.recheck(db, self.actor(work), work["id"], fixed))
         self.assertEqual(again["business_checks"], [])
         self.assertEqual(seen, [["PAPER-A4", "CHAIR-01"], ["PAPER-A4"]])
-        stored = run_db(lambda db: svc.get_work(db, self.owner["id"], work["id"]))
+        stored = run_db(lambda db: svc.get_work(db, self.actor(work), work["id"]))
         self.assertEqual(stored.business_checks_json, "[]")
 
     def test_recheck_rejects_fabricated_evidence(self):
         work = self.generate(self.request("procurement"))
         bad = {"items": [{"sku": "X", "quantity": 1, "evidence": "原文里没有这句"}], "warnings": []}
         with self.assertRaises(InvalidInput):
-            run_db(lambda db: svc.recheck(db, self.owner["id"], work["id"], bad))
+            run_db(lambda db: svc.recheck(db, self.actor(work), work["id"], bad))
 
     def apply(self, work, proposal, **hub_kwargs):
         with patch.object(svc.hub, "call", **hub_kwargs) as call:
-            result = run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], proposal))
+            result = run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], proposal))
         return result, call
 
     # ---- department scoping ----
 
     def test_crm_only_in_sales_department(self):
         with patch.object(svc, "async_chat_with_usage", AsyncMock()) as model, self.assertRaises(PermissionDenied):
-            run_db(lambda db: svc.generate(db, self.owner["id"], self.request("crm", team=self.proc_team)))
+            run_db(lambda db: svc.generate(db, self.buyer["id"], self.request("crm", team=self.proc_team)))
         model.assert_not_called()
 
     def test_procurement_only_in_procurement_department(self):
@@ -359,7 +366,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
         work = self.generate(self.request("leave"), response={**LEAVE, "start_date": None})
         self.assertEqual(work["status"], "ready")
         with patch.object(svc.hub, "call") as call, self.assertRaises(InvalidInput):
-            run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"], work["proposal"]))
+            run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"], work["proposal"]))
         call.assert_not_called()
         result, _ = self.apply(work, LEAVE, return_value={"id": 78})
         self.assertEqual(result["status"], "applied")
@@ -420,7 +427,7 @@ class AutomationWorkIntegrationTest(unittest.TestCase):
                 result, _ = self.apply(work, EXPENSE, side_effect=svc.hub.EnterpriseHubError(code, "busy"))
                 self.assertEqual(result["status"], "retry")
                 with self.assertRaises(Conflict):
-                    run_db(lambda db: svc.apply_work(db, self.owner["id"], work["id"],
+                    run_db(lambda db: svc.apply_work(db, self.actor(work), work["id"],
                                                      {"lines": [{**EXPENSE["lines"][0], "amount": "1.00"}]}))
 
 

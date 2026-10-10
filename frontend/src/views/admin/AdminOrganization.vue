@@ -237,7 +237,8 @@
     <!-- ============ 弹窗：分配部门成员 ============ -->
     <div v-if="memberDialog.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40" @click.self="memberDialog.visible = false">
       <div class="w-full max-w-md rounded-xl bg-white p-5 shadow-xl">
-        <h3 class="mb-4 text-base font-semibold text-slate-800">分配部门成员</h3>
+        <h3 class="mb-1 text-base font-semibold text-slate-800">分配或调动部门成员</h3>
+        <p class="mb-4 text-xs text-slate-500">每名用户只能属于一个部门；已有部门的用户确认后会调动到当前部门。</p>
         <div class="space-y-3">
           <div class="relative">
             <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" :size="14" />
@@ -258,6 +259,7 @@
               class="cursor-pointer px-3 py-2 text-sm text-slate-700"
             >
               {{ u.name }} <span class="text-xs text-slate-400">#{{ u.id }}</span>
+              <span v-if="u.departments?.length" class="ml-1 text-xs text-amber-600">当前：{{ u.departments[0].name }}</span>
             </li>
           </ul>
           <div v-if="memberDialog.userId">
@@ -274,7 +276,7 @@
             :disabled="acting || !memberDialog.userId"
             class="rounded bg-indigo-600 px-3 py-1.5 text-sm text-white hover:bg-indigo-700 disabled:opacity-50"
           >
-            确认添加
+            {{ selectedMemberCandidate?.departments?.length && selectedMemberCandidate.departments[0].id !== selectedTeam?.id ? '确认调动' : '确认添加' }}
           </button>
         </div>
       </div>
@@ -285,7 +287,7 @@
 <script setup lang="ts">
 import { isImeEnter } from '../../utils/ime'
 import { modelDisplayName, departmentCodeLabel } from '../../utils/displayNames'
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Plus, RefreshCcw, Search, UserPlus } from 'lucide-vue-next'
 import * as orgApi from '../../api/organizationAdmin'
 import type {
@@ -482,6 +484,7 @@ const memberDialog = ref<{ visible: boolean; userId: number | null; roleCode: st
 })
 const userQuery = ref('')
 const userResults = ref<AdminUser[]>([])
+const selectedMemberCandidate = computed(() => userResults.value.find((u) => u.id === memberDialog.value.userId) || null)
 
 const searchUsers = async () => {
   if (!userQuery.value.trim()) {

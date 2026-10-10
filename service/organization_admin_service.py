@@ -270,16 +270,22 @@ async def list_team_members(db, team_id: int) -> List[Dict]:
 
 async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role_code: str = "member") -> Dict:
     await _get_team_or_404(db, team_id)
-    user_result = await db.execute(select(User.id).where(User.id == user_id))
+    # 锁用户行，把“查当前部门 + 调岗”串成一个原子操作。即使两个管理员同时把同一人
+    # 分到不同部门，也只会依次完成两次调岗，数据库里始终只有一条部门归属。
+    user_result = await db.execute(select(User.id).where(User.id == user_id).with_for_update())
     if user_result.scalar_one_or_none() is None:
         raise NotFound("用户不存在")
 
     existing = await db.execute(
-        select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
+        select(TeamMember).where(TeamMember.user_id == user_id).with_for_update()
     )
     role_id = await _role_id(db, "team", role_code)
     member = existing.scalar_one_or_none()
+    moved_from_team_id = None
     if member is not None:
+        if member.team_id != team_id:
+            moved_from_team_id = member.team_id
+            member.team_id = team_id
         member.role_id = role_id
         member.status = "active"
     else:
@@ -290,10 +296,12 @@ async def add_team_member(db, team_id: int, operator_id: int, user_id: int, role
     await _ensure_org_member(db, user_id)
     await db.commit()
     await audit_service.record_async(
-        operator_id, "org.team_member_added", resource_type="team", resource_id=team_id,
-        detail={"user_id": user_id, "role_code": role_code},
+        operator_id, "org.team_member_moved" if moved_from_team_id is not None else "org.team_member_added",
+        resource_type="team", resource_id=team_id,
+        detail={"user_id": user_id, "role_code": role_code, "from_team_id": moved_from_team_id},
     )
-    return {"user_id": user_id, "team_id": team_id, "role_code": role_code}
+    return {"user_id": user_id, "team_id": team_id, "role_code": role_code,
+            "moved_from_team_id": moved_from_team_id}
 
 
 async def update_team_member_role(db, team_id: int, operator_id: int, user_id: int, role_code: str) -> Dict:

@@ -37,19 +37,21 @@ class DepartmentAccessTest(unittest.TestCase):
         cls.db = SessionLocal()
         cls.client = rc.make_client()
         cls.admin = rc.create_user("da-admin")
-        cls.staff = rc.create_user("da-staff")      # 每个部门的普通成员
-        cls.head = rc.create_user("da-head")        # 每个部门的负责人
         cls.org = _create_org(cls.db, "da-org-" + uuid.uuid4().hex[:6], cls.admin["id"])
-        cls.teams = {}
-        for code in ("hr", "procurement", "sales", None):
+        cls.teams, cls.staff_of, cls.head_of = {}, {}, {}
+        # 一人一部门：每个部门各有自己的普通成员和负责人（账号名前缀要短，rt_ 名字最长 20 字符，太长会截掉随机后缀）
+        for code, abbr in (("hr", "hr"), ("procurement", "pr"), ("sales", "sa"), (None, "no")):
             team = _create_team(cls.db, cls.org, f"da-{code or 'none'}", cls.admin["id"])
             if code:
                 cls.db.execute(text("UPDATE teams SET department_code=:c WHERE id=:t"), {"c": code, "t": team})
             cls.teams[code] = team
-            _add_team_member(cls.db, team, cls.staff["id"], "member")
-            _add_team_member(cls.db, team, cls.head["id"], "admin")
+            cls.staff_of[code] = rc.create_user(f"da-s{abbr}")
+            cls.head_of[code] = rc.create_user(f"da-h{abbr}")
+            _add_team_member(cls.db, team, cls.staff_of[code]["id"], "member")
+            _add_team_member(cls.db, team, cls.head_of[code]["id"], "admin")
         cls.db.commit()
-        for user in (cls.staff, cls.head):
+        cls.staff, cls.head = cls.staff_of["sales"], cls.head_of["hr"]   # 只涉及一个部门的用例默认用这两位
+        for user in [*cls.staff_of.values(), *cls.head_of.values()]:
             _add_org_member(cls.db, cls.org, user["id"], "member")
 
     @classmethod
@@ -65,7 +67,8 @@ class DepartmentAccessTest(unittest.TestCase):
 
     def setUp(self):
         self.db.commit()
-        self.set_org_member("active")
+        for user in [*self.staff_of.values(), *self.head_of.values()]:
+            self.set_org_member("active", user)
         self.db.execute(text(f"UPDATE teams SET status='active' WHERE id IN ({','.join(str(t) for t in self.teams.values())})"))
         self.db.execute(text("UPDATE organizations SET status='active' WHERE id=:o"), {"o": self.org})
         self.db.commit()
@@ -84,7 +87,7 @@ class DepartmentAccessTest(unittest.TestCase):
         for code, expected in (("procurement", None), ("hr", 403), ("sales", 403), (None, 403)):
             with self.subTest(department=code):
                 with patch.object(hub, "call", return_value=[]):
-                    response = self.get(f"/enterprise/procurement/team-pending?team_id={self.teams[code]}", self.head)
+                    response = self.get(f"/enterprise/procurement/team-pending?team_id={self.teams[code]}", self.head_of[code])
                 if expected:
                     self.assertEqual(response.status_code, expected, response.text)
                     self.assertIn("仅对采购部门开放", response.json().get("detail") or response.text)
@@ -93,13 +96,13 @@ class DepartmentAccessTest(unittest.TestCase):
 
     def test_procurement_draft_creation_blocked_for_other_departments(self):
         body = {"team_id": self.teams["hr"], "lines": [{"sku": "X", "quantity": 1}]}
-        response = self.client.post("/enterprise/procurement/mine", json=body, headers=self.staff["headers"])
+        response = self.client.post("/enterprise/procurement/mine", json=body, headers=self.staff_of["hr"]["headers"])
         self.assertEqual(response.status_code, 403, response.text)
 
     def test_crm_only_for_sales_department(self):
         for code in ("hr", "procurement", None):
             with self.subTest(department=code):
-                response = self.get(f"/enterprise/crm/customers?team_id={self.teams[code]}")
+                response = self.get(f"/enterprise/crm/customers?team_id={self.teams[code]}", self.staff_of[code])
                 self.assertEqual(response.status_code, 403, response.text)
         with patch.object(hub, "call", return_value=[]):
             self.assertEqual(self.get(f"/enterprise/crm/customers?team_id={self.teams['sales']}").status_code, 200)
@@ -109,7 +112,7 @@ class DepartmentAccessTest(unittest.TestCase):
             for code in ("hr", "procurement", "sales", None):
                 for path in ("oa/leave", "finance"):
                     self.assertEqual(self.get(f"/enterprise/{path}/team-pending?team_id={self.teams[code]}",
-                                              self.head).status_code, 200, (code, path))
+                                              self.head_of[code]).status_code, 200, (code, path))
 
     # ---- 企业 / 部门 / 成员身份必须有效 ----
 
@@ -164,12 +167,12 @@ class DepartmentAccessTest(unittest.TestCase):
         self.db.commit()
         from service import access_control
         try:
-            self.assertIsNotNone(access_control.get_usable_agent(self.db, self.staff["id"], agent.id))
-            self.set_org_member("disabled")
-            self.assertIsNone(access_control.get_usable_agent(self.db, self.staff["id"], agent.id))
+            self.assertIsNotNone(access_control.get_usable_agent(self.db, self.staff_of["hr"]["id"], agent.id))
+            self.set_org_member("disabled", self.staff_of["hr"])
+            self.assertIsNone(access_control.get_usable_agent(self.db, self.staff_of["hr"]["id"], agent.id))
 
             async def check(db):
-                return await access_control.get_usable_agent_async(db, self.staff["id"], agent.id)
+                return await access_control.get_usable_agent_async(db, self.staff_of["hr"]["id"], agent.id)
             from models.async_db import AsyncSessionLocal
 
             async def go():
@@ -203,12 +206,12 @@ class DepartmentAccessTest(unittest.TestCase):
         self.db.commit()
         try:
             # 成员：用助手所在部门
-            self.assertEqual(hub.resolve_caller_context(self.staff["id"], agent.id)["team_id"], self.teams["hr"])
+            self.assertEqual(hub.resolve_caller_context(self.staff_of["hr"]["id"], agent.id)["team_id"], self.teams["hr"])
             # 助手的创建者不是部门成员也不是企业管理员：不能借助手的部门身份，更不会拿到别的部门
             self.assertIsNone(hub.resolve_caller_context(self.admin["id"], agent.id)["team_id"])
             # 企业成员被停用：部门上下文失效，兜底的"在职第一个部门"也不会再解析出来
-            self.set_org_member("disabled")
-            self.assertIsNone(hub.resolve_caller_context(self.staff["id"], agent.id)["team_id"])
+            self.set_org_member("disabled", self.staff_of["hr"])
+            self.assertIsNone(hub.resolve_caller_context(self.staff_of["hr"]["id"], agent.id)["team_id"])
         finally:
             self.db.execute(text("DELETE FROM agent WHERE id=:a"), {"a": agent.id})
             self.db.commit()

@@ -301,8 +301,29 @@ def _purge_users(where_users: str) -> int:
             f"DELETE FROM memory WHERE user_id IN {inc}",
             f"DELETE FROM user_subscription WHERE user_id IN {inc}",
             f"DELETE FROM user_role WHERE user_id IN {inc}",
-            f"DELETE FROM `user` WHERE id IN {inc}",
         ]
+        # 兜底：测试建的企业 / 部门（所有者是这批测试账号）。setUpClass 中途失败时 tearDownClass 不会执行，
+        # 以前会在开发库里留下几十个测试企业和部门（数据体检报“多条企业记录”）。id 最小的企业是“本企业”，永远不动。
+        keep_org = db.execute(text("SELECT MIN(id) FROM organizations")).scalar()
+        org_ids = [r[0] for r in db.execute(text(
+            f"SELECT id FROM organizations WHERE owner_user_id IN {inc} AND id <> :keep"), {"keep": keep_org or 0}).all()]
+        orgs = "(" + ",".join(str(i) for i in org_ids) + ")" if org_ids else None
+        team_where = f"owner_user_id IN {inc}" + (f" OR organization_id IN {orgs}" if orgs else "")
+        team_ids = [r[0] for r in db.execute(text(f"SELECT id FROM teams WHERE {team_where}")).all()]
+        if team_ids:
+            teams = "(" + ",".join(str(i) for i in team_ids) + ")"
+            stmts += [
+                f"DELETE FROM team_members WHERE team_id IN {teams}",
+                f"DELETE FROM knowledge_space_departments WHERE team_id IN {teams}",
+                f"DELETE FROM teams WHERE id IN {teams}",
+            ]
+        if orgs:
+            stmts += [
+                f"DELETE FROM organization_members WHERE organization_id IN {orgs}",
+                f"DELETE FROM attendance_alias WHERE organization_id IN {orgs}",
+                f"DELETE FROM organizations WHERE id IN {orgs}",
+            ]
+        stmts.append(f"DELETE FROM `user` WHERE id IN {inc}")
         for s in stmts:
             try:
                 db.execute(text(s))

@@ -57,13 +57,12 @@ class WorkCenterTest(unittest.TestCase):
         cls.other = rc.create_user("wc-oth")
         cls.org = _create_org(cls.db, "wc-org-" + uuid.uuid4().hex[:6], cls.admin["id"])
         cls.team = _create_team(cls.db, cls.org, "wc-team", cls.admin["id"])
-        cls.sales = _create_team(cls.db, cls.org, "wc-sales", cls.admin["id"])
-        cls.db.execute(text("UPDATE teams SET department_code='sales' WHERE id=:t"), {"t": cls.sales})
+        cls.sales = cls.team
+        cls.db.execute(text("UPDATE teams SET department_code='sales' WHERE id=:t"), {"t": cls.team})
         cls.db.commit()
         _add_org_member(cls.db, cls.org, cls.admin["id"], "admin")
-        for team in (cls.team, cls.sales):
-            _add_team_member(cls.db, team, cls.admin["id"], "admin")
-            _add_team_member(cls.db, team, cls.member["id"], "member")
+        _add_team_member(cls.db, cls.team, cls.admin["id"], "admin")
+        _add_team_member(cls.db, cls.team, cls.member["id"], "member")
         cls.teams = run_db(lambda db: rules.active_teams(db))
         cls.teams = [t for t in cls.teams if t.id in (cls.team, cls.sales)]
 
@@ -364,7 +363,7 @@ class WorkCenterTest(unittest.TestCase):
             run_db(rules.run_weekly_digest)
             run_db(rules.run_weekly_digest)
         digests = [n for n in self.notifications(self.admin) if n["category"] == "digest"]
-        self.assertEqual(len(digests), 2)   # 两个部门各一份
+        self.assertEqual(len(digests), 1)   # 一人一部门：唯一所属部门一份
         self.assertEqual([n for n in self.notifications(self.member) if n["category"] == "digest"], [])
 
 

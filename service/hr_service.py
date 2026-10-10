@@ -226,11 +226,15 @@ async def apply_effect_async(db, user_id: int, team_id: int, case_id: int) -> Di
         raise InvalidInput("不能为自己落实调岗或离职，请由其他管理员操作")
     if case["caseType"] == "TRANSFER":
         member_role = (await db.execute(text("SELECT id FROM enterprise_role WHERE scope = 'team' AND code = 'member'"))).scalar()
-        await db.execute(text("DELETE FROM team_members WHERE team_id = :t AND user_id = :u"), {"t": case["teamId"], "u": employee})
-        existing = (await db.execute(text("SELECT id FROM team_members WHERE team_id = :t AND user_id = :u"),
-                                     {"t": case["targetTeamId"], "u": employee})).first()
+        # 一人一部门：锁住员工，再把唯一一条部门归属原地调到目标部门。旧实现只删
+        # case 里的来源部门，历史上若已有第三个部门归属会继续残留。
+        await db.execute(text("SELECT id FROM `user` WHERE id = :u FOR UPDATE"), {"u": employee})
+        existing = (await db.execute(text("SELECT id FROM team_members WHERE user_id = :u FOR UPDATE"),
+                                     {"u": employee})).first()
         if existing:
-            await db.execute(text("UPDATE team_members SET status = 'active' WHERE id = :i"), {"i": existing[0]})
+            await db.execute(text("UPDATE team_members SET team_id = :t, role_id = :r, status = 'active', "
+                                  "updated_at = UTC_TIMESTAMP() WHERE id = :i"),
+                             {"t": case["targetTeamId"], "r": member_role, "i": existing[0]})
         else:
             await db.execute(text("INSERT INTO team_members (team_id, user_id, role_id, status, created_at, updated_at) "
                                   "VALUES (:t, :u, :r, 'active', UTC_TIMESTAMP(), UTC_TIMESTAMP())"),

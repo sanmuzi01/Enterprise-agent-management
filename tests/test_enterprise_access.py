@@ -61,14 +61,20 @@ def _create_team(db, org_id: int, name: str, owner_user_id: int) -> int:
 
 
 def _add_team_member(db, team_id: int, user_id: int, code: str) -> None:
-    db.execute(
-        text(
-            "INSERT INTO team_members (team_id, user_id, role_id, status, created_at, updated_at) "
-            "VALUES (:t, :uid, :role, 'active', NOW(), NOW())"
-        ),
-        {"t": team_id, "uid": user_id, "role": _role_id(db, "team", code)},
-    )
-    db.commit()
+    """一人一部门（team_members.user_id 唯一）：同一个人第二次加入别的部门会报重复键——那是测试数据写错了。
+    失败时必须回滚：否则这个会话一直占着锁，后面所有往 team_members 写数据的测试都会等到锁超时，一个错变成几十个。"""
+    try:
+        db.execute(
+            text(
+                "INSERT INTO team_members (team_id, user_id, role_id, status, created_at, updated_at) "
+                "VALUES (:t, :uid, :role, 'active', NOW(), NOW())"
+            ),
+            {"t": team_id, "uid": user_id, "role": _role_id(db, "team", code)},
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
 
 @unittest.skipUnless(_AVAILABLE, f"需要本地 MySQL：{_WHY}")

@@ -17,6 +17,34 @@ from tests._async_helpers import run_async as _run
 from tests.test_enterprise_access import _add_org_member, _create_org
 
 _AVAILABLE, _WHY = rc.route_tests_available()
+_TEMP_ENTERPRISE = None
+
+
+def setUpModule():
+    """这些用例都在“本企业”下建部门。空库（CI 单跑这个文件、scripts/test_fresh_db.py）里还没有企业，
+    以前要靠前面别的测试顺带建出来才能过——单独跑就全挂。没有就临时建一家，跑完删掉。"""
+    global _TEMP_ENTERPRISE
+    if not _AVAILABLE:
+        return
+    with SessionLocal() as db:
+        if db.execute(text("SELECT id FROM organizations LIMIT 1")).scalar() is not None:
+            return
+        owner = rc.create_user("oa-ent-owner")
+        _TEMP_ENTERPRISE = _create_org(db, "oa-test-enterprise", owner["id"])
+        db.commit()
+
+
+def tearDownModule():
+    if _TEMP_ENTERPRISE is None:
+        return
+    with SessionLocal() as db:
+        org = {"o": _TEMP_ENTERPRISE}
+        db.execute(text("DELETE FROM team_members WHERE team_id IN (SELECT id FROM teams WHERE organization_id = :o)"), org)
+        db.execute(text("DELETE FROM teams WHERE organization_id = :o"), org)
+        db.execute(text("DELETE FROM organization_members WHERE organization_id = :o"), org)
+        db.execute(text("DELETE FROM organizations WHERE id = :o"), org)
+        db.commit()
+    rc.cleanup()
 
 
 def _run_db(fn):
@@ -211,6 +239,20 @@ class TeamCrudTest(unittest.TestCase):
             [d["id"] for d in member_row["departments"]], [team["id"]],
         )
         self.assertEqual(member_row["departments"][0]["role_code"], "member")
+
+    def test_adding_member_to_another_team_moves_instead_of_duplicating(self):
+        import service.organization_admin_service as svc
+
+        first = _run_db(lambda db: svc.create_team(db, "oa-test-move-from", self.admin["id"]))
+        second = _run_db(lambda db: svc.create_team(db, "oa-test-move-to", self.admin["id"]))
+        _run_db(lambda db: svc.add_team_member(db, first["id"], self.admin["id"], self.member1["id"], "member"))
+        moved = _run_db(lambda db: svc.add_team_member(
+            db, second["id"], self.admin["id"], self.member1["id"], "admin"))
+
+        self.assertEqual(moved["moved_from_team_id"], first["id"])
+        self.assertEqual(_run_db(lambda db: svc.list_team_members(db, first["id"])), [])
+        target = _run_db(lambda db: svc.list_team_members(db, second["id"]))
+        self.assertEqual([(m["user_id"], m["role_code"]) for m in target], [(self.member1["id"], "admin")])
 
     def test_update_and_remove_team_member(self):
         import service.organization_admin_service as svc
