@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from service.integrations import base
-from service.integrations.base import (BusinessCard, CardAction, CardField, ConfirmAction, Handshake, Ignored,
+from service.integrations.base import (BusinessCard, CardAction, CardField, ConfirmAction, Handshake,
                                        InboundMessage, OpenUrlAction, OrgChange, RejectAction, VerificationError,
                                        WebCardRenderer)
 from service.integrations.dingtalk import callback as dt_callback

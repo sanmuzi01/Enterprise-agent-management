@@ -234,7 +234,7 @@ class SelfBindingTest(unittest.TestCase):
             query = parse_qs(urlparse(url).query)
             self.assertEqual(query["redirect_uri"], ["https://agent.example.test/api/integrations/feishu/oauth/callback"])
             state = query["state"][0]
-            bad = self.client.get(f"/integrations/feishu/oauth/callback?code=c&state=forged", follow_redirects=False)
+            bad = self.client.get("/integrations/feishu/oauth/callback?code=c&state=forged", follow_redirects=False)
             self.assertIn("result=error", bad.headers["location"])
             with patch("service.integrations.oauth._feishu_identity",
                        return_value={"external_user_id": "ou_alice_oauth", "union_id": "on_1", "name": "艾丽斯"}):
