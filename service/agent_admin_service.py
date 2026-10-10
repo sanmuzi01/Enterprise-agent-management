@@ -264,6 +264,27 @@ async def bind_template_skill(db, agent: Agent, template: Dict[str, Any], owner_
     await db.execute(agent_skill.insert().values(agent_id=agent.id, skill_id=skill.id))
 
 
+def template_skill_file_missing(agent: Agent) -> bool:
+    """数据库里绑定了专业技能，但配置文件不在了（例如容器重建时 skills/enterprise 没有挂数据卷）。
+    这时 Agent 看起来正常，实际调不了任何业务工具——必须显式发现、修复。"""
+    import os
+    from service.skills import loader as skill_loader
+    return not os.path.exists(skill_loader._get_yml_path(f"enterprise/agent_{agent.id}.yml"))
+
+
+def restore_template_skill_file(agent: Agent, template: Dict[str, Any]) -> None:
+    """按当前模板重新生成丢失的专业技能配置文件（数据库里的绑定关系保持不变）。"""
+    import yaml
+    from service.skills_core.config_io import atomic_write_validated
+    validation = atomic_write_validated(f"enterprise/agent_{agent.id}.yml", yaml.safe_dump({
+        "name": template["name"], "description": template["description"], "version": "1.0",
+        "tools": [{"name": tool} for tool in template["tools"]],
+        "system_prompt": template["constraints"],
+    }, allow_unicode=True))
+    if not validation["ok"]:
+        raise InvalidInput("专业技能配置校验失败")
+
+
 def _template_skill_config(agent: Agent) -> Optional[Dict[str, Any]]:
     import os
     import yaml

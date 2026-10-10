@@ -16,3 +16,9 @@ chroma_db
 docs
 scripts/load_test.py
 sandbox
+# 运行时数据（部门 Agent 的专业技能配置、导入的 Skill、用户模板）：在容器里用数据卷保存，不把开发机上的打进镜像
+skills/enterprise/
+skills/imported/
+skills/user_created/
+skills/user_templates/
+skills_packages/imported/

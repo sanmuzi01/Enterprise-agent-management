@@ -177,6 +177,29 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         agent = run_db(lambda db: db.get(svc.Agent, agent_id))
         self.assertEqual(agent_admin_service.template_skill_missing_tools(agent, template), [])
 
+    def test_lost_skill_file_is_reported_and_restored(self):
+        """数据库里绑定了专业技能、配置文件却没了（容器重建没挂卷）：状态不能显示正常，一键修复要按模板重新生成。"""
+        import pathlib
+        import yaml
+        from service.enterprise_agent_templates import get_template
+        from service.skills import loader as skill_loader
+        team, status = self.new_team("sales")
+        agent_id = status["agent"]["id"]
+        path = pathlib.Path(skill_loader._get_yml_path(f"enterprise/agent_{agent_id}.yml"))
+        path.unlink()
+        skill_loader.invalidate_skill_config(f"enterprise/agent_{agent_id}.yml")
+        broken = run_db(lambda db: svc.agent_status(db, team))
+        self.assertEqual(broken["state"], "needs_repair")
+        self.assertTrue(any("配置文件丢失" in i for i in broken["issues"]), broken["issues"])
+        from unittest import mock
+        with mock.patch("service.audit_service.record_async", new_callable=mock.AsyncMock) as audit:
+            fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
+        self.assertEqual(fixed["state"], "pending_publish")
+        self.assertTrue(any(c.args[1] == "agent.template_skill_restored" for c in audit.await_args_list))
+        names = [t["name"] for t in yaml.safe_load(path.read_text(encoding="utf-8"))["tools"]]
+        self.assertEqual(names, get_template("crm")["tools"])
+        self.assertIn("read_feishu_group_chat", names)
+
     def test_central_router_picks_department_agent_of_users_own_team(self):
         from service.runtime.central_router import _find_department_agent_async
         team_a, _ = self.new_team("sales")

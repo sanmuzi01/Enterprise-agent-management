@@ -71,6 +71,8 @@ async def agent_status(db, team_id: int) -> Dict[str, Any]:
         else:
             if template["tools"] and not await _has_template_skill(db, primary):
                 issues.append("专业技能未绑定，Agent 无法调用业务工具")
+            elif template["tools"] and agent_admin_service.template_skill_file_missing(primary):
+                issues.append("专业技能配置文件丢失（例如容器重建后没有保留），Agent 无法调用业务工具，一键修复会重新生成")
             elif template["tools"]:
                 missing = agent_admin_service.template_skill_missing_tools(primary, template)
                 if missing:
@@ -125,6 +127,13 @@ async def repair(db, team_id: int, operator_id: int) -> Dict[str, Any]:
     if template["tools"] and not await _has_template_skill(db, primary):
         await agent_admin_service.bind_template_skill(db, primary, template, primary.user_id)
         await db.commit()
+    elif template["tools"] and agent_admin_service.template_skill_file_missing(primary):
+        agent_admin_service.restore_template_skill_file(primary, template)
+        from service import audit_service
+        await audit_service.record_async(
+            operator_id, "agent.template_skill_restored", resource_type="agent", resource_id=primary.id,
+            detail={"team_id": team.id, "template_id": template_id},
+        )
     elif template["tools"]:
         added = await agent_admin_service.sync_template_skill_tools(db, primary, template)
         if added:
