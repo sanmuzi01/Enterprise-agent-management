@@ -10,6 +10,8 @@
     "backend:worker": ".venv\\Scripts\\python.exe -m service.background_worker",
     "seed:demo": ".venv\\Scripts\\python.exe scripts\\seed_demo.py",
     "backup": ".venv\\Scripts\\python.exe scripts\\backup.py",
+    "backup:docker": ".venv\\Scripts\\python.exe scripts\\backup.py --docker",
+    "hooks:install": "git config core.hooksPath .githooks",
     "db:current": ".venv\\Scripts\\python.exe -m alembic current",
     "db:migrate": ".venv\\Scripts\\python.exe -m alembic upgrade head",
     "db:stamp": ".venv\\Scripts\\python.exe -m alembic stamp head",

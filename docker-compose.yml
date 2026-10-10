@@ -69,7 +69,8 @@ services:
   chroma:
     image: chromadb/chroma:1.5.9
     volumes:
-      - chroma_data:/chroma/chroma
+      # Chroma 1.x 镜像把数据存在 /data（以前挂在 /chroma/chroma，数据其实留在容器里，重建就丢）
+      - chroma_data:/data
     healthcheck:
       # Chroma 1.5.9 镜像不带 curl/wget；用镜像内置 Bash 检查服务端口。
       test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8000"]
@@ -126,8 +127,19 @@ services:
     build: *backend-build
     command: sh -c "python -m alembic upgrade head && python -m uvicorn FasdtApi.main:app --host 0.0.0.0 --port 8000"
     environment: *backend-env
-    volumes:
+    volumes: &backend-volumes
       - app_data:/app/data
+      - prompt_data:/app/prompt/prompts
+      # 运行时写入的 Skill 配置必须放在数据卷里：部门 Agent 发布时生成的专业技能（skills/enterprise）不在卷里的话，
+      # 每次重建容器都会丢，Agent 就调不了业务工具了。用户新建的 Skill 也是运行时文件。
+      - skill_enterprise:/app/skills/enterprise
+      - skill_imports:/app/skills/imported
+      - skill_user_created:/app/skills/user_created
+      - skill_templates:/app/skills/user_templates
+      - skill_packages:/app/skills_packages/imported
+      - chart_data:/app/static/charts
+      - agent_templates:/app/agent_templates
+      - app_logs:/app/logs
     depends_on:
       db:
         condition: service_healthy
@@ -147,8 +159,7 @@ services:
     build: *backend-build
     command: python -m service.background_worker
     environment: *backend-env
-    volumes:
-      - app_data:/app/data       # 与 api 共享：worker 写入库文件/原始文档，api 读
+    volumes: *backend-volumes    # 与 api 共享：worker 写入库文件/原始文档、读部门 Agent 的专业技能
     depends_on:
       api:
         condition: service_healthy
@@ -165,6 +176,15 @@ services:
         condition: service_healthy
 
 volumes:
+  prompt_data:
+  skill_enterprise:
+  skill_imports:
+  skill_user_created:
+  skill_templates:
+  skill_packages:
+  chart_data:
+  agent_templates:
+  app_logs:
   mysql_data:
   redis_data:
   chroma_data:

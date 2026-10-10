@@ -126,7 +126,9 @@ services:
       - app_data:/app/data
       - knowledge_data:/app/knowledge_files
       - prompt_data:/app/prompt/prompts
+      - skill_enterprise:/app/skills/enterprise    # 部门 Agent 的专业技能配置（运行时生成，重建容器不能丢）
       - skill_imports:/app/skills/imported
+      - skill_user_created:/app/skills/user_created
       - skill_templates:/app/skills/user_templates
       - skill_packages:/app/skills_packages/imported
       - chart_data:/app/static/charts
@@ -158,7 +160,9 @@ services:
       - app_data:/app/data
       - knowledge_data:/app/knowledge_files
       - prompt_data:/app/prompt/prompts
+      - skill_enterprise:/app/skills/enterprise    # 部门 Agent 的专业技能配置（运行时生成，重建容器不能丢）
       - skill_imports:/app/skills/imported
+      - skill_user_created:/app/skills/user_created
       - skill_templates:/app/skills/user_templates
       - skill_packages:/app/skills_packages/imported
       - chart_data:/app/static/charts
@@ -322,7 +326,9 @@ volumes:
   app_data:
   knowledge_data:
   prompt_data:
+  skill_enterprise:
   skill_imports:
+  skill_user_created:
   skill_templates:
   skill_packages:
   chart_data:

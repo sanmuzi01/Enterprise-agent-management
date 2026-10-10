@@ -378,22 +378,61 @@ REDIS_RECONNECT_INTERVAL_SECONDS=5
 
 迁移服务器时，数据库导出文件和上述目录一起打包带走即可。
 
-以上手动步骤已经包装成 `scripts/backup.py`（`npm run backup`），可以直接丢进 cron /
-Windows 计划任务定时跑，会在 `backups/` 下生成一份 `db_*.sql` + `data_*.tar.gz`：
+**Docker 部署：部门 Agent 的专业技能配置在数据卷 `skill_enterprise` 里（/app/skills/enterprise）。** 部门 Agent 发布时会生成
+`skills/enterprise/agent_<id>.yml`，Agent 调用业务工具全靠它。以前的 compose 没有给这个目录挂卷，文件在容器里，
+**重建容器就丢**，Agent 看起来正常、实际调不了任何业务工具（现在部门 Agent 状态会显示“专业技能配置文件丢失”）。
+用户自己新建的 Skill 同样由 `skill_user_created` 卷保存；本地和生产 Compose 都让 API/Worker 共享这些卷。
+从旧版本升级时，先把文件拷出来，升级后再拷进新数据卷，最后在“组织架构 → 部门专业 Agent”点一键修复补上模板新增的能力：
+
+```bash
+docker compose cp api:/app/skills/enterprise ./skills-enterprise-backup      # 升级前，容器还是旧的
+docker compose up -d --build                                                    # 升级（新建空的 skill_enterprise 卷）
+docker compose cp ./skills-enterprise-backup/. api:/app/skills/enterprise/      # 拷回数据卷
+```
+
+已经丢了的：直接点一键修复，会按模板重新生成（管理员自己给 Agent 加过的工具需要重新加）。
+
+直接部署（数据在宿主机目录）时，以上步骤已经包装成 `scripts/backup.py`（`npm run backup`），
+可以直接丢进 cron / Windows 计划任务定时跑，会在 `backups/` 下生成一份
+`db_*.sql` + `data_*.tar.gz`：
 
 ```bash
 .venv/Scripts/python.exe scripts/backup.py --keep-days 14   # 顺带清理 14 天前的旧备份
 ```
 
-Docker Compose 部署时，Chroma 数据在 `chroma_data` 具名卷里，不在上面的脚本覆盖范围，
-单独备份：
+Docker Compose 部署必须使用 `--docker`（或 `npm run backup:docker`）。这个模式不依赖卷名，
+会一次生成三份文件：Python 主库 + Java 企业业务库、API/Worker 的全部运行时文件卷、Chroma 向量卷；
+任意一步失败都会返回非零退出码并删除半截文件，计划任务可以据此报警：
 
 ```bash
-docker run --rm -v pythonproject1_chroma_data:/data -v "$PWD/backups":/backup \
-  alpine tar czf /backup/chroma_$(date +%Y%m%d_%H%M%S).tar.gz -C /data .
+npm run backup:docker
+# 生产 compose：
+.venv/bin/python scripts/backup.py --docker --compose-file docker-compose.prod.yml --keep-days 14
 ```
 
-（卷名前缀跟你项目目录名有关，跑 `docker volume ls` 确认实际名字。）
+产物分别是 `docker_db_*.sql`、`docker_app_*.tar.gz`、`docker_chroma_*.tar.gz`。
+恢复会覆盖当前数据，必须先停写并优先恢复到一套空卷做校验：
+
+```bash
+docker compose stop api worker enterprise-hub
+
+docker compose cp backups/docker_db_20261010_120000.sql db:/tmp/restore.sql
+docker compose exec -T db sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" < /tmp/restore.sql'
+docker compose exec -T db rm -f /tmp/restore.sql
+
+docker compose cp backups/docker_app_20261010_120000.tar.gz api:/tmp/restore.tar.gz
+docker compose exec -T api tar xzf /tmp/restore.tar.gz -C /app
+docker compose exec -T api rm -f /tmp/restore.tar.gz
+
+docker compose cp backups/docker_chroma_20261010_120000.tar.gz chroma:/tmp/restore.tar.gz
+docker compose exec -T chroma tar xzf /tmp/restore.tar.gz -C /data
+docker compose exec -T chroma rm -f /tmp/restore.tar.gz
+
+docker compose up -d api worker enterprise-hub
+```
+
+生产环境执行时所有命令加 `-f docker-compose.prod.yml`。恢复后必须检查 `/ready`、Java health、
+用户/部门/Agent 数量，并实际调用一次部门 Agent；不要只看容器是 `Up` 就认为恢复成功。
 
 ### 5.1 数据体检
 

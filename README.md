@@ -105,6 +105,7 @@ npm run seed:demo        # 建 demo/demo12345 + 示例助手 + 一份已入库�
 ```bash
 npm run test:unit          # Python 全量；路由级测试需本机 MySQL（没有时会跳过，别误以为全绿——一条命令起测试用的 MySQL / Redis 见 docs/testing.md）
 npm run release:check      # 上线自检：关键文件 + 编译 + 单测 + 前端构建
+npm run hooks:install      # 克隆后执行一次：提交前自动跑和 CI 同样的代码规范检查（改了前端再跑类型检查），不通过就拦下提交
 ```
 
 ---
