@@ -1,9 +1,11 @@
 """考勤异常的判断规则：纯函数，不涉及模型，同样的输入永远得到同样的结论。
 
-规则（都可以在“考勤规则”里按部门调整上下班时间和迟到宽限）：
+规则（都可以在“考勤规则”里按部门调整上下班时间、迟到宽限和弹性上班）：
 - 上班日没有任何打卡，也没有已批准的请假 → 旷工（高）；
 - 只有一次打卡：落在上下班时间的前半段 → 缺下班卡，后半段 → 缺上班卡（中）；
 - 最早一次打卡晚于“上班时间 + 宽限” → 迟到（分钟数从上班时间算起）；最晚一次打卡早于下班时间 → 早退；
+- 弹性上班（弹性 N 分钟）：上班时间之后 N 分钟内到岗不算迟到，晚到多少就要晚走多少（最多晚走 N 分钟）；
+  超过弹性时间再加宽限才算迟到，迟到分钟数从弹性截止时间算起；
 - 休息日、法定节假日有打卡 → 休息日出勤（低，提醒核对是否有加班审批）；
 - 上班日已批准请假但有打卡 → 请假与打卡冲突（低）；
 - 首末打卡间隔超过 14 小时 → 时长异常（中，通常是漏打下班卡或打卡机时间不对）；
@@ -13,7 +15,8 @@
 from datetime import date, datetime, time, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-DEFAULT_RULE = {"work_start": "09:00", "work_end": "18:00", "grace_minutes": 5}
+DEFAULT_RULE = {"work_start": "09:00", "work_end": "18:00", "grace_minutes": 5, "flex_minutes": 0}
+MAX_FLEX_MINUTES = 180
 OVERLONG_HOURS = 14
 DEDUP_SECONDS = 60
 
@@ -27,7 +30,7 @@ def parse_hhmm(value: str) -> time:
     return time(int(hour), int(minute))
 
 
-def validate_rule(work_start: str, work_end: str, grace_minutes: int) -> Tuple[str, str, int]:
+def validate_rule(work_start: str, work_end: str, grace_minutes: int, flex_minutes: int = 0) -> Tuple[str, str, int, int]:
     try:
         start, end = parse_hhmm(work_start), parse_hhmm(work_end)
     except (ValueError, AttributeError):
@@ -36,7 +39,9 @@ def validate_rule(work_start: str, work_end: str, grace_minutes: int) -> Tuple[s
         raise ValueError("下班时间必须晚于上班时间")
     if not 0 <= int(grace_minutes) <= 60:
         raise ValueError("迟到宽限应在 0 到 60 分钟之间")
-    return start.strftime("%H:%M"), end.strftime("%H:%M"), int(grace_minutes)
+    if not 0 <= int(flex_minutes) <= MAX_FLEX_MINUTES:
+        raise ValueError(f"弹性上班应在 0 到 {MAX_FLEX_MINUTES} 分钟之间")
+    return start.strftime("%H:%M"), end.strftime("%H:%M"), int(grace_minutes), int(flex_minutes)
 
 
 def default_day_kind(day: date) -> str:
@@ -65,8 +70,11 @@ def evaluate_day(day: date, punches: List[datetime], rule: Dict[str, Any], kind:
     start_t, end_t = parse_hhmm(rule["work_start"]), parse_hhmm(rule["work_end"])
     start, end = datetime.combine(day, start_t), datetime.combine(day, end_t)
     grace = timedelta(minutes=int(rule.get("grace_minutes", 5)))
+    flex = timedelta(minutes=int(rule.get("flex_minutes", 0) or 0))
     points = dedupe([p for p in punches if p.date() == day])
     base = {"punches": [_hm(p) for p in points], "work_start": rule["work_start"], "work_end": rule["work_end"]}
+    if flex:
+        base["flex_minutes"] = int(flex.total_seconds() // 60)
     found: List[Dict[str, Any]] = []
 
     def add(kind_: str, severity: str, **extra):
@@ -91,12 +99,16 @@ def evaluate_day(day: date, punches: List[datetime], rule: Dict[str, Any], kind:
             add("missing_in", "medium", last=_hm(points[0]))
         return found
     first, last = points[0], points[-1]
-    if first > start + grace:
-        minutes = int((first - start).total_seconds() // 60)
+    latest_start = start + flex                                   # 没有弹性时就是上班时间
+    if first > latest_start + grace:
+        minutes = int((first - latest_start).total_seconds() // 60)
         add("late", _severity_by_minutes(minutes), minutes=minutes, first=_hm(first))
-    if last < end:
-        minutes = int((end - last).total_seconds() // 60)
-        add("early_leave", _severity_by_minutes(minutes), minutes=minutes, last=_hm(last))
+    # 弹性：晚到多少晚走多少（最多晚走弹性时长）；早到不提前下班
+    required_end = end + min(max(first - start, timedelta(0)), flex)
+    if last < required_end:
+        minutes = int((required_end - last).total_seconds() // 60)
+        extra = {"required_end": _hm(required_end)} if required_end != end else {}
+        add("early_leave", _severity_by_minutes(minutes), minutes=minutes, last=_hm(last), **extra)
     span_hours = (last - first).total_seconds() / 3600
     if span_hours > OVERLONG_HOURS:
         add("overlong", "medium", hours=round(span_hours, 1), first=_hm(first), last=_hm(last))

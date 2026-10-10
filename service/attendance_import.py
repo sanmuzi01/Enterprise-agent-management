@@ -1,10 +1,12 @@
 """考勤文件解析：读懂打卡机、钉钉、企业微信等导出的 Excel / CSV。
 
 支持的文件：.xlsx；打卡机常见的“.xls”（其实是 HTML 表格或 Excel 2003 XML 表格，按内容识别）；.csv / 制表符分隔的文本；旧版二进制 .xls 会提示另存为 .xlsx。
-现实里的考勤导出格式五花八门，所以这里不要求固定模板，而是按表头的常见叫法自动识别两种最常见的形态：
+现实里的考勤导出格式五花八门，所以这里不要求固定模板，而是按表头的常见叫法自动识别三种最常见的形态：
 1. **逐条打卡**：每行一次打卡——姓名（或工号）+ 打卡时间（一列完整的日期时间，或“日期”“时间”两列）；
 2. **每日汇总**：每人每天一行——姓名 + 日期 + 上班打卡时间 + 下班打卡时间（钉钉“打卡时间”报表、企业微信“每日统计”常见这种；
-   “上班1打卡时间 / 下班1打卡时间”这类带序号的表头也认，多个班次取最早和最晚）。
+   “上班1打卡时间 / 下班1打卡时间”这类带序号的表头也认，多个班次取最早和最晚）；
+3. **月度汇总**：一人一行、一天一列，格子里是当天的打卡时间（钉钉“月度汇总”、企业微信月报、打卡机考勤月报表），
+   见 service/attendance_matrix.py。
 钉钉/企业微信的导出常在表头上方有标题行、说明行，所以会在前 15 行里找表头；日期时间支持 Excel 日期格、
 “2026-10-06 08:55:12”“2026/10/6 8:55”“2026年10月6日 08:55”“10-06 08:55（按文件里的年份推断）”和 Excel 序列数。
 解析不了的行不会悄悄丢掉：记入 skipped（行号 + 原因），导入结果里原样展示。只读文件，不保存文件。
@@ -306,12 +308,23 @@ def find_header(rows: List[List[Any]]) -> Tuple[int, Dict[str, Any]]:
                        "请确认导出的是考勤明细或每日汇总，而不是只有统计数字的月报")
 
 
+FORMAT_LABELS = {"punch_rows": "逐条打卡", "daily_summary": "每日汇总", "monthly_matrix": "月度汇总"}
+
+
 def parse(file_name: str, content: bytes) -> Dict[str, Any]:
     """返回 {format, records: [{name, punches: [datetime...], row}], skipped: [{row, reason}], row_count, period}。"""
     rows = read_rows(file_name, content)
     if not rows:
         raise InvalidInput("文件是空的")
-    header_index, cols = find_header(rows)
+    try:
+        header_index, cols = find_header(rows)
+    except InvalidInput:
+        # 第三种常见形态：一人一行、一天一列的月度汇总（见 service/attendance_matrix.py）
+        from service.attendance_matrix import parse_matrix
+        matrix = parse_matrix(rows, file_name)
+        if matrix is None:
+            raise
+        return matrix
     if "punch" in cols or ("date" in cols and "clock" in cols):
         fmt = "punch_rows"
     else:

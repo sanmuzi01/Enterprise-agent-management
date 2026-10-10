@@ -25,6 +25,7 @@ class RuleBody(BaseModel):
     work_start: str = Field(pattern=r"^\d{1,2}:\d{2}$")
     work_end: str = Field(pattern=r"^\d{1,2}:\d{2}$")
     grace_minutes: int = Field(ge=0, le=60)
+    flex_minutes: int = Field(default=0, ge=0, le=180)   # 弹性上班，0 = 不弹性
 
 
 class CalendarBody(BaseModel):
@@ -95,7 +96,8 @@ async def rules(team_id: int, db=Depends(get_async_db), user: User = Depends(get
 
 @router.post("/rules")
 async def set_rule(body: RuleBody, db=Depends(get_async_db), user: User = Depends(get_current_user_async)):
-    return await svc.set_rule(db, user.id, body.team_id, body.for_team_id, body.work_start, body.work_end, body.grace_minutes)
+    return await svc.set_rule(db, user.id, body.team_id, body.for_team_id, body.work_start, body.work_end, body.grace_minutes,
+                              body.flex_minutes)
 
 
 @router.get("/calendar")

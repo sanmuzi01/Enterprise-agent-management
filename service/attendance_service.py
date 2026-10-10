@@ -100,16 +100,17 @@ async def import_file(db, user_id: int, team_id: int, file_name: str, content: b
                 return by_name[squash(key)]
         return None
 
-    unmatched: Dict[str, int] = {}
+    unmatched_rows: Dict[str, set] = {}      # 按文件里的行号去重：月度汇总一行会拆成每天一条记录
     wanted: Dict[int, set] = {}
     matched_rows = 0
     for record in parsed["records"]:
         uid = resolve(record)
         if uid is None:
-            unmatched[record["name"]] = unmatched.get(record["name"], 0) + 1
+            unmatched_rows.setdefault(record["name"], set()).add(record["row"])
             continue
         matched_rows += 1
         wanted.setdefault(uid, set()).update(record["punches"])
+    unmatched = {name: len(rows) for name, rows in unmatched_rows.items()}
     total_punches = sum(len(v) for v in wanted.values())
     new_count = 0
     if wanted:
@@ -135,7 +136,7 @@ async def import_file(db, user_id: int, team_id: int, file_name: str, content: b
     await db.commit()
     await audit_service.record_async(user_id, "attendance.import", resource_type="attendance_import", resource_id=record.id,
                                      detail={"format": parsed["format"], "rows": parsed["row_count"], "new_punches": new_count})
-    return {"import_id": record.id, "format": parsed["format"], "format_label": "逐条打卡" if parsed["format"] == "punch_rows" else "每日汇总",
+    return {"import_id": record.id, "format": parsed["format"], "format_label": attendance_import.FORMAT_LABELS.get(parsed["format"], "考勤表"),
             "period": [start.isoformat() if start else None, end.isoformat() if end else None], "rows": parsed["row_count"],
             "matched_people": len(wanted), "matched_rows": matched_rows,
             "no_records": sorted(n for u, n in members.items() if u not in wanted)[:100], "no_records_total": sum(1 for u in members if u not in wanted), "punches": total_punches, "new_punches": new_count,
@@ -159,10 +160,15 @@ async def members_for_mapping(db, user_id: int, team_id: int) -> List[Dict[str, 
 
 # ---------------------------------------------------------------- 规则与日历
 
+def _rule_dict(row) -> Dict[str, Any]:
+    return {"work_start": row.work_start, "work_end": row.work_end, "grace_minutes": row.grace_minutes,
+            "flex_minutes": int(row.flex_minutes or 0)}
+
+
 async def get_rules(db, user_id: int, team_id: int) -> Dict[str, Any]:
     actor = await _require_hr(db, user_id, team_id)
     rows = (await db.execute(select(AttendanceRule).where(AttendanceRule.organization_id == actor["organization_id"]))).scalars().all()
-    shape = lambda r: {"team_id": r.team_id, "work_start": r.work_start, "work_end": r.work_end, "grace_minutes": r.grace_minutes}   # noqa: E731
+    shape = lambda r: {"team_id": r.team_id, **_rule_dict(r)}   # noqa: E731
     default = next((shape(r) for r in rows if r.team_key == 0), {"team_id": None, **rules.DEFAULT_RULE})
     from service.name_lookup import team_names
     names = await team_names(db, actor["scope"])
@@ -170,10 +176,11 @@ async def get_rules(db, user_id: int, team_id: int) -> Dict[str, Any]:
             "org_teams": [{"id": t, "name": names.get(t, str(t))} for t in actor["scope"]]}       # 人事要能给任何部门设规则，不只是自己所在的部门
 
 
-async def set_rule(db, user_id: int, team_id: int, for_team: Optional[int], work_start: str, work_end: str, grace_minutes: int) -> Dict[str, Any]:
+async def set_rule(db, user_id: int, team_id: int, for_team: Optional[int], work_start: str, work_end: str, grace_minutes: int,
+                   flex_minutes: int = 0) -> Dict[str, Any]:
     actor = await _require_hr(db, user_id, team_id)
     try:
-        start, end, grace = rules.validate_rule(work_start, work_end, grace_minutes)
+        start, end, grace, flex = rules.validate_rule(work_start, work_end, grace_minutes, flex_minutes)
     except ValueError as exc:
         raise InvalidInput(str(exc)) from None
     if for_team is not None and for_team not in actor["scope"]:
@@ -183,9 +190,10 @@ async def set_rule(db, user_id: int, team_id: int, for_team: Optional[int], work
     if row is None:
         row = AttendanceRule(organization_id=actor["organization_id"], team_id=for_team, team_key=key)
         db.add(row)
-    row.work_start, row.work_end, row.grace_minutes, row.updated_by = start, end, grace, user_id
+    row.work_start, row.work_end, row.grace_minutes, row.flex_minutes, row.updated_by = start, end, grace, flex, user_id
     await db.commit()
-    await audit_service.record_async(user_id, "attendance.rule_changed", resource_type="team", resource_id=for_team or 0, detail={"start": start, "end": end, "grace": grace})
+    await audit_service.record_async(user_id, "attendance.rule_changed", resource_type="team", resource_id=for_team or 0,
+                                     detail={"start": start, "end": end, "grace": grace, "flex": flex})
     return await get_rules(db, user_id, team_id)
 
 
@@ -284,8 +292,8 @@ async def analyze(db, user_id: int, team_id: int, start: date, end: date) -> Dic
     calendar = {r.day.date(): r.kind for r in (await db.execute(select(AttendanceCalendar).where(
         AttendanceCalendar.organization_id == org, AttendanceCalendar.day >= low, AttendanceCalendar.day < high))).scalars().all()}
     rule_rows = (await db.execute(select(AttendanceRule).where(AttendanceRule.organization_id == org))).scalars().all()
-    default_rule = next(({"work_start": r.work_start, "work_end": r.work_end, "grace_minutes": r.grace_minutes} for r in rule_rows if r.team_key == 0), rules.DEFAULT_RULE)
-    team_rule = {r.team_key: {"work_start": r.work_start, "work_end": r.work_end, "grace_minutes": r.grace_minutes} for r in rule_rows if r.team_key != 0}
+    default_rule = next((_rule_dict(r) for r in rule_rows if r.team_key == 0), rules.DEFAULT_RULE)
+    team_rule = {r.team_key: _rule_dict(r) for r in rule_rows if r.team_key != 0}
     teams = await _primary_teams(db, org, covered)
 
     produced: Dict[tuple, Dict[str, Any]] = {}

@@ -1,7 +1,7 @@
 # Testing
 
 <!-- test-counts:start -->
-**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2006** 条、前端 Vitest **121** 条、Java **143** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
+**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2031** 条、前端 Vitest **126** 条、Java **143** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
 <!-- test-counts:end -->
 
 项目使用 Python `unittest`、前端 Vitest（含部门助手组件交互测试）、Java JUnit，数量以上面的统计块为准（其他文档只链接到这里，不各写一个数）。纯逻辑单测（TTL 缓存、重试熔断、
@@ -184,6 +184,8 @@ npm run test:coverage
 | 旧页面自动刷新：sessionStorage 不可用时每次都刷新，可能死循环（评审发现） | 测试里存储总是可用 | 依次记在 sessionStorage → window.name → 内存；哪儿都记不下就不自动刷新 |
 | 每跑一次全量，`skills/enterprise/` 就多两个孤儿配置文件 | 文件不在数据库里，测试断言看不到；数据体检的数量在涨才发现 | 逐个模块跑定位到 `test_agent_config`、`test_agent_routes` 按名字删助手没删文件；抽出 `tests/_dept_agent_cleanup.py::purge_agents`（连同专属技能和文件），今天跑测试留下的 21 个已清理 |
 | 在 Windows 上导入的技能，部署到 Linux 容器后全部“资源不存在” | 开发和测试都在同一台 Windows 上，路径永远存在 | `tests/test_skill_portable_roots.py` 直接写别的机器的 Windows / Linux 绝对路径验证能换算，并验证越权路径仍被拒绝；另外在容器里对 76 个真实技能做了新旧对比（13 → 76 可用） |
+| 跑完测试，`prompt/prompts/1.yaml`、`5.yaml` 又被删了（这次没走空库脚本） | 直接在空的测试库（`deploy/test-services`）上跑全量，助手编号从 1 开始，抬自增起点的办法管不到 | 测试一律用临时提示词目录（`tests/_route_client.py` 导入时切换），`tests/test_prompt_isolation.py` 守护；以前测试留下的 3009 个孤儿提示词和 41 个孤儿技能配置用 `scripts/archive_orphan_agent_files.py` 归档 |
+| `test_organization_admin_service` 单独在空库上跑全挂 | 全量跑时前面的测试顺带建了企业，掩盖了它依赖“库里已有企业” | 模块级 `setUpModule` 没有企业就临时建一家，跑完删掉 |
 | 数据体检的断言在开发库上失败：自己造的孤儿文件不在前 5 条样例里 | 开发库里本来就有别的孤儿 | 测试里放开样例数再断言；体检本身只给 5 条样例是对的 |
 
 几条规律：**开发库里的“现成数据”会掩盖问题**（空库测试解决）；**部署层的问题测不到代码里**（直接解析 nginx 配置 + 真实容器验证）；

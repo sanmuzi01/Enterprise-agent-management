@@ -68,15 +68,25 @@
     <div v-else-if="tab === 'import'" class="space-y-5 px-4 py-4" data-testid="att-import">
       <div>
         <h3 class="mb-1 text-xs font-medium text-slate-500">1. 导入考勤文件</h3>
-        <p class="mb-2 text-xs text-slate-400">支持 .xlsx / .csv：打卡机、钉钉、企业微信导出的“打卡明细”或“每日汇总”都可以，系统会自动找表头。重复导入同一份不会产生重复记录。</p>
-        <input id="att-file" type="file" accept=".xlsx,.xls,.csv,.txt,.tsv,.htm,.html" class="text-xs" data-testid="att-file" @change="onPick" />
-        <button class="ml-2 rounded bg-indigo-600 px-3 py-1 text-xs text-white disabled:bg-slate-300" :disabled="busy || !file" @click="upload" data-testid="att-upload">导入</button>
-        <div v-if="imported" class="mt-3 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700" data-testid="att-import-result">
-          <p>{{ imported.format_label }}格式，{{ imported.rows }} 行，识别 {{ imported.matched_people }} 人、{{ imported.punches }} 条打卡，新增 {{ imported.new_punches }} 条（{{ imported.duplicate_punches }} 条已存在）。区间 {{ imported.period[0] || '—' }} 至 {{ imported.period[1] || '—' }}。</p>
-          <div v-if="imported.unmatched.length" class="mt-2" data-testid="att-unmatched">
-            <p class="font-medium text-amber-700">{{ imported.unmatched.length }} 个名字对不上平台账号，请选择对应的人（以后会自动识别）：</p>
+        <p class="mb-2 text-xs text-slate-400">支持 .xlsx / .csv：打卡机、钉钉、企业微信导出的“打卡明细”“每日汇总”或“月度汇总”（一人一行、一天一列）都可以，系统会自动找表头。可以一次选多个文件（比如几个打卡点、几个月）；重复导入同一份不会产生重复记录。</p>
+        <input id="att-file" type="file" multiple accept=".xlsx,.xls,.csv,.txt,.tsv,.htm,.html" class="text-xs" data-testid="att-file" @change="onPick" />
+        <button class="ml-2 rounded bg-indigo-600 px-3 py-1 text-xs text-white disabled:bg-slate-300" :disabled="busy || !files.length" @click="upload" data-testid="att-upload">{{ files.length > 1 ? `导入 ${files.length} 个文件` : '导入' }}</button>
+        <div v-if="importedList.length" class="mt-3 space-y-2" data-testid="att-import-result">
+          <div v-for="item in importedList" :key="item.name" class="rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+            <p v-if="importedList.length > 1" class="mb-1 font-medium text-slate-800">{{ item.name }}</p>
+            <p v-if="item.error" class="text-red-600">没有导入：{{ item.error }}</p>
+            <template v-else-if="item.result">
+              <p>{{ item.result.format_label }}格式，{{ item.result.rows }} 行，识别 {{ item.result.matched_people }} 人、{{ item.result.punches }} 条打卡，新增 {{ item.result.new_punches }} 条（{{ item.result.duplicate_punches }} 条已存在）。区间 {{ item.result.period[0] || '—' }} 至 {{ item.result.period[1] || '—' }}。</p>
+              <details v-if="item.result.no_records_total" class="mt-2" data-testid="att-no-records"><summary class="cursor-pointer text-slate-500">{{ item.result.no_records_total }} 位企业成员在这份文件里没有任何记录（可能没导全，或本来就不打卡）</summary>
+                <p class="mt-1">{{ item.result.no_records.join('、') }}<span v-if="item.result.no_records_total > item.result.no_records.length"> 等</span></p></details>
+              <details v-if="item.result.skipped_total" class="mt-2"><summary class="cursor-pointer text-amber-700">{{ item.result.skipped_total }} 处没有导入</summary>
+                <ul class="mt-1 list-disc pl-5"><li v-for="(sk, i) in item.result.skipped" :key="i">第 {{ sk.row }} 行：{{ sk.reason }}</li></ul></details>
+            </template>
+          </div>
+          <div v-if="unmatched.length" class="rounded border border-amber-200 bg-amber-50 p-3 text-xs text-slate-700" data-testid="att-unmatched">
+            <p class="font-medium text-amber-700">{{ unmatched.length }} 个名字对不上平台账号，请选择对应的人（以后会自动识别）：</p>
             <ul class="mt-1 space-y-1">
-              <li v-for="u in imported.unmatched" :key="u.name" class="flex items-center gap-2">
+              <li v-for="u in unmatched" :key="u.name" class="flex items-center gap-2">
                 <span class="w-28 truncate">{{ u.name }}（{{ u.rows }} 行）</span>
                 <select v-model="mapping[u.name]" :aria-label="`${u.name} 对应的账号`" class="rounded border border-slate-200 px-2 py-1"><option :value="undefined">暂不处理</option>
                   <option v-for="m in members" :key="m.user_id" :value="m.user_id">{{ m.name }}</option></select>
@@ -84,10 +94,6 @@
             </ul>
             <button class="mt-2 rounded border border-indigo-200 px-3 py-1 text-indigo-700 disabled:text-slate-300" :disabled="busy || !Object.values(mapping).some(Boolean)" @click="upload" data-testid="att-reupload">按所选对应重新导入</button>
           </div>
-          <details v-if="imported.no_records_total" class="mt-2" data-testid="att-no-records"><summary class="cursor-pointer text-slate-500">{{ imported.no_records_total }} 位企业成员在这份文件里没有任何记录（可能没导全，或本来就不打卡）</summary>
-            <p class="mt-1">{{ imported.no_records.join('、') }}<span v-if="imported.no_records_total > imported.no_records.length"> 等</span></p></details>
-          <details v-if="imported.skipped_total" class="mt-2"><summary class="cursor-pointer text-amber-700">{{ imported.skipped_total }} 行没有导入</summary>
-            <ul class="mt-1 list-disc pl-5"><li v-for="s in imported.skipped" :key="s.row">第 {{ s.row }} 行：{{ s.reason }}</li></ul></details>
         </div>
       </div>
       <div>
@@ -113,17 +119,18 @@
     <!-- 规则与日历（人事） -->
     <div v-else-if="tab === 'rules'" class="space-y-5 px-4 py-4" data-testid="att-rules">
       <div>
-        <h3 class="mb-1 text-xs font-medium text-slate-500">上下班时间与迟到宽限</h3>
+        <h3 class="mb-1 text-xs font-medium text-slate-500">上下班时间、迟到宽限与弹性上班</h3>
         <ul class="space-y-2 text-xs">
           <li v-for="r in ruleRows" :key="r.key" class="flex flex-wrap items-center gap-2">
             <span class="w-24 truncate text-slate-700">{{ r.label }}</span>
             <input v-model="r.work_start" :aria-label="`${r.label}上班时间`" class="w-16 rounded border border-slate-200 px-2 py-1" /> —
             <input v-model="r.work_end" :aria-label="`${r.label}下班时间`" class="w-16 rounded border border-slate-200 px-2 py-1" />
             <label class="text-slate-500">宽限</label><input v-model.number="r.grace_minutes" type="number" min="0" max="60" :aria-label="`${r.label}宽限分钟`" class="w-14 rounded border border-slate-200 px-2 py-1" />分钟
+            <label class="text-slate-500">弹性</label><input v-model.number="r.flex_minutes" type="number" min="0" max="180" step="15" :aria-label="`${r.label}弹性上班分钟`" class="w-14 rounded border border-slate-200 px-2 py-1" />分钟
             <button class="rounded border border-slate-200 px-2 py-1 text-slate-600 hover:bg-slate-50" :disabled="busy" @click="saveRule(r)" :data-testid="`att-rule-save-${r.key}`">保存</button>
           </li>
         </ul>
-        <p class="mt-1 text-xs text-slate-400">部门没有单独设置时用「企业默认」。</p>
+        <p class="mt-1 text-xs text-slate-400">部门没有单独设置时用「企业默认」。弹性上班：上班时间之后这么多分钟内到岗不算迟到，晚到多少就晚走多少；填 0 表示不弹性。</p>
       </div>
       <div>
         <h3 class="mb-1 text-xs font-medium text-slate-500">工作日历（法定节假日与调休）</h3>
@@ -170,7 +177,9 @@ const STATUS_TONE: Record<string, string> = { open: 'bg-amber-100 text-amber-800
 function describe(a: Anomaly): string {
   const d = a.detail
   const punches = d.punches?.length ? `打卡 ${d.punches.join('、')}` : '当天没有打卡'
-  const shift = d.work_start && d.work_end ? `（上班时间 ${d.work_start}–${d.work_end}）` : ''
+  const flex = d.flex_minutes ? `，弹性 ${d.flex_minutes} 分钟` : ''
+  const shift = d.work_start && d.work_end ? `（上班时间 ${d.work_start}–${d.work_end}${flex}）` : ''
+  if (a.type === 'early_leave' && d.required_end) return `${a.type_label} ${d.minutes} 分钟（晚到需晚走，应到 ${d.required_end}），${punches}${shift}`
   if (a.type === 'late' || a.type === 'early_leave') return `${a.type_label} ${d.minutes} 分钟，${punches}${shift}`
   if (a.type === 'overlong') return `首末打卡相隔 ${d.hours} 小时，${punches}`
   if (a.type === 'leave_conflict') return `已批准请假（${d.leave?.from} 至 ${d.leave?.to}）但当天有打卡，${punches}`
@@ -229,25 +238,49 @@ async function decide(a: Anomaly, action: 'confirm' | 'dismiss') {
 }
 
 // 导入与分析
-const file = ref<File | null>(null)
-const imported = ref<ImportResult | null>(null)
+const files = ref<File[]>([])
+// 每个文件一条结果：成功的带导入结果，失败的带原因（一个文件格式不对不影响其他文件）
+const importedList = ref<{ name: string; result?: ImportResult; error?: string }[]>([])
+const unmatched = computed(() => {
+  const rows = new Map<string, number>()
+  for (const item of importedList.value) for (const u of item.result?.unmatched || []) rows.set(u.name, (rows.get(u.name) || 0) + u.rows)
+  return [...rows].map(([name, count]) => ({ name, rows: count }))
+})
 const mapping = reactive<Record<string, number | undefined>>({})
 const members = ref<{ user_id: number; name: string }[]>([])
 const imports = ref<ImportRecord[]>([])
 const analysis = ref<AnalyzeResult | null>(null)
 const anRange = reactive({ start: daysAgo(31), end: daysAgo(1) })
-function onPick(e: Event) { file.value = (e.target as HTMLInputElement).files?.[0] || null; imported.value = null; Object.keys(mapping).forEach((k) => delete mapping[k]) }
+function onPick(e: Event) {
+  files.value = Array.from((e.target as HTMLInputElement).files || [])
+  importedList.value = []
+  Object.keys(mapping).forEach((k) => delete mapping[k])
+}
 async function upload() {
-  if (!file.value) return
+  if (!files.value.length || busy.value) return
   const chosen: Record<string, number> = {}
   for (const [name, id] of Object.entries(mapping)) if (id) chosen[name] = id
-  const result = await run(() => api.importFile(props.teamId, file.value as File, chosen), '导入失败')
-  if (!result) return
-  imported.value = result
+  busy.value = true
+  const results: { name: string; result?: ImportResult; error?: string }[] = []
+  try {
+    for (const f of files.value) {   // 逐个导入：后端每个文件单独校验、单独入库，重复打卡自动去掉
+      try {
+        results.push({ name: f.name, result: await api.importFile(props.teamId, f, chosen) })
+      } catch (e) {
+        results.push({ name: f.name, error: getErrorMessage(e, '导入失败') })
+      }
+    }
+  } finally {
+    busy.value = false
+  }
+  importedList.value = results
   Object.keys(mapping).forEach((k) => delete mapping[k])
-  if (result.unmatched.length && !members.value.length) members.value = await api.listMembers(props.teamId).catch(() => [])
+  if (unmatched.value.length && !members.value.length) members.value = await api.listMembers(props.teamId).catch(() => [])
   imports.value = await api.listImports(props.teamId).catch(() => imports.value)
-  flash(`导入完成：新增 ${result.new_punches} 条打卡`)
+  const ok = results.filter((r) => r.result)
+  const added = ok.reduce((sum, r) => sum + (r.result?.new_punches || 0), 0)
+  if (ok.length) flash(results.length > 1 ? `导入完成：${ok.length}/${results.length} 个文件，新增 ${added} 条打卡` : `导入完成：新增 ${added} 条打卡`)
+  else error.value = results.length > 1 ? '所选文件都没有导入成功，原因见下方' : (results[0]?.error || '导入失败')
 }
 async function runAnalyze() {
   const result = await run(() => api.analyze(props.teamId, anRange.start, anRange.end), '分析失败')
@@ -255,7 +288,7 @@ async function runAnalyze() {
 }
 
 // 规则与日历
-interface RuleRow { key: string; label: string; team_id: number | null; work_start: string; work_end: string; grace_minutes: number }
+interface RuleRow { key: string; label: string; team_id: number | null; work_start: string; work_end: string; grace_minutes: number; flex_minutes: number }
 const ruleRows = ref<RuleRow[]>([])
 const calendarText = ref('')
 const calendar = ref<{ day: string; kind: string; note: string | null }[]>([])
@@ -264,17 +297,18 @@ async function loadRules() {
   try {
     const rules = await api.getRules(props.teamId)
     const byTeam = new Map(rules.teams.map((r) => [r.team_id, r]))
-    const rows: RuleRow[] = [{ key: 'default', label: '企业默认', ...rules.default, team_id: null }]
+    const rows: RuleRow[] = [{ key: 'default', label: '企业默认', ...rules.default, flex_minutes: rules.default.flex_minutes ?? 0, team_id: null }]
     for (const d of rules.org_teams) {
       const own = byTeam.get(d.id) || rules.default
-      rows.push({ key: String(d.id), label: d.name, team_id: d.id, work_start: own.work_start, work_end: own.work_end, grace_minutes: own.grace_minutes })
+      rows.push({ key: String(d.id), label: d.name, team_id: d.id, work_start: own.work_start, work_end: own.work_end,
+        grace_minutes: own.grace_minutes, flex_minutes: own.flex_minutes ?? 0 })
     }
     ruleRows.value = rows
     calendar.value = await api.getCalendar(props.teamId, daysAgo(60), ymd(new Date(Date.now() + 400 * 86400000)))
   } catch (e) { error.value = getErrorMessage(e, '加载考勤规则失败') }
 }
 async function saveRule(r: RuleRow) {
-  const done = await run(() => api.setRule(props.teamId, r.team_id, r.work_start, r.work_end, Number(r.grace_minutes)), '保存规则失败')
+  const done = await run(() => api.setRule(props.teamId, r.team_id, r.work_start, r.work_end, Number(r.grace_minutes), Number(r.flex_minutes || 0)), '保存规则失败')
   if (done) flash(`${r.label}的考勤规则已保存`)
 }
 async function saveCalendar() {

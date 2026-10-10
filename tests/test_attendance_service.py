@@ -150,6 +150,23 @@ class AttendanceServiceTest(unittest.TestCase):
         response = self.upload(self.hr, [("小王", f"{MON} 09:00")], aliases={"小王": 99999999})
         self.assertEqual(response.status_code, 400, response.text)
 
+    def test_monthly_summary_file_is_imported_by_day(self):
+        """月度汇总（一人一行、一天一列）：按天导入打卡；对不上的名字按文件里的行数报，不是按天数。"""
+        days = ",".join(str(d) for d in range(1, 11))
+        cells = ",".join(["08:55 18:02"] * 10)
+        lines = ["2026年9月 考勤月度汇总", f"姓名,{days}", f"{self.emp1['name']},{cells}", f"查无此人,{cells}"]
+        content = "\n".join(lines).encode("utf-8")
+        response = self.client.post("/enterprise/attendance/import", headers=self.hr["headers"],
+                                    data={"team_id": self.hr_team, "aliases": "{}"},
+                                    files={"file": ("9月月报.csv", io.BytesIO(content), "text/csv")})
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual((body["format"], body["format_label"]), ("monthly_matrix", "月度汇总"))
+        self.assertEqual(body["period"], ["2026-09-01", "2026-09-10"])
+        self.assertEqual(body["matched_people"], 1)
+        self.assertEqual(body["punches"], 20)
+        self.assertEqual(body["unmatched"], [{"name": "查无此人", "rows": 1}])
+
     def test_reimporting_the_same_file_adds_nothing(self):
         self.upload(self.hr, self.baseline_rows())
         again = self.upload(self.hr, self.baseline_rows()).json()
@@ -269,6 +286,25 @@ class AttendanceServiceTest(unittest.TestCase):
         self.analyze(start=MON, end=MON)
         types = {a["type"] for a in self.anomalies_all() if a["user_id"] == self.emp1["id"]}
         self.assertNotIn("late", types)                                              # 销售部 9:30 上班，9:20 不算迟到
+
+    def test_flexible_start_rule_is_saved_and_used(self):
+        """销售部弹性 60 分钟：9:40 到、18:40 走不算迟到也不算早退；9:40 到、18:00 走算早退 40 分钟（应到 18:40）。"""
+        self.upload(self.hr, self.day(self.emp1, MON, "09:40", "18:40") + self.day(self.emp2, MON, "09:40", "18:00"))
+        self.leaves = []
+        saved = self.post(self.hr, "/rules", team_id=self.hr_team, for_team_id=self.sales, work_start="09:00", work_end="18:00",
+                          grace_minutes=5, flex_minutes=60)
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(next(t for t in saved.json()["teams"] if t["team_id"] == self.sales)["flex_minutes"], 60)
+        self.analyze(start=MON, end=MON)
+        by_user = {}
+        for a in self.anomalies_all():
+            by_user.setdefault(a["user_id"], {})[a["type"]] = a["detail"]
+        self.assertEqual(by_user.get(self.emp1["id"], {}), {}, "晚到 40 分钟、晚走 40 分钟：正常")
+        early = by_user[self.emp2["id"]]["early_leave"]
+        self.assertEqual((early["minutes"], early["required_end"], early["flex_minutes"]), (40, "18:40", 60))
+        self.assertNotIn("late", by_user[self.emp2["id"]])
+        too_much = self.post(self.hr, "/rules", team_id=self.hr_team, work_start="09:00", work_end="18:00", grace_minutes=5, flex_minutes=240)
+        self.assertEqual(too_much.status_code, 422, "弹性最多 180 分钟")
 
     def test_rules_list_every_department_in_the_company(self):
         rules = self.get(self.hr, "/rules").json()

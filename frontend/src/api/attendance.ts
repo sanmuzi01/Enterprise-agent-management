@@ -15,7 +15,7 @@ export interface Anomaly {
   type_label: string
   severity: 'low' | 'medium' | 'high'
   severity_label: string
-  detail: { punches?: string[]; work_start?: string; work_end?: string; minutes?: number; hours?: number; leave?: { type?: string; from?: string; to?: string } }
+  detail: { punches?: string[]; work_start?: string; work_end?: string; minutes?: number; hours?: number; flex_minutes?: number; required_end?: string; leave?: { type?: string; from?: string; to?: string } }
   status: AnomalyStatus
   status_label: string
   explanation: string | null
@@ -45,7 +45,7 @@ export interface ImportResult {
 }
 
 export interface ImportRecord { id: number; file_name: string; format: string; rows: number; punches: number; new_punches: number; unmatched: number; period: [string | null, string | null]; created_at: string }
-export interface RuleItem { team_id: number | null; work_start: string; work_end: string; grace_minutes: number }
+export interface RuleItem { team_id: number | null; work_start: string; work_end: string; grace_minutes: number; flex_minutes?: number }
 export interface Rules { default: RuleItem; teams: RuleItem[]; org_teams: { id: number; name: string }[] }
 export interface AnalyzeResult { from: string; to: string; people: number; days: number; created: number; updated: number; cleared: number; total_anomalies: number; uncovered: string[]; uncovered_total: number }
 export interface Summary { from: string; to: string; by_type: Record<string, number>; by_status: Record<string, number>; people_affected: number; unexplained_over_2_days: number; waiting_decision: number; narrative: string }
@@ -77,8 +77,9 @@ export const importFile = (teamId: number, file: File, aliases: Record<string, n
 export const listImports = (teamId: number) => request.get<ImportRecord[]>(`${base}/imports`, { params: { team_id: teamId } }).then((r) => r.data)
 export const listMembers = (teamId: number) => request.get<{ user_id: number; name: string }[]>(`${base}/members`, { params: { team_id: teamId } }).then((r) => r.data)
 export const getRules = (teamId: number) => request.get<Rules>(`${base}/rules`, { params: { team_id: teamId } }).then((r) => r.data)
-export const setRule = (teamId: number, forTeamId: number | null, workStart: string, workEnd: string, grace: number) =>
-  request.post<Rules>(`${base}/rules`, { team_id: teamId, for_team_id: forTeamId, work_start: workStart, work_end: workEnd, grace_minutes: grace }).then((r) => r.data)
+export const setRule = (teamId: number, forTeamId: number | null, workStart: string, workEnd: string, grace: number, flex = 0) =>
+  request.post<Rules>(`${base}/rules`, { team_id: teamId, for_team_id: forTeamId, work_start: workStart, work_end: workEnd, grace_minutes: grace,
+    flex_minutes: flex }).then((r) => r.data)
 export const getCalendar = (teamId: number, start: string, end: string) =>
   request.get<{ day: string; kind: string; note: string | null }[]>(`${base}/calendar`, { params: { team_id: teamId, start, end } }).then((r) => r.data)
 export const importCalendar = (teamId: number, text: string) => request.post<{ imported: number }>(`${base}/calendar`, { team_id: teamId, text }).then((r) => r.data)

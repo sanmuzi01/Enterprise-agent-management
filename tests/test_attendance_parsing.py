@@ -243,10 +243,27 @@ class RulesTest(unittest.TestCase):
         self.assertEqual(rules.evaluate_day(DAY, [at(8, 1), at(17, 0)], early_shift, "workday", False)[0]["detail"]["minutes"], 1)
 
     def test_rule_validation(self):
-        self.assertEqual(rules.validate_rule("9:00", "18:30", 10), ("09:00", "18:30", 10))
-        for bad in (("18:00", "09:00", 5), ("09:00", "18:00", 90), ("abc", "18:00", 5), ("09:00", "18:00", -1)):
+        self.assertEqual(rules.validate_rule("9:00", "18:30", 10), ("09:00", "18:30", 10, 0))
+        self.assertEqual(rules.validate_rule("9:00", "18:30", 10, 60), ("09:00", "18:30", 10, 60))
+        for bad in (("18:00", "09:00", 5), ("09:00", "18:00", 90), ("abc", "18:00", 5), ("09:00", "18:00", -1),
+                    ("09:00", "18:00", 5, 181), ("09:00", "18:00", 5, -1)):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 rules.validate_rule(*bad)
+
+    def test_flexible_start(self):
+        """弹性 60 分钟：9:00–10:00 之间到岗不算迟到，晚到多少晚走多少；超过 10:00 + 宽限才算迟到，从 10:00 算起。"""
+        flex = {"work_start": "09:00", "work_end": "18:00", "grace_minutes": 5, "flex_minutes": 60}
+        types = lambda punches: {i["type"]: i["detail"] for i in rules.evaluate_day(DAY, punches, flex, "workday", False)}   # noqa: E731
+        self.assertEqual(types([at(9, 40), at(18, 40)]), {}, "晚到 40 分钟、晚走 40 分钟：正常")
+        self.assertEqual(types([at(8, 30), at(18, 0)]), {}, "早到不用提前走，也不用多留")
+        early = types([at(9, 40), at(18, 10)])["early_leave"]
+        self.assertEqual((early["minutes"], early["required_end"]), (30, "18:40"))
+        late = types([at(10, 20), at(19, 0)])
+        self.assertEqual(late["late"]["minutes"], 20, "从弹性截止 10:00 算起")
+        self.assertNotIn("early_leave", late, "晚走最多补满弹性时长：19:00 就够了")
+        self.assertEqual(types([at(9, 3), at(18, 3)]), {}, "没有弹性的旧规则不受影响的写法也成立")
+        no_flex = {"work_start": "09:00", "work_end": "18:00", "grace_minutes": 5}
+        self.assertEqual(rules.evaluate_day(DAY, [at(9, 40), at(18, 40)], no_flex, "workday", False)[0]["type"], "late")
 
     def test_default_calendar_is_monday_to_friday(self):
         self.assertEqual([rules.default_day_kind(date(2026, 10, d)) for d in (5, 9, 10, 11)], ["workday", "workday", "rest", "rest"])

@@ -338,6 +338,7 @@ class AttendanceRule(Base):
     work_start = Column(String(5), nullable=False, default="09:00")
     work_end = Column(String(5), nullable=False, default="18:00")
     grace_minutes = Column(Integer, nullable=False, default=5)
+    flex_minutes = Column(Integer, nullable=False, default=0, server_default="0")   # 弹性上班：上班时间之后多少分钟内到岗都不算迟到，晚到多少晚走多少
     updated_by = Column(Integer, nullable=True)
     updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
