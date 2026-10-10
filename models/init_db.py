@@ -1470,6 +1470,153 @@ class ExternalEventInbox(Base):
     last_error = Column(String(500), nullable=True)
 
 
+class CustomerActivity(Base):
+    """CRM 客户活动：邮件、会议、群聊、电话纪要、人工跟进、报价、待办……统一放一张表，客户时间线按时间展示。
+
+    (source_provider, external_source_id) 唯一：同一封邮件（Message-ID）、同一个会议（UID）、同一条飞书 / 钉钉消息
+    只会生成一条活动。customer_id 为空表示还没对上客户（match_status=pending 等销售选择，unmatched 没有候选）。"""
+    __tablename__ = "customer_activity"
+    __table_args__ = (
+        UniqueConstraint("source_provider", "external_source_id", name="uq_customer_activity_source"),
+        Index("idx_customer_activity_customer", "customer_id", "occurred_at"),
+        Index("idx_customer_activity_team_match", "team_id", "match_status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=True)
+    activity_type = Column(String(20), nullable=False)        # email / meeting / chat / call / followup / quote / todo
+    source_provider = Column(String(20), nullable=False)      # email / imap / calendar / feishu / dingtalk / manual
+    external_source_id = Column(String(255), nullable=False)
+    occurred_at = Column(DateTime, nullable=False)
+    participants_json = Column(Text, nullable=True)
+    title = Column(String(300), nullable=True)
+    content = Column(LONGTEXT, nullable=True)
+    summary = Column(Text, nullable=True)
+    created_by = Column(Integer, nullable=False)
+    trace_id = Column(String(64), nullable=True)
+    match_status = Column(String(20), nullable=False, default="auto")   # explicit / auto / manual / pending / unmatched / ignored
+    match_confidence = Column(Float, nullable=True)
+    match_method = Column(String(30), nullable=True)
+    match_candidates_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmCustomerAlias(Base):
+    """销售手动指定“这封邮件 / 这个人属于哪个客户”后记下的对应关系（邮箱、手机号、邮箱域名、公司别名），
+    下次同样的来源直接对上，越用越准。按部门隔离。"""
+    __tablename__ = "crm_customer_alias"
+    __table_args__ = (UniqueConstraint("team_id", "alias_type", "alias_value", name="uq_crm_customer_alias"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    alias_type = Column(String(20), nullable=False)           # email / phone / domain / name
+    alias_value = Column(String(255), nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    created_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CustomerSummarySnapshot(Base):
+    """客户摘要（增量生成：上一版摘要 + 之后的新活动 → 新摘要，不把全部历史再送一遍模型）。保留历史版本。"""
+    __tablename__ = "customer_summary_snapshot"
+    __table_args__ = (Index("idx_customer_summary_customer", "team_id", "customer_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    summary = Column(Text, nullable=False)
+    needs_json = Column(Text, nullable=True)
+    stakeholders_json = Column(Text, nullable=True)
+    risks_json = Column(Text, nullable=True)
+    next_actions_json = Column(Text, nullable=True)
+    based_on_activity_id = Column(Integer, nullable=True)     # 摘要已经看过的最后一条活动
+    generated_at = Column(DateTime, nullable=False, default=utcnow)
+    model_name = Column(String(100), nullable=True)
+    generated_by = Column(Integer, nullable=True)
+
+
+class CrmOpportunitySnapshot(Base):
+    """商机变化记录（阶段、金额、预计成交日期）：只在发生变化时记一条，用来判断金额下降、多次延期、阶段变化。"""
+    __tablename__ = "crm_opportunity_snapshot"
+    __table_args__ = (Index("idx_crm_opp_snapshot", "opportunity_id", "id"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=False)
+    stage = Column(String(20), nullable=False)
+    amount = Column(String(40), nullable=False)
+    expected_close_date = Column(String(10), nullable=True)
+    captured_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmRiskFinding(Base):
+    """商机 / 客户风险。每条必须带证据（evidence）。同一客户、同一商机、同一风险只有一条：
+    再次扫描仍存在就更新 last_seen_at，消失了就标 resolved，不会重复生成。"""
+    __tablename__ = "crm_risk_finding"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_crm_risk_dedupe"),
+        Index("idx_crm_risk_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=True)
+    risk_code = Column(String(40), nullable=False)
+    level = Column(String(10), nullable=False)               # high / medium / low
+    evidence = Column(Text, nullable=False)
+    suggested_action = Column(String(500), nullable=True)
+    source = Column(String(10), nullable=False, default="rule")   # rule / model
+    source_activity_id = Column(Integer, nullable=True)
+    status = Column(String(20), nullable=False, default="open")   # open / resolved
+    dedupe_key = Column(String(200), nullable=False)
+    first_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    last_seen_at = Column(DateTime, nullable=False, default=utcnow)
+    resolved_at = Column(DateTime, nullable=True)
+
+
+class CrmActionSuggestion(Base):
+    """Agent 给出的下一步建议。只是建议：销售选择“确认创建任务 / 修改后创建 / 忽略 / 稍后提醒”，
+    确认后才进待办中心；不会自动改商机、不会自动联系客户。同一个来源（同一条风险）只生成一条建议。"""
+    __tablename__ = "crm_action_suggestion"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_crm_action_dedupe"),
+        Index("idx_crm_action_team", "team_id", "status"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    team_id = Column(Integer, nullable=False)
+    customer_id = Column(Integer, nullable=False)
+    opportunity_id = Column(Integer, nullable=True)
+    risk_finding_id = Column(Integer, nullable=True)
+    title = Column(String(300), nullable=False)
+    detail = Column(Text, nullable=True)
+    due_date = Column(String(10), nullable=True)
+    status = Column(String(20), nullable=False, default="suggested")   # suggested / created / ignored / snoozed
+    remind_at = Column(DateTime, nullable=True)
+    work_item_key = Column(String(120), nullable=True)
+    dedupe_key = Column(String(200), nullable=False)
+    decided_by = Column(Integer, nullable=True)
+    decided_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class CrmMailAccount(Base):
+    """员工连接的邮箱（IMAP，Microsoft 365 / Gmail / 企业邮箱都支持）。只读取指定的文件夹（默认“CRM”）：
+    员工把要进 CRM 的邮件转发或移动到这个文件夹，不读收件箱里的其他邮件。密码 / 授权码加密保存。"""
+    __tablename__ = "crm_mail_account"
+    __table_args__ = (UniqueConstraint("user_id", "team_id", name="uq_crm_mail_account"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=False)
+    imap_host = Column(String(200), nullable=False)
+    imap_port = Column(Integer, nullable=False, default=993)
+    username = Column(String(200), nullable=False)
+    encrypted_password = Column(Text, nullable=False)
+    folder = Column(String(100), nullable=False, default="CRM")
+    last_uid = Column(Integer, nullable=False, default=0)
+    last_synced_at = Column(DateTime, nullable=True)
+    last_error = Column(String(500), nullable=True)
+    enabled = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
 class AgentPipeline(Base):
     """Agent 流水线：把多个 Agent 串成一条固定顺序的处理链——上一步的回答自动作为
 

@@ -1,6 +1,7 @@
 package com.enterprisehub.crm;
 
 import com.enterprisehub.audit.AuditService;
+import com.enterprisehub.crm.dto.ContactDto;
 import com.enterprisehub.crm.dto.CustomerDto;
 import com.enterprisehub.crm.dto.CustomerSummaryDto;
 import com.enterprisehub.crm.dto.FollowUpDto;
@@ -100,9 +101,11 @@ public class CrmService {
                 throw notFound("商机不存在");
             }
             opportunity.update(stage, body.amount());
+            opportunity.updatePlan(body.expectedCloseDate(), body.nextStep());
             action = "crm.opportunity_updated";
         } else {
             opportunity = new Opportunity(customerId, stage, body.amount(), ownerUserId, requestTeamId);
+            opportunity.updatePlan(body.expectedCloseDate(), body.nextStep());
             opportunityRepository.save(opportunity);
             action = "crm.opportunity_created";
         }
@@ -120,6 +123,11 @@ public class CrmService {
      * 成员都能看本部门客户，不需要额外判断负责人角色。 */
     public List<CustomerDto> listCustomers(long teamId) {
         return customerRepository.findByTeamIdOrderByCreatedAtDesc(teamId).stream().map(CustomerDto::from).toList();
+    }
+
+    /** CRM Copilot：本部门全部联系人（邮件、会议按邮箱 / 手机号自动对上客户用）。只返回本部门客户的联系人。 */
+    public List<ContactDto> listContacts(long teamId) {
+        return contactRepository.findByTeamId(teamId).stream().map(ContactDto::from).toList();
     }
 
     private Customer getCustomerInTeam(long customerId, long requestTeamId) {

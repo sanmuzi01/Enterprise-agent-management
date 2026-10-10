@@ -80,12 +80,16 @@ async def confirm_followup_async(user_id: int, followup_id: int) -> Dict[str, An
 
 async def upsert_opportunity_async(
         db, user_id: int, team_id: int, customer_id: int, opportunity_id: Optional[int],
-        stage: str, amount: float,
+        stage: str, amount: float, expected_close_date: Optional[str] = None, next_step: Optional[str] = None,
 ) -> Dict[str, Any]:
     await require_team_member_async(db, user_id, team_id, "crm", message="不属于该部门，无法维护该客户的商机")
     body: Dict[str, Any] = {"stage": stage, "amount": amount}
     if opportunity_id is not None:
         body["opportunityId"] = opportunity_id
+    if expected_close_date:
+        body["expectedCloseDate"] = expected_close_date      # 不传表示不修改
+    if next_step is not None:
+        body["nextStep"] = next_step
     try:
         return await asyncio.to_thread(
             hub.call, "POST", f"/crm/customers/{int(customer_id)}/opportunities", user_id, team_id,

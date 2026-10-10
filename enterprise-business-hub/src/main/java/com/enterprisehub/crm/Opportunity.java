@@ -11,6 +11,7 @@ import jakarta.persistence.Table;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.time.LocalDate;
 
 @Entity
 @Table(name = "opportunity")
@@ -41,6 +42,13 @@ public class Opportunity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /** 预计成交日期：风险引擎判断“临近成交但阶段没更新”“多次延期”。 */
+    @Column(name = "expected_close_date")
+    private LocalDate expectedCloseDate;
+
+    @Column(name = "next_step", length = 500)
+    private String nextStep;
+
     protected Opportunity() {
     }
 
@@ -58,6 +66,24 @@ public class Opportunity {
         this.stage = stage;
         this.amount = amount;
         this.updatedAt = Instant.now();
+    }
+
+    /** 不传（null）表示不修改；下一步传空字符串表示清空。 */
+    public void updatePlan(LocalDate expectedCloseDate, String nextStep) {
+        if (expectedCloseDate != null) {
+            this.expectedCloseDate = expectedCloseDate;
+        }
+        if (nextStep != null) {
+            this.nextStep = nextStep.isBlank() ? null : nextStep.strip();
+        }
+    }
+
+    public LocalDate getExpectedCloseDate() {
+        return expectedCloseDate;
+    }
+
+    public String getNextStep() {
+        return nextStep;
     }
 
     public Long getId() {

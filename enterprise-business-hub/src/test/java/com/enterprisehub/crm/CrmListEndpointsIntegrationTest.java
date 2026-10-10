@@ -65,6 +65,9 @@ class CrmListEndpointsIntegrationTest {
 
     @AfterEach
     void tearDown() {
+        jdbc.update("DELETE FROM contact WHERE customer_id IN (SELECT id FROM customer WHERE team_id IN (?, ?))",
+                teamId, otherTeamId);
+        jdbc.update("DELETE FROM opportunity WHERE team_id IN (?, ?)", teamId, otherTeamId);
         jdbc.update("DELETE FROM customer WHERE team_id IN (?, ?)", teamId, otherTeamId);
         jdbc.update("DELETE FROM audit_event WHERE user_id = ?", userId);
     }
@@ -156,5 +159,53 @@ class CrmListEndpointsIntegrationTest {
                 List.of("other.scope"), "list_team_customers");
         ResponseEntity<String> resp = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), String.class);
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
+
+    private long customerId(long forTeamId, String name) {
+        seedCustomer(forTeamId, name, Instant.now());
+        return jdbc.queryForObject("SELECT id FROM customer WHERE team_id = ? AND name = ?", Long.class, forTeamId, name);
+    }
+
+    @Test
+    void listContacts_returnsOnlyOwnTeamContacts() {
+        long mine = customerId(teamId, "本部门客户");
+        long theirs = customerId(otherTeamId, "别的部门客户");
+        jdbc.update("INSERT INTO contact (customer_id, name, title, phone, email) VALUES (?, '王总', '采购总监', '13800001111', 'wang@a.com')", mine);
+        jdbc.update("INSERT INTO contact (customer_id, name, title, phone, email) VALUES (?, '李总', '总经理', '13900002222', 'li@b.com')", theirs);
+
+        String path = "/crm/contacts";
+        HttpHeaders headers = signedHeaders(HttpMethod.GET, path, null, userId, teamId,
+                List.of("crm.read"), "list_team_contacts");
+        ResponseEntity<Map[]> resp = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), Map[].class);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(resp.getBody()).hasSize(1);
+        assertThat(resp.getBody()[0].get("email")).isEqualTo("wang@a.com");
+        assertThat(((Number) resp.getBody()[0].get("customerId")).longValue()).isEqualTo(mine);
+    }
+
+    @Test
+    void upsertOpportunity_keepsPlanWhenOmitted_andClearsNextStepWhenBlank() throws Exception {
+        long customer = customerId(teamId, "有商机的客户");
+        String path = "/crm/customers/" + customer + "/opportunities";
+        String create = "{\"stage\":\"PROPOSAL\",\"amount\":100000,\"expectedCloseDate\":\"2026-11-30\",\"nextStep\":\"周三演示\"}";
+        ResponseEntity<Map> created = rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(create,
+                signedHeaders(HttpMethod.POST, path, create, userId, teamId, List.of("crm.write"), "create_or_update_opportunity")), Map.class);
+        assertThat(created.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(created.getBody().get("expectedCloseDate")).isEqualTo("2026-11-30");
+        assertThat(created.getBody().get("nextStep")).isEqualTo("周三演示");
+        long id = ((Number) created.getBody().get("id")).longValue();
+
+        String keep = "{\"opportunityId\":" + id + ",\"stage\":\"NEGOTIATION\",\"amount\":90000}";
+        ResponseEntity<Map> kept = rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(keep,
+                signedHeaders(HttpMethod.POST, path, keep, userId, teamId, List.of("crm.write"), "create_or_update_opportunity")), Map.class);
+        assertThat(kept.getBody().get("stage")).isEqualTo("NEGOTIATION");
+        assertThat(kept.getBody().get("expectedCloseDate")).isEqualTo("2026-11-30");   // 没传：不修改
+        assertThat(kept.getBody().get("nextStep")).isEqualTo("周三演示");
+
+        String clear = "{\"opportunityId\":" + id + ",\"stage\":\"NEGOTIATION\",\"amount\":90000,\"nextStep\":\"\"}";
+        ResponseEntity<Map> cleared = rest.exchange(url(path), HttpMethod.POST, new HttpEntity<>(clear,
+                signedHeaders(HttpMethod.POST, path, clear, userId, teamId, List.of("crm.write"), "create_or_update_opportunity")), Map.class);
+        assertThat(cleared.getBody().get("nextStep")).isNull();
     }
 }

@@ -1,3 +1,4 @@
+from datetime import date
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends
@@ -154,6 +155,8 @@ class UpsertOpportunityBody(BaseModel):
     opportunity_id: Optional[int] = None
     stage: str
     amount: float = Field(gt=0)
+    expected_close_date: Optional[date] = None
+    next_step: Optional[str] = Field(default=None, max_length=500)
 
 
 @router.get("/crm/customers")
@@ -191,6 +194,7 @@ async def upsert_opportunity(
 ):
     return await crm_workspace.upsert_opportunity_async(
         db, user.id, body.team_id, customer_id, body.opportunity_id, body.stage, body.amount,
+        body.expected_close_date.isoformat() if body.expected_close_date else None, body.next_step,
     )
 
 

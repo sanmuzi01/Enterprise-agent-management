@@ -25,6 +25,8 @@ export interface OpportunityDto {
   teamId: number
   createdAt: string
   updatedAt: string
+  expectedCloseDate?: string | null
+  nextStep?: string | null
 }
 
 export interface CustomerDto {
@@ -68,10 +70,11 @@ export async function confirmFollowup(followupId: number): Promise<FollowUpDto> 
 
 export async function upsertOpportunity(
   teamId: number, customerId: number,
-  payload: { opportunityId?: number; stage: string; amount: number },
+  payload: { opportunityId?: number; stage: string; amount: number; expectedCloseDate?: string; nextStep?: string },
 ): Promise<OpportunityDto> {
   const { data } = await request.post(`/enterprise/crm/customers/${customerId}/opportunities`, {
     team_id: teamId, opportunity_id: payload.opportunityId, stage: payload.stage, amount: payload.amount,
+    expected_close_date: payload.expectedCloseDate || null, next_step: payload.nextStep ?? null,
   })
   return data as OpportunityDto
 }

@@ -9,7 +9,7 @@ from typing import List, Tuple
 
 from sqlalchemy import func, select
 
-from models.init_db import AutomationWork, User, WorkItem
+from models.init_db import AutomationWork, CustomerActivity, User, WorkItem
 from service import notification_center
 from service.reminders.base import (Reminder, ReminderRule, active_teams, approvers, beijing_day_start, env_int,
                                     parse_instant, sync_reminders, team_members)
@@ -107,7 +107,15 @@ async def run_stale_customers(db) -> Tuple[int, int]:
         for customer in await crm.list_team_customers_async(db, members[0], team.id):
             summary = await crm.get_customer_summary_async(db, members[0], team.id, customer["id"])
             followups = summary.get("recentFollowUps") or []
-            last = parse_instant(followups[0]["createdAt"]) if followups else parse_instant(customer.get("createdAt"))
+            last = parse_instant(followups[0]["createdAt"]) if followups else None
+            # CRM Copilot 收进来的邮件、会议、电话纪要也算跟进
+            touched = (await db.execute(select(func.max(CustomerActivity.occurred_at)).where(
+                CustomerActivity.team_id == team.id, CustomerActivity.customer_id == customer["id"],
+                CustomerActivity.activity_type.in_(("email", "meeting", "call", "chat", "followup"))))).scalar()
+            if touched is not None and (last is None or touched > last):
+                last = touched
+            ever = last is not None
+            last = last or parse_instant(customer.get("createdAt"))
             if last is None or now - last < timedelta(days=stale_days):
                 continue
             days = (now - last).days
@@ -115,9 +123,30 @@ async def run_stale_customers(db) -> Tuple[int, int]:
             reminders.append(Reminder(
                 user_id=owner, key=f"stale-customer:{customer['id']}", team_id=team.id,
                 title=f"客户「{customer['name']}」已 {days} 天没有跟进",
-                detail="上次跟进：" + (last.date().isoformat() if followups else "从未跟进（按建档时间计算）"),
+                detail="上次跟进：" + (last.date().isoformat() if ever else "从未跟进（按建档时间计算）"),
                 priority="high" if days >= stale_days * 2 else "normal", due_at=last + timedelta(days=stale_days)))
     return await sync_reminders(db, "stale_customer", "crm_followup", reminders)
+
+
+# ---------------- 商机风险扫描 ----------------
+
+async def run_crm_risks(db) -> Tuple[int, int]:
+    """每个销售部门的客户都按确定性规则扫一遍风险（不调用模型）。同一风险只有一条记录、只生成一条建议，
+    不再成立的自动解除；建议要销售自己确认才进待办。返回（扫描的客户数，0）。"""
+    from service import crm_workspace_service as crm
+    from service.crm import insights
+    scanned = 0
+    for team in await active_teams(db, "sales"):
+        members = await team_members(db, team.id)
+        if not members:
+            continue
+        for customer in await crm.list_team_customers_async(db, members[0], team.id):
+            try:
+                await insights.scan_customer(db, members[0], team.id, customer["id"])
+                scanned += 1
+            except Exception:  # noqa: BLE001 —— 一个客户失败不影响其他客户
+                await db.rollback()
+    return scanned, 0
 
 
 # ---------------- 报销缺发票 ----------------
@@ -322,6 +351,8 @@ RULES: List[ReminderRule] = [
                  "部门负责人：请假、采购、报销提交后超过时限仍未审批（请假临近开始升为高优先级）"),
     ReminderRule("stale_customer", "客户长期未跟进", "crm_followup", 360, run_stale_customers,
                  "销售：客户超过指定天数没有跟进记录"),
+    ReminderRule("crm_risk_scan", "商机风险扫描", "crm_risk", 720, run_crm_risks,
+                 "销售：按规则扫描客户和商机风险（长期未跟进、报价无回复、临近成交未推进、金额下降、多次延期……），生成下一步建议"),
     ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,
                  "员工：未完成的报销单中有费用缺发票号"),
     ReminderRule("pending_voucher", "记账凭证待核对", "voucher_pending", 120, run_pending_vouchers,

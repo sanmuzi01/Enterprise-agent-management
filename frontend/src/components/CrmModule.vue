@@ -1,4 +1,6 @@
 <template>
+  <div class="space-y-4">
+  <CrmInbox :team-id="teamId" :customers="customers" @changed="onActivitiesChanged" />
   <section class="rounded-lg border border-slate-200 bg-white">
     <div class="border-b border-slate-200 px-4 py-3">
       <h2 class="text-sm font-semibold text-slate-900">部门客户</h2>
@@ -95,10 +97,12 @@
             </div>
             <div v-if="opportunityForm.visible" class="mb-2 space-y-1.5 rounded border border-slate-100 bg-slate-50 p-2">
               <div class="grid grid-cols-2 gap-1.5">
-                <select v-model="opportunityForm.stage" class="rounded border border-slate-200 px-2 py-1.5 text-xs">
+                <select v-model="opportunityForm.stage" aria-label="阶段" class="rounded border border-slate-200 px-2 py-1.5 text-xs">
                   <option v-for="s in STAGE_OPTIONS" :key="s" :value="s">{{ STAGE_LABELS[s] }}</option>
                 </select>
-                <input v-model.number="opportunityForm.amount" type="number" min="0" placeholder="金额" class="rounded border border-slate-200 px-2 py-1.5 text-xs" />
+                <input v-model.number="opportunityForm.amount" type="number" min="0" placeholder="金额" aria-label="金额" class="rounded border border-slate-200 px-2 py-1.5 text-xs" />
+                <input v-model="opportunityForm.expectedCloseDate" type="date" aria-label="预计成交日期" title="预计成交日期" class="rounded border border-slate-200 px-2 py-1.5 text-xs" />
+                <input v-model="opportunityForm.nextStep" maxlength="500" placeholder="下一步（例：周三给客户演示）" aria-label="下一步" class="rounded border border-slate-200 px-2 py-1.5 text-xs" />
               </div>
               <div class="flex gap-1.5">
                 <button
@@ -115,16 +119,19 @@
                 @click="openOpportunityForm(o)"
                 class="flex items-center justify-between text-xs cursor-pointer hover:text-indigo-700"
               >
-                <span>{{ STAGE_LABELS[o.stage] || o.stage }} · ¥{{ o.amount.toFixed(2) }}</span>
+                <span>{{ STAGE_LABELS[o.stage] || o.stage }} · ¥{{ o.amount.toFixed(2) }}<template v-if="o.expectedCloseDate"> · 预计 {{ o.expectedCloseDate }} 成交</template><template v-if="o.nextStep"> · 下一步：{{ o.nextStep }}</template></span>
                 <span class="text-slate-400">点击编辑</span>
               </li>
               <li v-if="!summary.opportunities.length" class="text-xs text-slate-400">暂无商机</li>
             </ul>
           </div>
+
+          <CustomerCopilot ref="copilot" :team-id="teamId" :customer-id="summary.id" />
         </div>
       </div>
     </div>
   </section>
+  </div>
 </template>
 
 <script setup lang="ts">
@@ -135,6 +142,8 @@ import type { CustomerDto, CustomerSummaryDto, OpportunityDto } from '../api/dep
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { useFocusRecord, useAskDeptAgent } from './department/askAgent'
+import CrmInbox from './department/CrmInbox.vue'
+import CustomerCopilot from './department/CustomerCopilot.vue'
 
 const props = defineProps<{ teamId: number }>()
 const askAgent = useAskDeptAgent()
@@ -152,8 +161,13 @@ const STAGE_LABELS: Record<string, string> = {
 }
 const opportunityForm = reactive({
   visible: false, submitting: false,
-  opportunityId: null as number | null, stage: 'LEAD', amount: 0,
+  opportunityId: null as number | null, stage: 'LEAD', amount: 0, expectedCloseDate: '', nextStep: '',
 })
+const copilot = ref<InstanceType<typeof CustomerCopilot> | null>(null)
+
+function onActivitiesChanged() {
+  copilot.value?.load()
+}
 
 async function loadCustomers() {
   try {
@@ -213,6 +227,8 @@ function openOpportunityForm(existing: OpportunityDto | null) {
   opportunityForm.opportunityId = existing?.id ?? null
   opportunityForm.stage = existing?.stage ?? 'LEAD'
   opportunityForm.amount = existing?.amount ?? 0
+  opportunityForm.expectedCloseDate = existing?.expectedCloseDate ?? ''
+  opportunityForm.nextStep = existing?.nextStep ?? ''
 }
 
 async function submitOpportunity() {
@@ -226,10 +242,13 @@ async function submitOpportunity() {
       opportunityId: opportunityForm.opportunityId ?? undefined,
       stage: opportunityForm.stage,
       amount: opportunityForm.amount,
+      expectedCloseDate: opportunityForm.expectedCloseDate || undefined,
+      nextStep: opportunityForm.nextStep,
     })
     toastSuccess(opportunityForm.opportunityId ? '已更新商机' : '已创建商机')
     opportunityForm.visible = false
     await loadSummary()
+    copilot.value?.load()   // 阶段变化进时间线
   } catch (e) {
     toastError(getErrorMessage(e, '保存失败'))
   } finally {

@@ -160,7 +160,15 @@ async def _process_message(app, adapter, msg: InboundMessage) -> None:
     from models.async_db import AsyncSessionLocal
     from models.user_async_dao import get_user_by_id_async
     from service import chat_pipeline
+    from service.crm import chat_ingest
     from utils.rate_limit import LimitExceeded
+
+    if chat_ingest.wants_crm(msg.text):
+        # 员工明确要求“保存到CRM”：存成客户活动，不交给助手
+        async with AsyncSessionLocal() as db:
+            reply = await chat_ingest.save(db, user_id, msg.provider, msg.message_id or msg.event_id, msg.text)
+        await asyncio.to_thread(adapter.send_text, app, msg.reply_context, reply)
+        return
 
     since = utcnow().replace(microsecond=0)
     async with AsyncSessionLocal() as db:

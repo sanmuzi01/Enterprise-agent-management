@@ -39,6 +39,12 @@ public class CrmController {
         return crmService.listCustomers(requireTeamId());
     }
 
+    @GetMapping("/contacts")
+    public Object listContacts() {
+        ScopeGuard.require("crm.read");
+        return crmService.listContacts(requireTeamId());
+    }
+
     @GetMapping("/customers/{id}")
     public Object getCustomerSummary(@PathVariable("id") long id) {
         ScopeGuard.require("crm.read");

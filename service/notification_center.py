@@ -16,6 +16,7 @@ logger = get_logger("notification_center")
 CATEGORIES = {
     "approval": "审批等待提醒",
     "crm_followup": "客户跟进提醒",
+    "crm_risk": "商机风险提醒",
     "expense_invoice": "报销缺发票提醒",
     "voucher_pending": "记账凭证待核对提醒",
     "it_ticket": "IT 工单超时提醒",
