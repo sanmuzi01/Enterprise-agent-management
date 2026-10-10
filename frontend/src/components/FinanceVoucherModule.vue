@@ -187,9 +187,12 @@
             <button @click="doVoid" :disabled="busy || voidReason.trim().length < 2" class="rounded bg-red-600 px-3 py-1.5 text-white disabled:opacity-50" data-testid="void-confirm">确认作废</button>
           </div>
         </div>
-        <p v-else-if="selected.status === 'POSTED'" class="text-xs text-slate-500">
-          已入账（{{ selected.postedAt?.slice(0, 16).replace('T', ' ') }}），确认人 #{{ selected.confirmedBy }}<span v-if="selected.warningsAcknowledged">，已核对风险项</span><span v-if="selected.confirmNote">；备注：{{ selected.confirmNote }}</span>
-        </p>
+        <template v-else-if="selected.status === 'POSTED'">
+          <p class="text-xs text-slate-500">
+            已入账（{{ selected.postedAt?.slice(0, 16).replace('T', ' ') }}），确认人 #{{ selected.confirmedBy }}<span v-if="selected.warningsAcknowledged">，已核对风险项</span><span v-if="selected.confirmNote">；备注：{{ selected.confirmNote }}</span>
+          </p>
+          <ErpExportButton :team-id="teamId" :voucher-id="selected.id" />
+        </template>
         <p v-else class="text-xs text-red-600">已作废：{{ selected.voidReason }}</p>
       </div>
     </template>
@@ -203,6 +206,7 @@ import type { AccountSubject, RiskLevel, UnbookedClaim, VoucherDetail, VoucherEn
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
+import ErpExportButton from './department/ErpExportButton.vue'
 
 const props = defineProps<{ teamId: number }>()
 const askAgent = useAskDeptAgent()

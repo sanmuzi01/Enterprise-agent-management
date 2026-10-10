@@ -53,19 +53,49 @@ async def list_my_expense_claims_async(user_id: int) -> List[Dict[str, Any]]:
 
 
 async def create_my_expense_draft_async(
-        db, user_id: int, team_id: int, lines: List[Dict[str, Any]],
+        db, user_id: int, team_id: int, lines: List[Dict[str, Any]], city_level: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """lines 里每条可以带 invoiceExtractionId（已确认的发票识别结果：发票号由它带入，金额不能超过发票金额）
+    和 overStandardReason（超标准说明）。先按费用标准检查：缺发票不能保存；超标准必须写说明，
+    说明和需要的审批级别写进明细说明。"""
+    from decimal import Decimal
+    from service import expense_policy_service, invoice_service
     await require_team_member_async(db, user_id, team_id, "finance", message="不属于该部门，无法为该部门创建报销申请")
     team = await check_team_module_async(db, team_id, "finance")
+    invoices = await invoice_service.take_for_claim(
+        db, user_id, [int(line["invoiceExtractionId"]) for line in lines if line.get("invoiceExtractionId")])
+    prepared = []
+    for line in lines:
+        item = {k: line[k] for k in ("category", "amount", "description", "invoiceNo") if k in line}
+        invoice = invoices.get(int(line["invoiceExtractionId"])) if line.get("invoiceExtractionId") else None
+        if invoice is not None:
+            item["invoiceNo"] = invoice.invoice_number
+            if invoice.total_amount and Decimal(str(item["amount"])) > Decimal(invoice.total_amount):
+                raise InvalidInput(f"报销金额 {item['amount']} 超过了发票金额 {invoice.total_amount}")
+        prepared.append(item)
+    checks = await expense_policy_service.check_claim(db, user_id, team_id, prepared, city_level)
+    for check, line, item in zip(checks, lines, prepared):
+        if check["status"] == "missing_receipt":
+            raise InvalidInput(f"第 {check['index'] + 1} 条：{check['message']}")
+        if check["status"] == "over_limit":
+            reason = (line.get("overStandardReason") or "").strip()
+            if not reason:
+                raise InvalidInput(f"第 {check['index'] + 1} 条{check['message']}")
+            approver = expense_policy_service.APPROVAL_LEVELS.get(check["approval_level"])
+            note = f"【超标准 {check['over_by']}（上限 {check['limit']}），需{approver}审批；说明：{reason[:100]}】"
+            item["description"] = ((item.get("description") or "") + note)[:200]
     try:
-        return await asyncio.to_thread(
+        claim = await asyncio.to_thread(
             hub.call, "POST", "/finance/expenses", user_id, team_id,
             ["finance.write"], "create_expense_draft",
             # departmentCode：销售部门的报销入账走销售费用，其他走管理费用
-            json_body={"lines": lines, "departmentCode": team.department_code}, idempotency_key=str(uuid.uuid4()),
+            json_body={"lines": prepared, "departmentCode": team.department_code}, idempotency_key=str(uuid.uuid4()),
         )
     except hub.EnterpriseHubError as exc:
         raise _translate_hub_error(exc)
+    if invoices:
+        await invoice_service.mark_used(db, invoices, (claim or {}).get("id"))
+    return claim
 
 
 async def submit_my_expense_claim_async(user_id: int, request_id: int) -> Dict[str, Any]:

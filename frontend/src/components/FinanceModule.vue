@@ -12,21 +12,41 @@
     </div>
 
     <div v-if="draftForm.visible" class="border-b border-slate-100 bg-slate-50 px-4 py-3 space-y-2">
-      <div v-for="(line, idx) in draftForm.lines" :key="idx" class="grid grid-cols-[110px_100px_1fr_1fr_auto] gap-2 items-center">
+      <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        <label for="expense-city">出差城市</label>
+        <select id="expense-city" v-model="draftForm.cityLevel" class="rounded border border-slate-200 px-2 py-1">
+          <option value="">不涉及</option>
+          <option value="tier1">一线城市</option>
+          <option value="tier2">二线城市</option>
+          <option value="other">其他城市</option>
+        </select>
+        <span class="text-slate-400">按公司费用标准检查：超标准要写说明，规定要发票的必须有发票。</span>
+      </div>
+      <template v-for="(line, idx) in draftForm.lines" :key="idx">
+      <div class="grid grid-cols-[110px_100px_1fr_1fr_auto_auto] gap-2 items-center">
         <select v-model="line.category" class="rounded border border-slate-200 px-2 py-1.5 text-sm">
           <option v-for="c in CATEGORY_OPTIONS" :key="c" :value="c">{{ CATEGORY_LABELS[c] }}</option>
         </select>
         <input v-model.number="line.amount" type="number" min="0" placeholder="金额" class="rounded border border-slate-200 px-2 py-1.5 text-sm" />
         <input v-model="line.description" placeholder="说明（可选）" class="rounded border border-slate-200 px-2 py-1.5 text-sm" />
-        <input v-model="line.invoiceNo" placeholder="发票号（可选）" class="rounded border border-slate-200 px-2 py-1.5 text-sm" />
+        <input v-model="line.invoiceNo" :disabled="!!line.invoiceExtractionId" placeholder="发票号（可选）" class="rounded border border-slate-200 px-2 py-1.5 text-sm disabled:bg-slate-100" />
+        <button @click="recognizing = recognizing === idx ? null : idx" :data-testid="`expense-recognize-${idx}`"
+          class="rounded border border-slate-200 px-2 py-1.5 text-xs text-slate-600 hover:bg-white">{{ line.invoiceExtractionId ? '已关联发票' : '识别发票' }}</button>
         <button
           v-if="draftForm.lines.length > 1"
           @click="draftForm.lines.splice(idx, 1)"
           class="rounded border border-slate-200 px-2 py-1.5 text-xs text-slate-500 hover:bg-white"
         ><Trash2 :size="13" /></button>
       </div>
+      <InvoiceRecognizer v-if="recognizing === idx" :team-id="teamId" @use="(inv) => useInvoice(idx, inv)" />
+      <div v-if="line.policyMessage" class="space-y-1 rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900">
+        <p>{{ line.policyMessage }}</p>
+        <input v-if="line.needsReason" v-model="line.overReason" :aria-label="`第 ${idx + 1} 条超标准说明`" maxlength="200"
+          placeholder="超标准说明（例：接待客户 6 人）" class="w-full rounded border border-amber-300 bg-white px-2 py-1" />
+      </div>
+      </template>
       <button
-        @click="draftForm.lines.push({ category: 'TRAVEL', amount: 0, description: '', invoiceNo: '' })"
+        @click="draftForm.lines.push(newLine())"
         class="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-700"
       >
         <Plus :size="12" /> 加一行
@@ -104,6 +124,8 @@ import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { statusBadgeClass, statusLabel } from '../utils/requestStatus'
 import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
+import InvoiceRecognizer from './department/InvoiceRecognizer.vue'
+import { checkPolicy, type InvoiceExtraction } from '../api/financeExtras'
 
 const props = defineProps<{ teamId: number }>()
 const askAgent = useAskDeptAgent()
@@ -117,11 +139,25 @@ const CATEGORY_LABELS: Record<string, string> = {
   TRAVEL: '差旅', MEAL: '餐饮', OFFICE_SUPPLY: '办公用品', TRANSPORT: '交通', OTHER: '其它',
 }
 
+interface DraftLine {
+  category: string; amount: number; description: string; invoiceNo: string
+  invoiceExtractionId?: number; overReason?: string; policyMessage?: string; needsReason?: boolean
+}
+const newLine = (): DraftLine => ({ category: 'TRAVEL', amount: 0, description: '', invoiceNo: '' })
 const draftForm = reactive({
-  visible: false, submitting: false,
-  lines: [{ category: 'TRAVEL', amount: 0, description: '', invoiceNo: '' }] as
-    { category: string; amount: number; description: string; invoiceNo: string }[],
+  visible: false, submitting: false, cityLevel: '',
+  lines: [newLine()] as DraftLine[],
 })
+const recognizing = ref<number | null>(null)
+
+function useInvoice(idx: number, invoice: InvoiceExtraction) {
+  const line = draftForm.lines[idx]
+  line.invoiceExtractionId = invoice.id
+  line.invoiceNo = invoice.fields.invoice_number || ''
+  if (!line.amount && invoice.fields.total_amount) line.amount = Number(invoice.fields.total_amount)
+  if (!line.description && invoice.fields.seller_name) line.description = invoice.fields.seller_name
+  recognizing.value = null
+}
 
 const lineSummary = (lines: ExpenseLineDto[]) =>
   lines.map((l) => `${CATEGORY_LABELS[l.category] || l.category} ¥${l.amount.toFixed(2)}`).join('、') || '无明细'
@@ -150,7 +186,23 @@ async function loadPending() {
 }
 
 function resetDraftForm() {
-  draftForm.lines = [{ category: 'TRAVEL', amount: 0, description: '', invoiceNo: '' }]
+  draftForm.lines = [newLine()]
+  draftForm.cityLevel = ''
+  recognizing.value = null
+}
+
+/** 按费用标准预检：缺票、超标准未写说明时在对应行提示，返回能否提交。 */
+async function policyOk(lines: DraftLine[]): Promise<boolean> {
+  const results = await checkPolicy(props.teamId, lines.map((l) => ({ category: l.category, amount: l.amount, invoice_no: l.invoiceNo || undefined })),
+    draftForm.cityLevel)
+  let ok = true
+  results.forEach((r, i) => {
+    const line = lines[i]
+    line.policyMessage = r.status === 'ok' ? undefined : r.message
+    line.needsReason = r.status === 'over_limit'
+    if (r.status === 'missing_receipt' || (r.status === 'over_limit' && !(line.overReason || '').trim())) ok = false
+  })
+  return ok
 }
 
 async function submitDraft() {
@@ -161,11 +213,17 @@ async function submitDraft() {
   }
   draftForm.submitting = true
   try {
+    if (!(await policyOk(lines))) {
+      toastError('有明细不符合费用标准，请按提示补充发票或填写超标准说明')
+      return
+    }
     await financeApi.createMyExpenseDraft({
       team_id: props.teamId,
+      city_level: draftForm.cityLevel || undefined,
       lines: lines.map((l) => ({
         category: l.category, amount: l.amount,
         description: l.description || undefined, invoice_no: l.invoiceNo || undefined,
+        invoice_extraction_id: l.invoiceExtractionId, over_standard_reason: l.overReason || undefined,
       })),
     })
     toastSuccess('已创建报销草稿')

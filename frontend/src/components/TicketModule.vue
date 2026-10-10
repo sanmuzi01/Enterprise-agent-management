@@ -18,18 +18,31 @@
           class="w-full rounded border border-slate-200 px-2 py-1.5 text-sm"></textarea>
       </div>
 
-      <div v-if="suggestion" class="space-y-2" data-testid="ticket-suggestion">
-        <div v-if="suggestion.articles.length" class="rounded border border-emerald-200 bg-emerald-50 px-3 py-2">
-          <p class="text-xs font-medium text-emerald-800">先试试这些自助办法，能解决就不用提交了</p>
-          <details v-for="a in suggestion.articles" :key="a.id" class="mt-1 text-xs text-emerald-900">
+      <button v-if="!selfSession" @click="findHelp" :disabled="busy || form.description.trim().length < 4" data-testid="ticket-self-help"
+        class="rounded border border-emerald-300 bg-white px-2.5 py-1 text-xs text-emerald-800 hover:bg-emerald-50 disabled:opacity-50">先找找自助办法</button>
+      <div v-if="selfSession" class="space-y-2" data-testid="ticket-suggestion">
+        <div v-if="selfSession.articles.length" class="rounded border border-emerald-200 bg-emerald-50 px-3 py-2">
+          <p class="text-xs font-medium text-emerald-800">先试试这些自助办法</p>
+          <details v-for="a in selfSession.articles" :key="a.id" class="mt-1 text-xs text-emerald-900" @toggle="onToggle($event, a.id)">
             <summary class="cursor-pointer select-none">{{ a.title }}</summary>
             <p class="mt-1 whitespace-pre-line pl-3">{{ a.steps }}</p>
+            <p class="mt-1 flex gap-1.5 pl-3">
+              <span class="text-emerald-700">这篇有用吗？</span>
+              <button :disabled="rated[a.id] !== undefined" @click="onRate(a.id, true)" class="rounded border border-emerald-300 px-1.5 hover:bg-white disabled:opacity-50">{{ rated[a.id] === true ? '已评价：有用' : '有用' }}</button>
+              <button :disabled="rated[a.id] !== undefined" @click="onRate(a.id, false)" class="rounded border border-emerald-300 px-1.5 hover:bg-white disabled:opacity-50">{{ rated[a.id] === false ? '已评价：没用' : '没用' }}</button>
+            </p>
           </details>
         </div>
-        <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-          <span>系统判断：<b>{{ suggestion.classification.categoryLabel }}</b> · 优先级 <b>{{ suggestion.classification.priorityLabel }}</b></span>
-          <span class="text-slate-400">（{{ suggestion.classification.reasons.join('；') }}）</span>
+        <p v-else class="text-xs text-slate-500">没有找到相关的自助办法，请直接提交工单。</p>
+        <div v-if="selfSession.classification_detail" class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+          <span>系统判断：<b>{{ selfSession.classification_detail.categoryLabel }}</b> · 优先级 <b>{{ selfSession.classification_detail.priorityLabel }}</b></span>
+          <span v-if="selfSession.classification_detail.reasons?.length" class="text-slate-400">（{{ selfSession.classification_detail.reasons.join('；') }}）</span>
           <button @click="adoptSuggestion" class="rounded border border-indigo-200 px-2 py-0.5 text-indigo-700 hover:bg-indigo-50" data-testid="ticket-adopt">采用建议</button>
+        </div>
+        <div v-if="selfSession.articles.length" class="flex flex-wrap items-center gap-2 text-xs">
+          <button :disabled="busy" @click="onSolved" data-testid="ticket-self-solved"
+            class="rounded bg-emerald-600 px-2.5 py-1 text-white hover:bg-emerald-700 disabled:opacity-50">已解决</button>
+          <span class="text-slate-500">没解决就在下面点“没有解决，创建工单”，会和这次自助记录关联。</span>
         </div>
       </div>
 
@@ -55,7 +68,7 @@
         「{{ CATEGORY_LABELS[form.category] }}」提交后需要先由本部门负责人批准，批准后 IT 才会处理。
       </p>
       <div class="flex gap-2">
-        <button @click="submit" :disabled="form.submitting || !canSubmit" class="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-700 disabled:opacity-50" data-testid="ticket-submit">提交工单</button>
+        <button @click="submit" :disabled="form.submitting || !canSubmit" class="rounded bg-indigo-600 px-3 py-1.5 text-xs text-white hover:bg-indigo-700 disabled:opacity-50" data-testid="ticket-submit">{{ selfSession?.articles.length ? '没有解决，创建工单' : '提交工单' }}</button>
         <button @click="form.visible = false" class="rounded border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-white">取消</button>
       </div>
     </div>
@@ -147,10 +160,12 @@
 
 <script setup lang="ts">
 import { isImeEnter } from '../utils/ime'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { Plus } from 'lucide-vue-next'
 import * as api from '../api/itService'
-import type { Device, Suggestion, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'
+import type { Device, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'
+import * as selfApi from '../api/financeExtras'
+import type { SelfServiceSession } from '../api/financeExtras'
 import { getErrorMessage } from '../utils/request'
 import { toastError, toastSuccess } from '../utils/toast'
 import { flashRecord, useFocusRecord, useAskDeptAgent } from './department/askAgent'
@@ -168,7 +183,9 @@ const pending = ref<TicketSummary[]>([])
 const showPending = ref(false)
 const devices = ref<Device[]>([])
 const open = ref<TicketDetail | null>(null)
-const suggestion = ref<Suggestion | null>(null)
+const selfSession = ref<SelfServiceSession | null>(null)
+const rated = reactive<Record<number, boolean>>({})
+const viewed = new Set<number>()
 const loading = ref(false)
 const busy = ref(false)
 const reply = ref('')
@@ -188,27 +205,53 @@ const STATUS_CLASSES: Record<TicketStatus, string> = {
 }
 const statusClass = (s: TicketStatus) => STATUS_CLASSES[s] || 'bg-slate-100 text-slate-500'
 
-let suggestTimer: ReturnType<typeof setTimeout> | undefined
-watch(() => form.description, (value) => {
-  clearTimeout(suggestTimer)
-  if (value.trim().length < 6) {
-    suggestion.value = null
-    return
-  }
-  suggestTimer = setTimeout(async () => {
-    try {
-      suggestion.value = await api.suggestSolutions(value.trim(), props.teamId)
-    } catch {
-      suggestion.value = null   // 建议拿不到不影响提交
-    }
-  }, 500)
+// 自助：员工点“先找找自助办法”才建一次自助会话（边打字边建会让统计失真）；看文章、评价、“已解决”都明确记录
+async function findHelp() {
+  await guarded(async () => {
+    selfSession.value = await selfApi.startSelfService(form.description.trim(), props.teamId)
+  }, '没有拿到自助办法，可以直接提交工单')
+}
+
+function onToggle(event: Event, articleId: number) {
+  if (!(event.target as HTMLDetailsElement).open || !selfSession.value || viewed.has(articleId)) return
+  viewed.add(articleId)   // 只记“看过”，看过不等于解决
+  void selfApi.viewArticle(selfSession.value.id, articleId).catch(() => undefined)
+}
+
+async function onRate(articleId: number, helpful: boolean) {
+  if (!selfSession.value) return
+  await guarded(async () => {
+    await selfApi.rateArticle(selfSession.value!.id, articleId, helpful)
+    rated[articleId] = helpful
+  }, '评价失败')
+}
+
+async function onSolved() {
+  if (!selfSession.value) return
+  await guarded(async () => {
+    await selfApi.markSolved(selfSession.value!.id)
+    toastSuccess('好的，问题已解决，不用提交工单了')
+    resetForm()
+  }, '操作失败')
+}
+
+function resetForm() {
+  Object.assign(form, { visible: false, description: '', title: '', category: 'INCIDENT', priority: 'NORMAL' })
+  selfSession.value = null
+  viewed.clear()
+  for (const key of Object.keys(rated)) delete rated[Number(key)]
+}
+
+// 改了问题描述：之前的自助结果不再对应，需要重新找
+watch(() => form.description, () => {
+  if (selfSession.value && selfSession.value.question !== form.description.trim()) selfSession.value = null
 })
-onBeforeUnmount(() => clearTimeout(suggestTimer))
 
 function adoptSuggestion() {
-  if (!suggestion.value) return
-  form.category = suggestion.value.classification.category
-  form.priority = suggestion.value.classification.priority
+  const detail = selfSession.value?.classification_detail
+  if (!detail) return
+  form.category = detail.category as TicketCategory
+  form.priority = detail.priority as TicketPriority
   if (!form.title.trim()) form.title = form.description.trim().replace(/\s+/g, ' ').slice(0, 30)
 }
 
@@ -255,13 +298,14 @@ async function guarded(action: () => Promise<void>, failure: string) {
 async function submit() {
   form.submitting = true
   try {
-    const created = await api.createTicket({
-      team_id: props.teamId, category: form.category, priority: form.priority,
-      title: form.title.trim(), description: form.description.trim(),
-    })
+    const payload = { team_id: props.teamId, category: form.category, priority: form.priority,
+      title: form.title.trim(), description: form.description.trim() }
+    // 先看过自助办法的：工单和这次自助记录关联（自助解决率、转工单率都靠它算）
+    const created = selfSession.value
+      ? (await selfApi.convertToTicket(selfSession.value.id, payload)).ticket as unknown as TicketDetail
+      : await api.createTicket(payload)
     toastSuccess(created.status === 'PENDING_APPROVAL' ? `工单 #${created.id} 已提交，等待部门负责人批准` : `工单 #${created.id} 已提交，等待 IT 接单`)
-    Object.assign(form, { visible: false, description: '', title: '', category: 'INCIDENT', priority: 'NORMAL' })
-    suggestion.value = null
+    resetForm()
     await loadTickets()
     open.value = created
   } catch (e) {

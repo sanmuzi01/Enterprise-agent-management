@@ -149,6 +149,27 @@ async def run_crm_risks(db) -> Tuple[int, int]:
     return scanned, 0
 
 
+# ---------------- IT 知识文章维护 ----------------
+
+async def run_kb_maintenance(db) -> Tuple[int, int]:
+    """自助解决率低、评价差的知识文章进维护清单：提醒 IT 部门负责人更新。文章指标好转后提醒自动关闭。"""
+    from models.init_db import Team as TeamModel
+    from service import it_self_service
+    reminders = []
+    for team in await active_teams(db, "it"):
+        admins = await team_members(db, team.id, "admin")
+        if not admins:
+            continue
+        scope = list((await db.execute(select(TeamModel.id).where(TeamModel.organization_id == team.organization_id))).scalars())
+        for article in await it_self_service.maintenance_list(db, scope):
+            for admin_id in admins:
+                reminders.append(Reminder(
+                    user_id=admin_id, key=f"kb-article:{article['id']}", team_id=team.id,
+                    title=f"知识文章「{article.get('title') or article['id']}」需要更新",
+                    detail="；".join(article["reasons"]), priority="normal"))
+    return await sync_reminders(db, "it_kb_maintenance", "it_ticket", reminders)
+
+
 # ---------------- 报销缺发票 ----------------
 
 async def run_missing_invoices(db) -> Tuple[int, int]:
@@ -353,6 +374,8 @@ RULES: List[ReminderRule] = [
                  "销售：客户超过指定天数没有跟进记录"),
     ReminderRule("crm_risk_scan", "商机风险扫描", "crm_risk", 720, run_crm_risks,
                  "销售：按规则扫描客户和商机风险（长期未跟进、报价无回复、临近成交未推进、金额下降、多次延期……），生成下一步建议"),
+    ReminderRule("it_kb_maintenance", "知识文章待维护", "it_ticket", 1440, run_kb_maintenance,
+                 "IT 部门负责人：自助解决率低（推荐 ≥5 次、解决率 <30%）或评价差的知识文章，需要更新"),
     ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,
                  "员工：未完成的报销单中有费用缺发票号"),
     ReminderRule("pending_voucher", "记账凭证待核对", "voucher_pending", 120, run_pending_vouchers,

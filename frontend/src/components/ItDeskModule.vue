@@ -26,6 +26,7 @@
           <p>{{ summary.load.map((l) => `${l.userName || '#' + l.userId} ${l.open} 张`).join('、') }}</p>
         </div>
       </template>
+      <ItSelfServiceMetrics :team-id="teamId" />
     </div>
 
     <!-- ================= 设备 ================= -->
@@ -167,6 +168,7 @@
 </template>
 
 <script setup lang="ts">
+import ItSelfServiceMetrics from './department/ItSelfServiceMetrics.vue'
 import { onMounted, reactive, ref, watch } from 'vue'
 import * as api from '../api/itService'
 import type { DeskSummary, Device, SlaStatus, TicketCategory, TicketDetail, TicketPriority, TicketStatus, TicketSummary } from '../api/itService'

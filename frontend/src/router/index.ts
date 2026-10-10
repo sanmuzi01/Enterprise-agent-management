@@ -54,6 +54,7 @@ const router = createRouter({
         { path: 'agents', name: 'AdminAgents', component: () => import('../views/admin/AdminAgents.vue') },
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
         { path: 'integrations', name: 'AdminIntegrations', component: () => import('../views/admin/AdminIntegrations.vue') },
+        { path: 'expense-policies', name: 'AdminExpensePolicies', component: () => import('../views/admin/AdminExpensePolicies.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },
         { path: 'issues', name: 'AdminIssues', component: () => import('../views/admin/AdminIssues.vue') },

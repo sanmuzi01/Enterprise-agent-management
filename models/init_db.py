@@ -1617,6 +1617,122 @@ class CrmMailAccount(Base):
     created_at = Column(DateTime, nullable=False, default=utcnow)
 
 
+class InvoiceExtraction(Base):
+    """发票识别结果（图片 / PDF → 结构化字段）。每个字段都有置信度（field_confidence_json）；
+    低于阈值的字段必须员工逐项确认后才能用于报销（status: needs_review → confirmed）。
+    file_sha256 用来发现同一个文件重复上传；invoice_number 用来发现同一张发票重复报销。"""
+    __tablename__ = "invoice_extraction"
+    __table_args__ = (
+        Index("idx_invoice_extraction_user", "user_id", "id"),
+        Index("idx_invoice_extraction_hash", "file_sha256"),
+        Index("idx_invoice_extraction_number", "invoice_number"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=False)
+    file_name = Column(String(255), nullable=True)
+    file_sha256 = Column(String(64), nullable=False)
+    invoice_type = Column(String(40), nullable=True)
+    invoice_code = Column(String(20), nullable=True)
+    invoice_number = Column(String(30), nullable=True)
+    issued_at = Column(String(10), nullable=True)
+    seller_name = Column(String(200), nullable=True)
+    seller_tax_id = Column(String(30), nullable=True)
+    buyer_name = Column(String(200), nullable=True)
+    buyer_tax_id = Column(String(30), nullable=True)
+    amount_without_tax = Column(String(20), nullable=True)
+    tax_amount = Column(String(20), nullable=True)
+    total_amount = Column(String(20), nullable=True)
+    currency = Column(String(10), nullable=True, default="CNY")
+    confidence = Column(Float, nullable=True)                 # 整体置信度（最低的那个字段）
+    field_confidence_json = Column(Text, nullable=True)       # {字段: 置信度}
+    checks_json = Column(Text, nullable=True)                 # 校验结果 [{level, code, text}]
+    corrected_fields_json = Column(Text, nullable=True)       # 员工改过的字段
+    raw_reference = Column(Text, nullable=True)               # 识别依据的原文片段
+    method = Column(String(20), nullable=True)                # text / ocr / model
+    status = Column(String(20), nullable=False, default="needs_review")   # needs_review / confirmed / used / discarded
+    claim_id = Column(Integer, nullable=True)
+    confirmed_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ExpensePolicyRule(Base):
+    """费用标准（结构化，不写进提示词）：某类费用在某级城市、某职级的单笔上限、是否必须有发票、超标后谁审批。
+    字段为空表示“不限”。生效区间内、条件最具体的一条生效。"""
+    __tablename__ = "expense_policy_rule"
+    __table_args__ = (Index("idx_expense_policy_org", "organization_id", "category"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    category = Column(String(20), nullable=False)             # TRAVEL / MEAL / OFFICE_SUPPLY / TRANSPORT / OTHER
+    city_level = Column(String(10), nullable=True)            # tier1 / tier2 / other；空 = 不限
+    employee_level = Column(String(20), nullable=True)        # staff / manager；空 = 不限
+    amount_limit = Column(String(20), nullable=True)          # 单笔上限；空 = 不限额
+    receipt_required = Column(Integer, nullable=False, default=1)
+    approval_level = Column(String(20), nullable=False, default="team_admin")   # 超标后需要的审批：team_admin / finance / org_admin
+    effective_from = Column(String(10), nullable=True)
+    effective_to = Column(String(10), nullable=True)
+    note = Column(String(300), nullable=True)
+    created_by = Column(Integer, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+
+
+class ErpExport(Base):
+    """记账凭证推送到 ERP 的记录。voucher_id 唯一：同一张凭证不管点几次、重试几次，ERP 只会收到同一个幂等键，
+    推送成功后不再重复推送。"""
+    __tablename__ = "erp_export"
+    __table_args__ = (UniqueConstraint("voucher_id", name="uq_erp_export_voucher"),)
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    organization_id = Column(Integer, nullable=False)
+    voucher_id = Column(Integer, nullable=False)
+    idempotency_key = Column(String(80), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")   # pending / sent / failed
+    attempts = Column(Integer, nullable=False, default=0)
+    erp_document_id = Column(String(120), nullable=True)
+    last_error = Column(String(500), nullable=True)
+    requested_by = Column(Integer, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=utcnow)
+    sent_at = Column(DateTime, nullable=True)
+
+
+class ItSelfServiceSession(Base):
+    """IT 自助：员工描述问题 → 推荐知识文章 → 员工明确点“已解决”或“没有解决，创建工单”。
+    只看了文章不算解决；只有 confirmed_solved=1 才计入自助解决率。转成工单的记下工单号；
+    解决后 7 天内同一问题又来报修、或转出的工单被重开，记为重新打开（影响文章质量指标）。"""
+    __tablename__ = "it_self_service_session"
+    __table_args__ = (
+        Index("idx_it_session_user", "user_id", "started_at"),
+        Index("idx_it_session_ticket", "converted_ticket_id"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, nullable=False)
+    team_id = Column(Integer, nullable=True)
+    question = Column(Text, nullable=False)
+    classification = Column(String(30), nullable=True)
+    article_ids_json = Column(Text, nullable=True)
+    suggestion = Column(Text, nullable=True)
+    confirmed_solved = Column(Integer, nullable=True)         # null 未反馈 / 1 已解决 / 0 没解决
+    solved_article_id = Column(Integer, nullable=True)
+    converted_ticket_id = Column(Integer, nullable=True)
+    reopened = Column(Integer, nullable=False, default=0)
+    reopened_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=utcnow)
+    feedback_at = Column(DateTime, nullable=True)
+
+
+class ItArticleFeedback(Base):
+    """员工对推荐文章的操作：打开看过（viewed_at）和评价（helpful 1 有用 / 0 没用）。每个会话每篇文章一条。"""
+    __tablename__ = "it_article_feedback"
+    __table_args__ = (UniqueConstraint("session_id", "article_id", name="uq_it_article_feedback"),
+                      Index("idx_it_article_feedback_article", "article_id"))
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    session_id = Column(Integer, nullable=False)
+    article_id = Column(Integer, nullable=False)
+    user_id = Column(Integer, nullable=False)
+    viewed_at = Column(DateTime, nullable=True)
+    helpful = Column(Integer, nullable=True)
+    rated_at = Column(DateTime, nullable=True)
+
+
 class AgentPipeline(Base):
     """Agent 流水线：把多个 Agent 串成一条固定顺序的处理链——上一步的回答自动作为
 

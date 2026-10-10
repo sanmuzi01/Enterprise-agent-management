@@ -69,6 +69,8 @@ async def create_ticket_async(db, user_id: int, team_id: int, category: str, pri
     body = {"category": category, "priority": priority, "title": title, "description": description}
     ticket = await call_hub("POST", "/it/tickets", user_id, team_id, TICKET_WRITE, "create_it_ticket", body, True,
                             idempotency_key=idempotency_key)
+    from service import it_self_service
+    await it_self_service.on_ticket_created(db, user_id, category, f"{title} {description}")   # 7 天内自助“已解决”的同一问题又来报修：记为重新打开
     return await _enrich_detail(db, ticket)
 
 
@@ -103,7 +105,10 @@ async def confirm_ticket_async(db, user_id: int, ticket_id: int) -> Dict[str, An
 
 
 async def reopen_ticket_async(db, user_id: int, ticket_id: int, reason: str) -> Dict[str, Any]:
-    return await _own_action(db, user_id, ticket_id, "reopen", {"reason": reason})
+    ticket = await _own_action(db, user_id, ticket_id, "reopen", {"reason": reason})
+    from service import it_self_service
+    await it_self_service.on_ticket_reopened(db, ticket_id)          # 自助转出的工单被重开：影响质量指标
+    return ticket
 
 
 async def list_team_pending_async(db, user_id: int, team_id: int) -> List[Dict[str, Any]]:

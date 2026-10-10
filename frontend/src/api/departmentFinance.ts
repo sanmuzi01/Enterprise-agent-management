@@ -29,7 +29,9 @@ export async function getMyExpenseClaims(): Promise<ExpenseClaimDto[]> {
 
 export async function createMyExpenseDraft(payload: {
   team_id: number
-  lines: { category: string; amount: number; description?: string; invoice_no?: string }[]
+  city_level?: string
+  lines: { category: string; amount: number; description?: string; invoice_no?: string
+    invoice_extraction_id?: number; over_standard_reason?: string }[]
 }): Promise<ExpenseClaimDto> {
   const { data } = await request.post('/enterprise/finance/mine', payload)
   return data as ExpenseClaimDto

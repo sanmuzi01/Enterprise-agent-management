@@ -208,11 +208,14 @@ class ExpenseLineItem(BaseModel):
     amount: float = Field(gt=0)
     description: Optional[str] = Field(default=None, max_length=200)
     invoice_no: Optional[str] = Field(default=None, max_length=80)
+    invoice_extraction_id: Optional[int] = Field(default=None, description="已确认的发票识别结果")
+    over_standard_reason: Optional[str] = Field(default=None, max_length=200, description="超标准说明")
 
 
 class CreateExpenseDraftBody(BaseModel):
     team_id: int
     lines: List[ExpenseLineItem]
+    city_level: Optional[str] = Field(default=None, pattern="^(tier1|tier2|other)$", description="出差城市等级")
 
 
 class ExpenseDecisionBody(BaseModel):
@@ -233,10 +236,11 @@ async def create_my_expense_draft(
 ):
     lines: List[Dict[str, Any]] = [
         {"category": line.category, "amount": line.amount, "description": line.description,
-         "invoiceNo": line.invoice_no}
+         "invoiceNo": line.invoice_no, "invoiceExtractionId": line.invoice_extraction_id,
+         "overStandardReason": line.over_standard_reason}
         for line in body.lines
     ]
-    return await finance_workspace.create_my_expense_draft_async(db, user.id, body.team_id, lines)
+    return await finance_workspace.create_my_expense_draft_async(db, user.id, body.team_id, lines, body.city_level)
 
 
 @router.post("/finance/{request_id}/submit")
