@@ -105,3 +105,78 @@ def forwarded_lines(app, message_id: str) -> List[ChatLine]:
             lines.append(ChatLine(sender_id, name, text, when))
     lines.sort(key=lambda line: line.sent_at)
     return lines[:MAX_FORWARDED]
+
+
+def bot_chats(app, max_pages: int = 20) -> List[Dict[str, str]]:
+    """机器人所在的群（“获取用户或机器人所在的群列表”，以应用身份调用 = 机器人所在的群）。"""
+    chats: List[Dict[str, str]] = []
+    token = None
+    for _ in range(max_pages):
+        params: Dict[str, Any] = {"page_size": 100}
+        if token:
+            params["page_token"] = token
+        data = call(app, "GET", "/open-apis/im/v1/chats", params=params)
+        chats += [{"chat_id": str(c.get("chat_id") or ""), "name": str(c.get("name") or "")} for c in data.get("items") or []]
+        if not data.get("has_more"):
+            break
+        token = data.get("page_token")
+    return [c for c in chats if c["chat_id"]]
+
+
+def chat_has_member(app, chat_id: str, open_id: str, max_pages: int = 50) -> bool:
+    """这个人在不在群里（“获取群成员列表”，机器人必须在群里）。"""
+    token = None
+    for _ in range(max_pages):
+        params: Dict[str, Any] = {"member_id_type": "open_id", "page_size": 100}
+        if token:
+            params["page_token"] = token
+        data = call(app, "GET", f"/open-apis/im/v1/chats/{chat_id}/members", params=params)
+        if any(m.get("member_id") == open_id for m in data.get("items") or []):
+            return True
+        if not data.get("has_more"):
+            return False
+        token = data.get("page_token")
+    return False
+
+
+def chat_history(app, chat_id: str, start: int, end: int, limit: int) -> List[ChatLine]:
+    """群里一段时间的消息（“获取会话历史消息”，以应用身份：机器人必须在群里，需要“获取群组中所有消息”权限）。
+    从新往旧取，最多 limit 条，返回时按时间正序。发送人：本企业员工显示姓名，查不到的（客户等外部成员）编号显示。"""
+    from service.integrations.feishu import content
+    from service.integrations.feishu.callback import millis
+    items: List[Dict[str, Any]] = []
+    token = None
+    while len(items) < limit:
+        params: Dict[str, Any] = {"container_id_type": "chat", "container_id": chat_id, "start_time": str(start),
+                                  "end_time": str(end), "sort_type": "ByCreateTimeDesc", "page_size": 50}
+        if token:
+            params["page_token"] = token
+        data = call(app, "GET", "/open-apis/im/v1/messages", params=params)
+        items += data.get("items") or []
+        if not data.get("has_more"):
+            break
+        token = data.get("page_token")
+    names: Dict[str, str] = {}
+    unknown: Dict[str, str] = {}
+    lines: List[ChatLine] = []
+    for item in items[:limit]:
+        if item.get("deleted") or item.get("msg_type") == "system":
+            continue
+        sender = item.get("sender") or {}
+        sender_id = str(sender.get("id") or "")
+        if sender.get("sender_type") == "app":
+            name = "机器人"
+        elif sender_id in names:
+            name = names[sender_id]
+        else:
+            name = user_name(app, sender_id) if sender_id else ""
+            if not name:
+                name = unknown.setdefault(sender_id, f"外部成员{len(unknown) + 1}")
+            names[sender_id] = name
+        text = content.render(str(item.get("msg_type") or ""), str((item.get("body") or {}).get("content") or ""),
+                              item.get("mentions") or [], strip_mentions=False)
+        when = millis(item.get("create_time"))
+        if text and when is not None:
+            lines.append(ChatLine(sender_id, name, text, when))
+    lines.sort(key=lambda line: line.sent_at)
+    return lines

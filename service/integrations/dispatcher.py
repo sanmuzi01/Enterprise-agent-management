@@ -249,6 +249,8 @@ async def _process_message(app, adapter, msg: InboundMessage) -> Optional[str]:
         return
 
     since = utcnow().replace(microsecond=0)
+    from service.integrations import chat_context
+    chat_context.remember(user_id, msg.provider, msg.chat_id, msg.chat_type)   # “总结一下上面的讨论”：工具知道是哪个群
     async with AsyncSessionLocal() as db:
         chosen = await choose_agent(db, user_id)
         if chosen is None:

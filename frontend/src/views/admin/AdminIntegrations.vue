@@ -139,7 +139,8 @@
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 class="text-sm font-semibold text-slate-900">人员绑定</h2>
-          <p class="mt-0.5 text-xs text-slate-500">同步时按手机号自动对上平台账号；对不上的在这里手动选择。已离职 / 不在通讯录里的自动停用。</p>
+          <p class="mt-0.5 text-xs text-slate-500">按部门列出每位员工对应的{{ providerLabel }}账号（一人一个）。员工可以自己领绑定码绑定；
+            也可以点“同步组织架构”按手机号自动对上，对不上的在这里手动选择。已离职 / 不在通讯录里的自动停用。</p>
         </div>
         <button :disabled="!current?.configured || syncing" @click="runSync" data-testid="integration-sync"
           class="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
@@ -151,48 +152,95 @@
         停用 {{ syncSummary.users_disabled_total }} 人；部门 {{ syncSummary.departments }} 个<template v-if="syncSummary.departments_unmatched.length">，
         其中 {{ syncSummary.departments_unmatched.length }} 个在平台里找不到同名部门</template>。
       </p>
-      <div class="mb-3 flex flex-wrap gap-2">
+      <div v-if="directory" class="mb-3 flex flex-wrap items-center gap-2 text-xs" data-testid="binding-summary">
+        <span class="rounded bg-slate-100 px-2 py-1 text-slate-700">企业成员 {{ directory.summary.members }} 人</span>
+        <span class="rounded bg-emerald-50 px-2 py-1 text-emerald-700">已绑定 {{ directory.summary.bound }}</span>
+        <span class="rounded px-2 py-1" :class="directory.summary.unbound ? 'bg-amber-50 text-amber-700' : 'bg-slate-100 text-slate-500'">未绑定 {{ directory.summary.unbound }}</span>
+        <span v-if="directory.summary.disabled" class="rounded bg-red-50 px-2 py-1 text-red-600">已停用 {{ directory.summary.disabled }}</span>
+        <span v-if="directory.summary.unlinked" class="rounded bg-indigo-50 px-2 py-1 text-indigo-700">没对应到员工的{{ providerLabel }}账号 {{ directory.summary.unlinked }}</span>
+        <span class="grow"></span>
         <label for="binding-filter" class="sr-only">筛选</label>
-        <select id="binding-filter" v-model="filter" class="h-8 rounded border border-slate-300 px-2 text-xs">
-          <option value="">全部（{{ bindings.length }}）</option>
-          <option value="unmatched">待绑定（{{ count('unmatched') }}）</option>
-          <option value="active">已绑定（{{ count('active') }}）</option>
-          <option value="disabled">已停用（{{ count('disabled') }}）</option>
+        <select id="binding-filter" v-model="filter" class="h-8 rounded border border-slate-300 px-2">
+          <option value="">全部员工</option>
+          <option value="unbound">只看未绑定</option>
+          <option value="active">只看已绑定</option>
+          <option value="disabled">只看已停用</option>
         </select>
+        <label for="binding-search" class="sr-only">搜索姓名</label>
+        <input id="binding-search" v-model="search" placeholder="搜索姓名" class="h-8 w-36 rounded border border-slate-300 px-2" />
       </div>
       <div class="overflow-x-auto">
-        <table class="w-full min-w-[560px] text-left text-sm">
+        <table class="w-full min-w-[640px] text-left text-sm" data-testid="binding-directory">
           <thead class="text-xs text-slate-500">
             <tr class="border-b border-slate-100">
-              <th class="py-2 pr-3 font-medium">{{ providerLabel }}成员</th>
+              <th class="py-2 pr-3 font-medium">员工（平台账号）</th>
+              <th class="py-2 pr-3 font-medium">{{ providerLabel }}账号</th>
               <th class="py-2 pr-3 font-medium">状态</th>
-              <th class="py-2 pr-3 font-medium">平台账号</th>
-              <th class="py-2 font-medium"></th>
+              <th class="py-2 font-medium text-right">操作</th>
             </tr>
           </thead>
-          <tbody>
-            <tr v-for="b in shownBindings" :key="b.id" class="border-b border-slate-50">
-              <td class="py-2 pr-3">
-                <p class="text-slate-800">{{ b.external_name || '（未知姓名）' }}</p>
-                <p class="text-[11px] text-slate-400">{{ b.external_user_id }}</p>
+          <tbody v-for="d in shownDepartments" :key="d.team_id ?? 0" :data-testid="`binding-dept-${d.team_id ?? 0}`">
+            <tr class="bg-slate-50">
+              <td colspan="4" class="px-2 py-1.5 text-xs font-medium text-slate-700">
+                {{ d.name }}<span class="ml-2 font-normal" :class="d.bound === d.total ? 'text-emerald-600' : 'text-slate-500'">已绑定 {{ d.bound }} / {{ d.total }}</span>
               </td>
-              <td class="py-2 pr-3"><span class="rounded px-1.5 py-0.5 text-xs" :class="bindingClass[b.status]">{{ bindingText[b.status] }}</span></td>
+            </tr>
+            <tr v-for="m in d.members" :key="m.user_id" class="border-b border-slate-50" :data-testid="`binding-member-${m.user_id}`">
               <td class="py-2 pr-3">
-                <label :for="`bind-${b.id}`" class="sr-only">选择平台账号</label>
-                <select :id="`bind-${b.id}`" :value="b.local_user_id ?? ''" @change="rebind(b, ($event.target as HTMLSelectElement).value)"
-                  class="h-8 w-full max-w-[220px] rounded border border-slate-300 px-2 text-xs">
-                  <option value="">（不绑定）</option>
-                  <option v-for="m in members" :key="m.user_id" :value="m.user_id">{{ m.name }}</option>
-                </select>
+                <p class="text-slate-800">{{ m.name }}</p>
+                <p v-if="m.role_name" class="text-[11px] text-slate-400">{{ m.role_name }}</p>
               </td>
-              <td class="py-2 text-right text-[11px] text-slate-400">{{ b.last_synced_at ? `同步于 ${b.last_synced_at.slice(0, 10)}` : '手动绑定' }}</td>
+              <td class="py-2 pr-3">
+                <template v-if="m.binding">
+                  <p class="text-slate-800">{{ m.binding.external_name || '（未知姓名）' }}</p>
+                  <p class="break-all text-[11px] text-slate-400">{{ m.binding.external_user_id }}</p>
+                </template>
+                <template v-else>
+                  <label :for="`assign-ext-${m.user_id}`" class="sr-only">选择{{ providerLabel }}账号</label>
+                  <select :id="`assign-ext-${m.user_id}`" :disabled="!directory?.unlinked.length || busyUser === m.user_id"
+                    @change="assignExternal(m.user_id, ($event.target as HTMLSelectElement).value)"
+                    class="h-8 w-full max-w-[240px] rounded border border-slate-300 px-2 text-xs disabled:bg-slate-50 disabled:text-slate-400">
+                    <option value="">{{ directory?.unlinked.length ? `选择${providerLabel}账号…` : '员工自己领绑定码绑定' }}</option>
+                    <option v-for="u in directory?.unlinked" :key="u.external_user_id" :value="u.external_user_id">
+                      {{ u.external_name || '（未知姓名）' }} · {{ u.external_user_id.slice(-8) }}
+                    </option>
+                  </select>
+                </template>
+              </td>
+              <td class="py-2 pr-3">
+                <span class="rounded px-1.5 py-0.5 text-xs" :class="memberClass(m)">{{ memberText(m) }}</span>
+                <p v-if="m.binding?.since" class="mt-0.5 text-[11px] text-slate-400">{{ m.binding.synced ? '同步' : '绑定' }}于 {{ m.binding.since.slice(0, 10) }}</p>
+              </td>
+              <td class="py-2 text-right">
+                <button v-if="m.binding?.status === 'active'" type="button" :disabled="busyUser === m.user_id" @click="unbindMember(m)"
+                  class="rounded border border-slate-300 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50">解绑</button>
+                <button v-else-if="m.binding?.status === 'disabled'" type="button" :disabled="busyUser === m.user_id"
+                  @click="assignExternal(m.user_id, m.binding.external_user_id)"
+                  class="rounded border border-emerald-200 px-2 py-1 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">恢复</button>
+              </td>
             </tr>
-            <tr v-if="!shownBindings.length">
-              <td colspan="4" class="py-8 text-center text-xs text-slate-400">还没有人员。保存凭证后点“同步组织架构”。</td>
-            </tr>
+          </tbody>
+          <tbody v-if="directory && !shownDepartments.length">
+            <tr><td colspan="4" class="py-8 text-center text-xs text-slate-400">没有符合条件的员工</td></tr>
           </tbody>
         </table>
       </div>
+      <details v-if="directory?.unlinked.length" class="mt-3 rounded border border-slate-200 px-3 py-2 text-xs" data-testid="binding-unlinked">
+        <summary class="cursor-pointer text-slate-700">没对应到员工的{{ providerLabel }}账号（{{ directory.unlinked.length }}）：同步通讯录或给机器人发过消息、但没对上平台账号的人</summary>
+        <ul class="mt-2 divide-y divide-slate-100">
+          <li v-for="u in directory.unlinked" :key="u.external_user_id" class="flex flex-wrap items-center justify-between gap-2 py-1.5">
+            <span class="text-slate-800">{{ u.external_name || '（未知姓名）' }} <span class="text-[11px] text-slate-400">{{ u.external_user_id }}</span></span>
+            <span>
+              <label :for="`unlinked-${u.id}`" class="sr-only">对应到员工</label>
+              <select :id="`unlinked-${u.id}`" @change="assignExternal(Number(($event.target as HTMLSelectElement).value), u.external_user_id)"
+                class="h-7 rounded border border-slate-300 px-2">
+                <option value="">对应到员工…</option>
+                <option v-for="m in unboundMembers" :key="m.user_id" :value="m.user_id">{{ m.name }}（{{ m.dept }}）</option>
+              </select>
+            </span>
+          </li>
+        </ul>
+      </details>
       <form class="mt-3 flex flex-wrap items-end gap-2 text-xs" @submit.prevent="manualBind">
         <div>
           <label for="manual-ext" class="block text-slate-500">手动添加：{{ provider === 'feishu' ? '飞书 open_id' : '钉钉 userId' }}</label>
@@ -216,7 +264,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { RefreshCcw } from 'lucide-vue-next'
 import * as api from '../../api/integrations'
-import type { IntegrationApp, IntegrationBinding, IntegrationHealth, Provider, SyncSummary } from '../../api/integrations'
+import type { BindingDirectory, DirectoryMember, IntegrationApp, IntegrationHealth, Provider, SyncSummary } from '../../api/integrations'
 import { listOrgMembers } from '../../api/organizationAdmin'
 import type { OrgMember } from '../../api/organizationAdmin'
 import { integrationEventLabel } from '../../utils/displayNames'
@@ -230,7 +278,9 @@ const providers: { value: Provider; label: string }[] = [{ value: 'feishu', labe
 const provider = ref<Provider>('feishu')
 const apps = ref<IntegrationApp[]>([])
 const health = ref<IntegrationHealth | null>(null)
-const bindings = ref<IntegrationBinding[]>([])
+const directory = ref<BindingDirectory | null>(null)
+const search = ref('')
+const busyUser = ref<number | null>(null)
 const members = ref<OrgMember[]>([])
 const error = ref('')
 const loaded = ref(false)
@@ -299,12 +349,51 @@ const canSave = computed(() => Boolean(
 const statusText = computed(() => (!current.value?.configured ? '未配置' : current.value.enabled ? '已启用' : '已停用'))
 const statusClass = computed(() => (!current.value?.configured ? 'bg-slate-100 text-slate-500'
   : current.value.enabled ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'))
-const bindingText: Record<string, string> = { active: '已绑定', unmatched: '待绑定', disabled: '已停用' }
-const bindingClass: Record<string, string> = {
-  active: 'bg-emerald-50 text-emerald-700', unmatched: 'bg-amber-50 text-amber-700', disabled: 'bg-slate-100 text-slate-500',
+const memberStatus = (m: DirectoryMember) => m.binding?.status === 'active' ? 'active' : m.binding?.status === 'disabled' ? 'disabled' : 'unbound'
+const memberText = (m: DirectoryMember) => ({ active: '已绑定', disabled: '已停用', unbound: '未绑定' })[memberStatus(m)]
+const memberClass = (m: DirectoryMember) => ({ active: 'bg-emerald-50 text-emerald-700', disabled: 'bg-red-50 text-red-600',
+  unbound: 'bg-amber-50 text-amber-700' })[memberStatus(m)]
+const shownDepartments = computed(() => (directory.value?.departments || []).map((d) => ({
+  ...d,
+  members: d.members.filter((m) => (!filter.value || memberStatus(m) === filter.value) && (!search.value.trim() || m.name.includes(search.value.trim()))),
+})).filter((d) => d.members.length))
+const unboundMembers = computed(() => (directory.value?.departments || []).flatMap((d) =>
+  d.members.filter((m) => !m.binding).map((m) => ({ user_id: m.user_id, name: m.name, dept: d.name }))))
+
+const loadDirectory = async () => {
+  directory.value = await api.bindingDirectory(provider.value)
 }
-const shownBindings = computed(() => (filter.value ? bindings.value.filter((b) => b.status === filter.value) : bindings.value))
-const count = (status: string) => bindings.value.filter((b) => b.status === status).length
+
+// 把一个外部账号对应到员工（也用于恢复已停用的绑定）。后端保证一人一个、一个外部账号只对应一人。
+const assignExternal = async (userId: number, externalUserId: string) => {
+  if (!userId || !externalUserId) return
+  busyUser.value = userId
+  error.value = ''
+  try {
+    await api.changeBinding(provider.value, externalUserId, userId)
+    toastSuccess('已绑定')
+  } catch (e: any) {
+    error.value = getErrorMessage(e, '绑定失败')
+  } finally {
+    busyUser.value = null
+    await loadDirectory()
+  }
+}
+
+const unbindMember = async (m: DirectoryMember) => {
+  if (!m.binding || !window.confirm(`解绑 ${m.name} 的${providerLabel.value}账号？解绑后 ta 在${providerLabel.value}里就不能使用助手了。`)) return
+  busyUser.value = m.user_id
+  error.value = ''
+  try {
+    await api.changeBinding(provider.value, m.binding.external_user_id, null)
+    toastSuccess('已解绑')
+  } catch (e: any) {
+    error.value = getErrorMessage(e, '解绑失败')
+  } finally {
+    busyUser.value = null
+    await loadDirectory()
+  }
+}
 const healthCells = computed(() => {
   const e = health.value?.events_24h || {}
   const total = Object.values(e).reduce((a, b) => a + b, 0)
@@ -365,9 +454,9 @@ const loadProvider = async () => {
   testResult.value = null
   syncSummary.value = null
   fillForm()
-  const [h, b] = await Promise.all([api.integrationHealth(provider.value), api.listBindings(provider.value)])
+  const [h, dir] = await Promise.all([api.integrationHealth(provider.value), api.bindingDirectory(provider.value)])
   health.value = h
-  bindings.value = b
+  directory.value = dir
   loaded.value = true
   await refreshReadiness()
 }
@@ -431,24 +520,12 @@ const runSync = async () => {
   error.value = ''
   try {
     syncSummary.value = await api.syncOrganization(provider.value)
-    bindings.value = await api.listBindings(provider.value)
+    await loadDirectory()
     health.value = await api.integrationHealth(provider.value)
   } catch (e: any) {
     error.value = getErrorMessage(e, '同步失败')
   } finally {
     syncing.value = false
-  }
-}
-
-const rebind = async (b: IntegrationBinding, value: string) => {
-  error.value = ''
-  try {
-    await api.changeBinding(provider.value, b.external_user_id, value ? Number(value) : null)
-    bindings.value = await api.listBindings(provider.value)
-    toastSuccess(value ? '已绑定' : '已解绑')
-  } catch (e: any) {
-    error.value = getErrorMessage(e, '绑定失败')
-    bindings.value = await api.listBindings(provider.value)
   }
 }
 
@@ -459,7 +536,7 @@ const manualBind = async () => {
     await api.changeBinding(provider.value, manualExternal.value.trim(), manualUser.value)
     manualExternal.value = ''
     manualUser.value = null
-    bindings.value = await api.listBindings(provider.value)
+    await loadDirectory()
     toastSuccess('已绑定')
   } catch (e: any) {
     error.value = getErrorMessage(e, '绑定失败')

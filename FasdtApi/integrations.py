@@ -119,6 +119,12 @@ def list_bindings(provider: str, db: Session = Depends(get_db), _: User = Depend
     return identity.list_bindings_sync(db, provider, apps.enterprise_id_sync(db))
 
 
+@admin_router.get("/{provider}/directory", summary="按部门的人员与外部账号对应表")
+def binding_directory(provider: str, db: Session = Depends(get_db), _: User = Depends(get_current_admin_user)):
+    apps.check_provider(provider)
+    return identity.directory_sync(db, provider, apps.enterprise_id_sync(db))
+
+
 @admin_router.put("/{provider}/bindings", summary="手动绑定 / 改绑 / 解绑")
 def change_binding(provider: str, data: BindingChange, db: Session = Depends(get_db),
                    admin: User = Depends(get_current_admin_user)):

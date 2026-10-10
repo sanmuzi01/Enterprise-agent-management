@@ -166,3 +166,55 @@ def sync_organization_sync(db, operator_id: int, organization_id: int, provider:
     audit_service.record(operator_id, "integration.organization_synced", resource_type="collaboration_app", resource_id=0,
                          detail={k: v for k, v in summary.items() if not isinstance(v, list)} | {"provider": provider})
     return summary
+
+
+def directory_sync(db, provider: str, organization_id: int) -> Dict[str, Any]:
+    """按部门列出本企业每个员工和外部账号的对应关系（一人一个外部账号），以及还没对应到员工的外部账号。
+    管理员一眼看出：谁绑了哪个飞书 / 钉钉账号、哪个部门还有谁没绑、哪些外部账号没人认领。"""
+    members = db.execute(text(
+        "SELECT u.id, u.name, t.id, t.name, t.department_code, r.name "
+        "FROM organization_members om JOIN `user` u ON u.id = om.user_id "
+        "LEFT JOIN team_members tm ON tm.user_id = u.id AND tm.status = 'active' "
+        "LEFT JOIN teams t ON t.id = tm.team_id AND t.status = 'active' AND t.organization_id = om.organization_id "
+        "LEFT JOIN enterprise_role r ON r.id = tm.role_id "
+        "WHERE om.organization_id = :o AND om.status = 'active' AND COALESCE(u.is_disabled, 0) = 0 "
+        "ORDER BY t.id IS NULL, t.name, u.name"), {"o": organization_id}).all()
+    rows = db.execute(select(ExternalUserBinding).where(ExternalUserBinding.provider == provider,
+                                                        ExternalUserBinding.organization_id == organization_id)
+                      .order_by(ExternalUserBinding.id)).scalars().all()
+    rank = {"active": 0, "disabled": 1}
+    by_user: Dict[int, ExternalUserBinding] = {}
+    for row in rows:
+        if row.local_user_id is None or row.status not in rank:
+            continue
+        current = by_user.get(row.local_user_id)
+        if current is None or rank[row.status] < rank[current.status]:
+            by_user[row.local_user_id] = row
+    member_ids = {m[0] for m in members}
+
+    def binding(row: Optional[ExternalUserBinding]) -> Optional[Dict[str, Any]]:
+        if row is None:
+            return None
+        return {"id": row.id, "external_user_id": row.external_user_id, "external_name": row.external_name,
+                "status": row.status, "synced": row.last_synced_at is not None,
+                "since": (row.last_synced_at or row.created_at).isoformat() + "Z" if (row.last_synced_at or row.created_at) else None}
+
+    groups: Dict[Any, Dict[str, Any]] = {}
+    for user_id, name, team_id, team_name, code, role in members:
+        key = team_id or 0
+        group = groups.setdefault(key, {"team_id": team_id, "name": team_name or "未分配部门", "department_code": code,
+                                        "members": [], "bound": 0, "total": 0})
+        b = binding(by_user.get(user_id))
+        group["members"].append({"user_id": user_id, "name": name, "role_name": role, "binding": b})
+        group["total"] += 1
+        group["bound"] += int(bool(b and b["status"] == "active"))
+    unlinked = [{"id": r.id, "external_user_id": r.external_user_id, "external_name": r.external_name, "status": r.status,
+                 "synced": r.last_synced_at is not None}
+                for r in rows if r.local_user_id is None or (r.local_user_id not in member_ids and r.status == "active")]
+    departments = list(groups.values())
+    total = sum(g["total"] for g in departments)
+    bound = sum(g["bound"] for g in departments)
+    disabled = sum(1 for g in departments for m in g["members"] if m["binding"] and m["binding"]["status"] == "disabled")
+    return {"departments": departments, "unlinked": unlinked,
+            "summary": {"members": total, "bound": bound, "disabled": disabled, "unbound": total - bound - disabled,
+                        "unlinked": len(unlinked)}}

@@ -182,6 +182,10 @@ def main():
     section("准备")
     if not check(requests.get(f"{SIM}/_sim/health", timeout=5).ok, "仿真器在运行"):
         return
+    # 脚本在本进程里也会直接调用平台代码：开放平台地址必须指向仿真器，否则会拿假凭证去连真实的飞书 / 钉钉
+    targets = [os.getenv(k, "") for k in ("FEISHU_BASE_URL", "DINGTALK_BASE_URL", "DINGTALK_OAPI_URL")]
+    if not check(all("platform-sim" in t for t in targets), "本进程的开放平台地址指向仿真器", ", ".join(targets)):
+        return
     r = requests.get(f"{API}/ready", timeout=10)
     check(r.status_code == 200, "经 nginx 访问平台后端", f"HTTP {r.status_code}")
     if db_one("SELECT COUNT(*) FROM collaboration_app")[0]:
@@ -202,8 +206,8 @@ def main():
                         "names": {"ou_emp": "孙销售", "ou_head": "林经理", "ou_newbie": "新同事", "staff_head": "林经理"},
                         "org": [{"open_id": "ou_emp", "name": "孙销售", "department": "od_sales"},
                                 {"open_id": "ou_head", "name": "林经理", "department": "od_sales"}],
-                        "chats": {"oc_sim_qm": {"name": "启明教育项目群", "owner_id": "ou_head"},
-                                  "oc_sim_other": {"name": "随便聊聊", "owner_id": "ou_emp"}}})
+                        "chats": {"oc_sim_qm": {"name": "启明教育项目群", "owner_id": "ou_head", "members": ["ou_head", "ou_emp", "ou_cust_li"]},
+                                  "oc_sim_other": {"name": "随便聊聊", "owner_id": "ou_emp", "members": ["ou_emp"]}}})
     try:
         admin = Person(admin_account["name"], admin_account["password"])
         emp, head = Person("demo_emp", DEMO_PASSWORD), Person("demo_head", DEMO_PASSWORD)
@@ -319,6 +323,7 @@ def scenarios(admin, emp, head, users, sales, feishu, dingtalk):
     time.sleep(3)
     _, reply = say("ou_head", "CRM记录状态", chat_type="group", chat_id="oc_sim_qm", at_bot=True)
     check("已记录 3 条" in reply, "群里查看状态：撤回的那条不算", reply[:70])
+    read_chat_checks(users)
     created = flush_groups()
     check(created == 1, "对话停下 30 分钟后由定时任务整理成一条群聊活动（这里直接触发一次）", f"新建 {created} 条")
     customers = emp.get("/enterprise/crm/customers", team_id=sales).json()
@@ -407,6 +412,29 @@ def scenarios(admin, emp, head, users, sales, feishu, dingtalk):
     calls = sim("/_sim/calls")["calls"]
     note("平台调用过的开放接口", "、".join(sorted({c.split("?")[0].replace("POST ", "").replace("GET ", "") for c in calls
                                                    if not c.split()[1].startswith("/robot/")}))[:150])
+
+
+def read_chat_checks(users):
+    """员工让助手读群聊记录：直接调用助手的 read_feishu_group_chat 工具（仿真用的离线演示模型不会自己决定调工具，
+    这里验证的是工具到飞书接口这一段：找群、核对群成员、取历史消息、撤回的不读、审计）。"""
+    from service.integrations import chat_context
+    from service.tools.feishu_chat import read_group_chat
+    emp, head = users["demo_emp"], users["demo_head"]
+    chat_context.forget(emp)
+    result = read_group_chat(emp, chat_name="启明教育项目群", hours=3)
+    text_ = result.get("transcript", "")
+    check(result.get("count", 0) >= 3 and "试用账号已经开好了" in text_ and "这句发错了" not in text_,
+          "员工私聊让助手读“启明教育项目群”：读到群里的消息，撤回的不读", result.get("error") or f"{result.get('count')} 条")
+    result = read_group_chat(head, chat_name="随便聊聊")
+    check("你不在" in (result.get("error") or ""), "读自己不在的群：被拒绝", result.get("error"))
+    chat_context.remember(emp, "feishu", "oc_sim_qm", "group")
+    result = read_group_chat(emp, chat_name="随便聊聊")
+    check("只能读当前这个群" in (result.get("error") or ""), "在 A 群里要求读 B 群：被拒绝（防止 B 群内容发到 A 群）", result.get("error"))
+    result = read_group_chat(emp)
+    check(result.get("chat_name") == "启明教育项目群", "在群里不说群名：读的是当前这个群")
+    chat_context.forget(emp)
+    audits = db_one("SELECT COUNT(*) FROM audit_event WHERE user_id=:u AND action='integration.chat_read'", u=emp)
+    note("每次读取都写审计", f"audit_event 里 {audits[0] if audits else '?'} 条（审计库若独立配置则在审计库里）")
 
 
 def cleanup(feishu, dingtalk, users, marks):

@@ -145,3 +145,32 @@ export async function inviteUnbound(provider: Provider): Promise<{ sent: number;
   const { data } = await request.post(`/admin/integrations/${provider}/invite-unbound`)
   return data
 }
+
+// ------------------------------------------------------------------ 按部门的人员对应表
+
+export interface DirectoryBinding {
+  id: number
+  external_user_id: string
+  external_name: string | null
+  status: 'active' | 'disabled' | 'unmatched'
+  synced: boolean
+  since?: string | null
+}
+
+export interface DirectoryMember {
+  user_id: number
+  name: string
+  role_name: string | null
+  binding: DirectoryBinding | null
+}
+
+export interface BindingDirectory {
+  departments: { team_id: number | null; name: string; department_code: string | null; members: DirectoryMember[]; bound: number; total: number }[]
+  unlinked: DirectoryBinding[]
+  summary: { members: number; bound: number; disabled: number; unbound: number; unlinked: number }
+}
+
+export async function bindingDirectory(provider: Provider): Promise<BindingDirectory> {
+  const { data } = await request.get(`/admin/integrations/${provider}/directory`)
+  return data
+}

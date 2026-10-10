@@ -45,6 +45,7 @@ STATE = {
     "chats": {},            # chat_id → {name, owner_id}
     "forwards": {},         # 合并转发 message_id → 子消息
     "sent": {},             # 平台推给员工的事件里的 message_id → {open_id, chat_id}（回复时知道发给谁）
+    "history": {},          # 群 chat_id → 群里的消息（“获取会话历史消息”用）
     "inbox": [],            # 平台发出的消息：{seq, provider, to, chat_id, kind, text, at}
     "calls": [],            # 平台调过的开放接口（路径），排查用
 }
@@ -126,6 +127,11 @@ def feishu_message_event(spec: dict) -> dict:
     create_ms = int((time.time() - 60 * float(spec.get("minutes_ago", 0))) * 1000)
     with LOCK:
         STATE["sent"][message_id] = {"open_id": spec["open_id"], "chat_id": chat_id, "chat_type": chat_type}
+        if chat_type == "group":
+            STATE["history"].setdefault(chat_id, []).append({
+                "message_id": message_id, "msg_type": msg_type, "create_time": str(create_ms), "chat_id": chat_id, "deleted": False,
+                "sender": {"id": spec["open_id"], "id_type": "open_id", "sender_type": "user", "tenant_key": "sim_tenant"},
+                "body": {"content": json.dumps(content, ensure_ascii=False)}, "mentions": mentions})
     return {"schema": "2.0",
             "header": {"event_id": spec.get("event_id") or uuid.uuid4().hex, "token": app["verification_token"],
                        "create_time": str(int(time.time() * 1000)), "event_type": "im.message.receive_v1",
@@ -270,6 +276,20 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 return self._send(200, {"code": 41050, "msg": "no user authority"})     # 外部联系人：查不到
             return self._send(200, {"code": 0, "data": {"user": {"open_id": open_id, "name": name}}})
+        if path == "/open-apis/im/v1/chats":
+            return self._send(200, {"code": 0, "data": {"items": [{"chat_id": cid, "name": c["name"]} for cid, c in STATE["chats"].items()],
+                                                        "has_more": False}})
+        if path.startswith("/open-apis/im/v1/chats/") and path.endswith("/members"):
+            chat = STATE["chats"].get(path.split("/")[-2])
+            if not chat:
+                return self._send(200, {"code": 232011, "msg": "chat not found"})
+            return self._send(200, {"code": 0, "data": {"items": [{"member_id": m, "member_id_type": "open_id"} for m in chat.get("members", [])],
+                                                        "has_more": False}})
+        if path == "/open-apis/im/v1/messages" and method == "GET":
+            start, end = int(query.get("start_time", 0)) * 1000, int(query.get("end_time", 2 ** 40)) * 1000
+            items = [m for m in STATE["history"].get(query.get("container_id"), []) if start <= int(m["create_time"]) <= end]
+            items.sort(key=lambda m: int(m["create_time"]), reverse=query.get("sort_type") == "ByCreateTimeDesc")
+            return self._send(200, {"code": 0, "data": {"items": items[:int(query.get("page_size", 20))], "has_more": False}})
         if path.startswith("/open-apis/im/v1/chats/"):
             chat = STATE["chats"].get(path.rsplit("/", 1)[-1])
             if not chat:
@@ -383,6 +403,11 @@ class Handler(BaseHTTPRequestHandler):
                                           "content": {"content": "Merged and Forwarded Message"}})
             return self._send(200, {**feishu_deliver(event), "message_id": message_id})
         if path == "/_sim/feishu/recall":
+            with LOCK:
+                for items in STATE["history"].values():
+                    for item in items:
+                        if item["message_id"] == body["message_id"]:
+                            item["deleted"] = True
             event = feishu_plain_event("im.message.recalled_v1", {"message_id": body["message_id"], "chat_id": body.get("chat_id"),
                                                                   "recall_time": str(int(time.time() * 1000)), "recall_type": "message_owner"})
             return self._send(200, feishu_deliver(event))

@@ -41,7 +41,7 @@ RISK_SNAPSHOT = {
     "get_team_pending_leave_requests": "read", "get_team_pending_purchase_requests": "read", "get_voucher_detail": "read", "get_voucher_monthly_summary": "read",
     "list_hr_cases": "read", "list_it_devices": "read", "list_it_queue": "read", "list_my_responsibilities": "read", "list_pending_acceptance": "read",
     "list_pending_verification": "read", "list_pending_vouchers": "read", "list_team_customers": "read", "outline_generator": "read", "precheck_hr_case": "read",
-    "raise_responsibility_objection": "write", "reject_expense_claim": "high_risk", "reject_leave_request": "high_risk", "reject_purchase_request": "high_risk",
+    "raise_responsibility_objection": "write", "read_feishu_group_chat": "read", "reject_expense_claim": "high_risk", "reject_leave_request": "high_risk", "reject_purchase_request": "high_risk",
     "report_responsibility_blocker": "write", "report_responsibility_progress": "write", "request_rework": "high_risk", "run_skill_script": "read",
     "search_it_solutions": "read", "submit_customer_followup": "high_risk", "submit_deliverable": "high_risk", "submit_expense_claim": "high_risk",
     "submit_leave_request": "high_risk", "submit_purchase_request": "high_risk", "unit_converter": "read", "verify_deliverable": "high_risk", "word_count": "read",

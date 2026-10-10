@@ -1,7 +1,7 @@
 # 仿真联调：没有真实的飞书 / 钉钉测试应用和公网 HTTPS 时，用开放平台仿真器把整条链路在容器里跑一遍。
 #
 # 用独立的项目名（-p agentsim）跑：容器和数据卷都和平时的 docker compose 分开，不碰你已有的数据和真实的飞书配置。
-# 两套用的主机端口一样（8011 / 8080 / 18090），先停掉平时那套（docker compose stop）。
+# 仿真环境不占主机端口（联调全在容器网络里进行），平时那套开着也能同时跑。
 #   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml up -d --build
 #   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml exec api python scripts/seed_enterprise_demo.py
 #   docker compose -p agentsim -f docker-compose.yml -f docker-compose.simulate.yml exec platform-sim python /sim/run_scenarios.py
@@ -13,7 +13,13 @@
 # 说明见 docs/real-env-simulation.md。
 
 services:
+  # 不占主机端口：平时那套用着 8011 / 8080 / 18090，两套可以同时开
+  enterprise-hub:
+    ports: !reset []
+  web:
+    ports: !reset []
   api:
+    ports: !reset []
     environment:
       FEISHU_BASE_URL: http://platform-sim:9100
       DINGTALK_BASE_URL: http://platform-sim:9100
@@ -42,6 +48,10 @@ services:
       SIM_PORT: "9100"
       SIM_SELF_URL: http://platform-sim:9100
       SIM_CALLBACK_BASE: http://web/api
+      # 联调脚本在这个容器里直接调用平台代码（例如助手读群聊的工具），开放平台地址也必须指向仿真器，绝不能连到真实的飞书 / 钉钉
+      FEISHU_BASE_URL: http://platform-sim:9100
+      DINGTALK_BASE_URL: http://platform-sim:9100
+      DINGTALK_OAPI_URL: http://platform-sim:9100
       # 联调脚本要读写平台数据库（建临时管理员、触发整理任务、结束时清理），和 api 用同一套连接配置
       APP_ENV: dev
       DB_HOST: db

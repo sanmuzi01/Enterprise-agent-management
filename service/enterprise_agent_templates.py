@@ -37,6 +37,8 @@ _ATTENDANCE_TOOLS = ["get_my_attendance_anomalies", "get_attendance_summary"]
 # 所有部门助手都带上，部门工作台顶部的“生成今日摘要”才能查到明细。
 _HEAD_BRIEF_TOOLS = ["list_pending_acceptance", "get_department_responsibility_risks", "get_responsibility_weekly_summary"]
 _RESPONSIBILITY_TOOLS = _RESPONSIBILITY_TOOLS + _HEAD_BRIEF_TOOLS
+# 员工要求时读取飞书群聊记录（只读机器人和提问人都在的群，见 service/tools/feishu_chat.py）：所有部门助手都带上
+_CHAT_TOOLS = ["read_feishu_group_chat"]
 _GENERAL_TOOLS = _GENERAL_TOOLS + _TICKET_TOOLS + _HR_CASE_TOOLS + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS
 
 TEMPLATES = {
@@ -132,6 +134,8 @@ TEMPLATES = {
 }
 for _template in TEMPLATES.values():
     _template.update(constraints=_CONSTRAINTS, output=_OUTPUT)
+    if _template["agent_type"] == "department":
+        _template["tools"] = _template["tools"] + [t for t in _CHAT_TOOLS if t not in _template["tools"]]
 
 # 部门业务类型 → 自动配置时使用的模板。
 DEPARTMENT_TEMPLATE_IDS = {"hr": "oa", "procurement": "procurement", "sales": "crm",
