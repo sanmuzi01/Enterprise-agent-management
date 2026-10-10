@@ -136,7 +136,7 @@
   `enterprise-business-hub` 的 35 个测试（当时的数字，现为 138 个），之前 Java 权限逻辑改坏了没有任何自动化能拦截。
 - 备份恢复：部署文档给出本地 MySQL `mysqldump` 导出 / 恢复命令与应用文件目录清单。
 - 数据库迁移：已加入 Alembic 迁移骨架、基线版本和迁移文档，当前处于兼容过渡期。
-- 部署基础：阿里云 ECS 上走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，
+- 部署方案（面向阿里云 ECS 设计，已做好上线准备，**尚未正式上线**，目前在本地 Docker 环境验证）：走 `docker-compose.prod.yml`（db / redis / chroma / api / worker 容器化，
   MySQL 为自建容器、备份需自己负责）；前端 `npm run build` 后由宿主机 Nginx + certbot 托管并反代 `/api`、
   `/health`、`/metrics`。原生方案（`deploy/systemd/*.service` 常驻 uvicorn + worker）保留为备选，
   `deploy/` 提供 nginx / prometheus / grafana 模板。根目录 `docker-compose.yml` 仅用于本地演示。

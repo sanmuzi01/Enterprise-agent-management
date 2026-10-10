@@ -413,7 +413,7 @@ docker run --rm -v pythonproject1_chroma_data:/data -v "$PWD/backups":/backup \
 | 知识库空间没有归属企业 | 注意 | 是（挂到企业下，不改划分和成员） |
 | 部门成员在企业里已停用或不存在 | 注意 | 否 |
 | 部门助手缺少模板里新增的能力 | 注意 | 否（在“组织架构”里点一键修复，原配置保留） |
-| 技能配置文件 / 助手专属技能记录对应的助手已不存在 | 提示 | 否（确认后归档） |
+| 提示词文件、技能配置文件、助手专属技能记录对应的助手已不存在 | 提示 | 否（确认后用 `scripts/archive_orphan_agent_files.py --apply` 移到 `backups/` 归档，附清单可恢复；git 跟踪的文件不动，库里没有助手时拒绝执行） |
 | 残留的自动化测试账号（`rt_` 开头） | 提示 | 否（`scripts/purge_test_users.py`） |
 
 有严重问题时退出码为 1。交付 / 升级后先跑一次；生产上每天跑一次：`deploy/systemd/agent-data-health.{service,timer}`（只读，不自动修；单元变成 failed 就是有严重问题）。

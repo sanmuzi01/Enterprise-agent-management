@@ -122,25 +122,58 @@ def check_spaces_without_enterprise(db) -> Optional[Finding]:
                     "划分给部门 / 全企业时会出问题。--fix 会把它们挂到企业下（只改归属，不改划分和成员）", fixable=True)
 
 
-def check_orphan_skill_configs(db) -> Optional[Finding]:
+def _project_root() -> str:
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def orphan_agent_files(db) -> Dict[str, List[str]]:
+    """按助手编号命名的磁盘文件里，对应助手已经不存在的那些（绝对路径）。
+    prompt：prompt/prompts/<id>.yaml（助手的提示词）；skill：skills/enterprise/agent_<id>.yml（企业助手的专业技能）。
+    以前删助手、跑测试都会留下这种文件，没有任何页面会列出它们。"""
+    from prompt import prompt_manager
     from service.skills import loader as skill_loader
-    folder = os.path.join(skill_loader.SKILLS_ROOT, "enterprise")
-    if not os.path.isdir(folder):
-        return None
-    ids = []
-    for name in os.listdir(folder):
-        m = re.fullmatch(r"agent_(\d+)\.yml", name)
-        if m:
-            ids.append(int(m.group(1)))
-    if not ids:
-        return None
-    existing = {r[0] for r in db.execute(text("SELECT id FROM agent WHERE id IN :ids").bindparams(
-        __import__("sqlalchemy").bindparam("ids", expanding=True)), {"ids": ids}).all()}
-    orphans = sorted(set(ids) - existing)
-    return _finding("orphan_skill_configs", "专业技能配置文件对应的智能体已经不存在", "info",
-                    [(i, f"skills/enterprise/agent_{i}.yml") for i in orphans],
-                    "不影响使用。确认这些智能体是被删除的（不是数据库还没恢复完）之后，可以把文件移走归档",
+    groups = {
+        "prompt": (str(prompt_manager.PROMPT_DIR), r"(\d+)\.yaml"),
+        "skill": (os.path.join(skill_loader.SKILLS_ROOT, "enterprise"), r"agent_(\d+)\.yml"),
+    }
+    found: Dict[str, Dict[int, str]] = {}
+    for key, (folder, pattern) in groups.items():
+        found[key] = {}
+        if os.path.isdir(folder):
+            for name in os.listdir(folder):
+                m = re.fullmatch(pattern, name)
+                if m:
+                    found[key][int(m.group(1))] = os.path.join(folder, name)
+    ids = sorted({i for files in found.values() for i in files})
+    existing = set()
+    for start in range(0, len(ids), 1000):
+        chunk = ids[start:start + 1000]
+        existing |= {r[0] for r in db.execute(text("SELECT id FROM agent WHERE id IN :ids").bindparams(
+            __import__("sqlalchemy").bindparam("ids", expanding=True)), {"ids": chunk}).all()}
+    return {key: [path for i, path in sorted(files.items()) if i not in existing] for key, files in found.items()}
+
+
+def _orphan_finding(code, title, paths) -> Optional[Finding]:
+    root = _project_root()
+
+    def shown(path):
+        try:
+            return os.path.relpath(path, root).replace("\\", "/")
+        except ValueError:   # Windows 上跨盘符（例如测试用的临时目录在 C 盘）
+            return path
+    rows = [(i, shown(p)) for i, p in enumerate(paths)]
+    return _finding(code, title, "info", rows,
+                    "不影响使用。确认这些助手是被删除的（不是数据库还没恢复完）之后，用 scripts/archive_orphan_agent_files.py --apply "
+                    "把它们移到 backups/ 下归档（不直接删，可以搬回来）",
                     fmt=lambda r: r[1])
+
+
+def check_orphan_skill_configs(db) -> Optional[Finding]:
+    return _orphan_finding("orphan_skill_configs", "专业技能配置文件对应的智能体已经不存在", orphan_agent_files(db)["skill"])
+
+
+def check_orphan_prompt_files(db) -> Optional[Finding]:
+    return _orphan_finding("orphan_prompt_files", "提示词文件对应的智能体已经不存在", orphan_agent_files(db)["prompt"])
 
 
 def check_orphan_private_skills(db) -> Optional[Finding]:
@@ -173,7 +206,7 @@ def check_test_accounts(db) -> Optional[Finding]:
 CHECKS: List[Callable] = [
     check_enterprise, check_users_not_in_enterprise, check_department_members_without_enterprise,
     check_published_agents_on_disabled_teams, check_department_agents_outdated, check_spaces_without_enterprise,
-    check_orphan_skill_configs, check_orphan_private_skills, check_public_skills_not_published, check_test_accounts,
+    check_orphan_skill_configs, check_orphan_prompt_files, check_orphan_private_skills, check_public_skills_not_published, check_test_accounts,
 ]
 
 

@@ -60,6 +60,7 @@ REQUIRED_FILES = [
     "service/enterprise_bootstrap.py",
     "scripts/test_fresh_db.py",
     "scripts/test_counts.py",
+    "scripts/archive_orphan_agent_files.py",
     "service/data_health.py",
     "scripts/data_health_check.py",
     "service/data_retention.py",
