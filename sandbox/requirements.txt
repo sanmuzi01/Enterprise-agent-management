@@ -33,7 +33,7 @@ defusedxml>=0.7
 #    和 NumPy 2 有已知不兼容，在能实机验证兼容之前不装，避免"标了可运行、实际一跑就报错"
 opencv-python-headless>=4.9
 imageio-ffmpeg>=0.4
-scipy>=1.11
+scipy>=1.18.1
 soundfile>=0.12
 pyloudnorm>=0.1
 matplotlib>=3.8
