@@ -34,6 +34,11 @@ const router = createRouter({
       component: () => import('../views/Settings.vue'),
     },
     {
+      path: '/department/productivity',
+      name: 'DepartmentProductivity',
+      component: () => import('../views/DepartmentProductivity.vue'),
+    },
+    {
       // 助手要执行的高风险操作（飞书 / 钉钉卡片里的“在网页中查看”也指向这里）
       path: '/confirmations',
       name: 'Confirmations',
@@ -55,6 +60,7 @@ const router = createRouter({
         { path: 'organization', name: 'AdminOrganization', component: () => import('../views/admin/AdminOrganization.vue') },
         { path: 'integrations', name: 'AdminIntegrations', component: () => import('../views/admin/AdminIntegrations.vue') },
         { path: 'expense-policies', name: 'AdminExpensePolicies', component: () => import('../views/admin/AdminExpensePolicies.vue') },
+        { path: 'productivity', name: 'AdminProductivity', component: () => import('../views/admin/AdminProductivity.vue') },
         { path: 'plans', name: 'AdminPlans', component: () => import('../views/admin/AdminPlans.vue') },
         { path: 'skills', name: 'AdminSkills', component: () => import('../views/SkillList.vue') },
         { path: 'issues', name: 'AdminIssues', component: () => import('../views/admin/AdminIssues.vue') },

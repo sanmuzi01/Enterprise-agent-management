@@ -170,6 +170,14 @@ async def run_kb_maintenance(db) -> Tuple[int, int]:
     return await sync_reminders(db, "it_kb_maintenance", "it_ticket", reminders)
 
 
+# ---------------- 提效事实整理 ----------------
+
+async def run_productivity_refresh(db) -> Tuple[int, int]:
+    """每天把各来源的原始记录整理进提效事实表（没人打开仪表盘也照常积累）。返回（整理的条数，0）。"""
+    from service import productivity_service
+    return await productivity_service.refresh(db, days=7, force=True), 0
+
+
 # ---------------- 报销缺发票 ----------------
 
 async def run_missing_invoices(db) -> Tuple[int, int]:
@@ -376,6 +384,8 @@ RULES: List[ReminderRule] = [
                  "销售：按规则扫描客户和商机风险（长期未跟进、报价无回复、临近成交未推进、金额下降、多次延期……），生成下一步建议"),
     ReminderRule("it_kb_maintenance", "知识文章待维护", "it_ticket", 1440, run_kb_maintenance,
                  "IT 部门负责人：自助解决率低（推荐 ≥5 次、解决率 <30%）或评价差的知识文章，需要更新"),
+    ReminderRule("productivity_refresh", "提效数据整理", "system", 1440, run_productivity_refresh,
+                 "后台：把 AI 整理、助手办理、发票识别、CRM 建议、IT 自助、助手运行整理成提效事实（不发提醒）"),
     ReminderRule("missing_invoice", "报销缺发票", "expense_invoice", 360, run_missing_invoices,
                  "员工：未完成的报销单中有费用缺发票号"),
     ReminderRule("pending_voucher", "记账凭证待核对", "voucher_pending", 120, run_pending_vouchers,

@@ -104,6 +104,7 @@
           <button v-if="selected.business_result?.id && selected.kind === 'responsibility'" type="button" data-testid="open-plan-result"
             class="ml-2 rounded bg-emerald-600 px-2.5 py-1 text-xs text-white hover:bg-emerald-700" @click="emit('open-result', selected.business_result!.id!)">去补全并发布 →</button>
         </div>
+        <SavedTimeFeedback v-if="selected.status === 'applied'" :key="selected.id" :source-key="`automation:${selected.id}`" />
         <div v-if="selected.status === 'applied' && followupItems.length" class="space-y-2">
           <h4 class="text-sm font-medium">我的后续待办（保存在本工作成果中）</h4>
           <label v-for="(task, i) in followupItems" :key="i" class="flex items-center gap-2 text-sm">
@@ -141,6 +142,7 @@ import { getTeamCustomers, type CustomerDto } from '../api/departmentCrm'
 import { getErrorMessage } from '../utils/request'
 import WorkflowForm from './WorkflowForm.vue'
 import AutomationBatchPanel from './AutomationBatchPanel.vue'
+import SavedTimeFeedback from './department/SavedTimeFeedback.vue'
 
 const props = defineProps<{ teamId: number; onlyKind?: string }>()
 // 同一页可能同时挂着两个面板（概览 + 责任协同），输入框 id 不能重复；概览里的保持原来的 id

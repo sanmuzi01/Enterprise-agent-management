@@ -20,6 +20,8 @@
         >
           <option v-for="d in deptStore.departments" :key="d.id" :value="d.id">{{ d.name }}</option>
         </select>
+        <RouterLink v-if="home?.identity.is_head || home?.identity.org_admin" to="/department/productivity" data-testid="dept-productivity-link"
+          class="rounded border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50">部门提效</RouterLink>
         <button
           @click="reload(true)"
           :disabled="loading"

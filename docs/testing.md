@@ -1,7 +1,7 @@
 # Testing
 
 <!-- test-counts:start -->
-**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2116** 条、前端 Vitest **126** 条、Java **145** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
+**测试数量**（2026-10-10 由 `scripts/test_counts.py --write` 统计，不要手改）：Python `unittest` **2124** 条、前端 Vitest **126** 条、Java **145** 条。通过 / 跳过情况随运行环境变化（有没有 MySQL、Redis），以 CI 最近一次结果为准。
 <!-- test-counts:end -->
 
 项目使用 Python `unittest`、前端 Vitest（含部门助手组件交互测试）、Java JUnit，数量以上面的统计块为准（其他文档只链接到这里，不各写一个数）。纯逻辑单测（TTL 缓存、重试熔断、

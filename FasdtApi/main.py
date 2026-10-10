@@ -53,6 +53,7 @@ from FasdtApi.approval_route import router as approval_router
 from FasdtApi.integrations import admin_router as integrations_admin_router, public_router as integrations_public_router
 from FasdtApi.crm_copilot import router as crm_copilot_router
 from FasdtApi.finance_it_extras import router as finance_it_extras_router
+from FasdtApi.productivity import router as productivity_router
 from models.async_db import async_engine
 from models.init_db import SessionLocal, engine, bootstrap_database, User
 from service.operation_log_middleware import OperationLogMiddleware
@@ -167,6 +168,7 @@ app.include_router(integrations_public_router)
 app.include_router(integrations_admin_router)
 app.include_router(crm_copilot_router)
 app.include_router(finance_it_extras_router)
+app.include_router(productivity_router)
 
 _error_logger = get_logger("app_error")
 

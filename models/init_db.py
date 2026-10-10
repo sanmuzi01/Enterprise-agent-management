@@ -1591,6 +1591,7 @@ class CrmActionSuggestion(Base):
     status = Column(String(20), nullable=False, default="suggested")   # suggested / created / ignored / snoozed
     remind_at = Column(DateTime, nullable=True)
     work_item_key = Column(String(120), nullable=True)
+    decision = Column(String(20), nullable=True)             # create / edit_create / ignore / snooze（统计“原样采纳”用）
     dedupe_key = Column(String(200), nullable=False)
     decided_by = Column(Integer, nullable=True)
     decided_at = Column(DateTime, nullable=True)
@@ -1731,6 +1732,45 @@ class ItArticleFeedback(Base):
     viewed_at = Column(DateTime, nullable=True)
     helpful = Column(Integer, nullable=True)
     rated_at = Column(DateTime, nullable=True)
+
+
+class ProductivityFact(Base):
+    """统一提效事实：每件经过 AI 的工作（整理成果、助手办理的业务、发票识别、CRM 建议、IT 自助）和每次 Agent 运行一条。
+    由 service/productivity_service.py 从各来源表整理而来，source_key 唯一（重复整理不重复计数）。
+    三种时间分开存：saved_minutes 是按基准估算的节省；agent_seconds + review_seconds 是实测用时；
+    reported_saved_minutes 是员工自己反馈的节省（整理时不会被覆盖）。"""
+    __tablename__ = "productivity_fact"
+    __table_args__ = (
+        UniqueConstraint("source_key", name="uq_productivity_fact_source"),
+        Index("idx_productivity_fact_team", "team_id", "started_at"),
+        Index("idx_productivity_fact_org", "organization_id", "started_at"),
+    )
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    source_key = Column(String(120), nullable=False)
+    organization_id = Column(Integer, nullable=True)
+    team_id = Column(Integer, nullable=True)
+    user_id = Column(Integer, nullable=True)
+    agent_id = Column(Integer, nullable=True)
+    workflow_type = Column(String(60), nullable=False)
+    business_object_type = Column(String(40), nullable=True)
+    business_object_id = Column(String(120), nullable=True)
+    source_type = Column(String(30), nullable=False)          # automation / tool_confirm / invoice / crm_suggestion / it_self_service / agent_run
+    baseline_minutes = Column(Float, nullable=False, default=0)
+    agent_seconds = Column(Float, nullable=False, default=0)
+    review_seconds = Column(Float, nullable=False, default=0)
+    saved_minutes = Column(Float, nullable=False, default=0)
+    reported_saved_minutes = Column(Float, nullable=True)
+    draft_created = Column(Integer, nullable=False, default=0)
+    draft_adopted = Column(Integer, nullable=False, default=0)
+    adopted_as_is = Column(Integer, nullable=False, default=0)
+    business_initiated = Column(Integer, nullable=False, default=0)
+    completed = Column(Integer, nullable=False, default=0)
+    failed = Column(Integer, nullable=False, default=0)
+    failure_code = Column(String(60), nullable=True)
+    fields_changed_json = Column(Text, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    updated_at = Column(DateTime, nullable=False, default=utcnow, onupdate=utcnow)
 
 
 class AgentPipeline(Base):

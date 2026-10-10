@@ -381,7 +381,7 @@ async def decide_suggestion(db, user_id: int, team_id: int, suggestion_id: int, 
     else:
         days = remind_days if remind_days and 1 <= remind_days <= 30 else 3
         row.status, row.remind_at = "snoozed", now + timedelta(days=days)
-    row.decided_by, row.decided_at = user_id, now
+    row.decided_by, row.decided_at, row.decision = user_id, now, decision
     await db.commit()
     await audit_service.record_async(user_id, f"crm.suggestion_{decision}", resource_type="crm_action_suggestion",
                                      resource_id=row.id, detail={"customer_id": row.customer_id})
