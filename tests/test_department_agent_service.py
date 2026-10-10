@@ -152,7 +152,7 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         path = skill_loader._get_yml_path(f"enterprise/agent_{agent_id}.yml")
         data = yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))
         data["tools"] = [t for t in data["tools"] if t["name"] != "get_department_responsibility_risks"]
-        data["tools"].append({"name": "get_my_it_tickets"})   # 管理员自己加过的工具，修复后要保留
+        data["tools"].append({"name": "list_it_queue"})   # 管理员自己加过的、模板里没有的工具，修复后要保留
         pathlib.Path(path).write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
         skill_loader.invalidate_skill_config(f"enterprise/agent_{agent_id}.yml")
 
@@ -171,7 +171,7 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         self.assertIn("get_department_responsibility_risks", synced[0].kwargs["detail"]["added_tools"])
         names = [t["name"] for t in yaml.safe_load(pathlib.Path(path).read_text(encoding="utf-8"))["tools"]]
         self.assertIn("get_department_responsibility_risks", names)
-        self.assertIn("get_my_it_tickets", names)
+        self.assertIn("list_it_queue", names)
         self.assertEqual(len(names), len(set(names)))
         template = get_template("finance")
         agent = run_db(lambda db: db.get(svc.Agent, agent_id))

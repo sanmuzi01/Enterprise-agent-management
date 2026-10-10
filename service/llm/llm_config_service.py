@@ -1,3 +1,4 @@
+from contextvars import ContextVar, Token
 from typing import Dict,Any,List,Optional
 from models.llm_config_dao import (
     create_config, delete_config, get_config_by_user_and_model, get_own_config_by_user_and_model,
@@ -187,7 +188,7 @@ async def async_delete_config_by_model(db, user, model_name: str) -> Dict[str, A
     return {"message": "删除成功", "model_name": model_name}
 
 
-def get_api_key(db,user_id:int,model_name:str)->str:
+def _own_api_key(db,user_id:int,model_name:str)->str:
     """获取解密后的 API Key（供 LLM Factory 调用）"""
     def load():
         config = get_config_by_user_and_model(db, user_id, model_name)
@@ -197,7 +198,7 @@ def get_api_key(db,user_id:int,model_name:str)->str:
     cipher = config_cache.get_or_set(("llm_api_key", user_id, model_name), load)
     return decrypt(cipher) if cipher else None
 
-def get_api_config(db, user_id: int, model_name: str):
+def _own_api_config(db, user_id: int, model_name: str):
     """获取当前用户某个模型的完整调用配置。"""
     def load():
         config = get_config_by_user_and_model(db, user_id, model_name)
@@ -211,7 +212,7 @@ def get_api_config(db, user_id: int, model_name: str):
     return _reveal(config_cache.get_or_set(("llm_api_config", user_id, model_name), load))
 
 
-async def async_get_api_config(db, user_id: int, model_name: str):
+async def _own_api_config_async(db, user_id: int, model_name: str):
     """异步获取当前用户某个模型的完整调用配置。"""
 
     model_name = normalize_model_name(model_name)
@@ -230,7 +231,7 @@ async def async_get_api_config(db, user_id: int, model_name: str):
     return _reveal(payload)
 
 
-async def async_get_api_key(db, user_id: int, model_name: str) -> str:
+async def _own_api_key_async(db, user_id: int, model_name: str) -> str:
     """`get_api_key` 的 async 版：命中缓存直接返回，否则走 async DAO 再回填。"""
     model_name = normalize_model_name(model_name)
     cached = config_cache.get(("llm_api_key", user_id, model_name))
@@ -450,3 +451,101 @@ async def probe_model(model_name: str, api_config: Dict[str, Any]) -> Dict[str, 
         }
 
 
+
+
+# ------------------------------------------------------------------ 企业助手用企业的模型连接
+
+_enterprise_owners: ContextVar[tuple] = ContextVar("llm_enterprise_credentials", default=())
+
+
+def is_enterprise_agent(agent) -> bool:
+    return getattr(agent, "agent_type", None) in ("central", "department")
+
+
+def use_agent_credentials(agent, enterprise_admins=()) -> Token:
+    """企业助手（中央 / 部门）运行期间：调用人自己没配这个模型时，用企业的模型连接——
+    依次找助手创建人、企业所有者 / 管理员（enterprise_admins，调用方按顺序查好），用第一个配了这个模型的人的连接。
+    企业助手是企业提供给员工用的，不能要求每个员工自带 Key；Key 只在服务端用，员工看不到。
+    员工自己配了同一个模型时仍优先用员工自己的。个人助手不受影响。用完必须 reset_agent_credentials(token)。"""
+    owners = ()
+    if is_enterprise_agent(agent):
+        owners = tuple(dict.fromkeys([agent.user_id, *enterprise_admins]))
+    return _enterprise_owners.set(owners)
+
+
+def reset_agent_credentials(token: Token) -> None:
+    try:
+        _enterprise_owners.reset(token)
+    except ValueError:          # 在别的上下文里收尾（例如流式响应被丢弃后回收）：这个上下文本来就要结束了
+        pass
+
+
+def _fallback_owners(user_id: int) -> tuple:
+    return tuple(o for o in _enterprise_owners.get() if o and o != user_id)
+
+
+def get_api_key(db, user_id: int, model_name: str) -> str:
+    """获取解密后的 API Key（供 LLM Factory 调用）。企业助手运行中、本人没配时用企业的连接（见 use_agent_credentials）。"""
+    key = _own_api_key(db, user_id, model_name)
+    for owner in (() if key else _fallback_owners(user_id)):
+        key = _own_api_key(db, owner, model_name)
+        if key:
+            break
+    return key
+
+
+def get_api_config(db, user_id: int, model_name: str):
+    """获取某个模型的完整调用配置：本人的；企业助手运行中、本人没配时用企业的连接。"""
+    config = _own_api_config(db, user_id, model_name)
+    for owner in (() if config else _fallback_owners(user_id)):
+        config = _own_api_config(db, owner, model_name)
+        if config:
+            break
+    return config
+
+
+async def async_get_api_config(db, user_id: int, model_name: str):
+    config = await _own_api_config_async(db, user_id, model_name)
+    for owner in (() if config else _fallback_owners(user_id)):
+        config = await _own_api_config_async(db, owner, model_name)
+        if config:
+            break
+    return config
+
+
+async def async_get_api_key(db, user_id: int, model_name: str) -> str:
+    key = await _own_api_key_async(db, user_id, model_name)
+    for owner in (() if key else _fallback_owners(user_id)):
+        key = await _own_api_key_async(db, owner, model_name)
+        if key:
+            break
+    return key
+
+
+async def enterprise_admin_ids_async(db, agent) -> list:
+    """企业助手所属企业的所有者和管理员（所有者在前）。平台只服务一家企业，助手没写企业时用这家企业。"""
+    if not is_enterprise_agent(agent):
+        return []
+    from sqlalchemy import text
+    org = getattr(agent, "organization_id", None) or (await db.execute(
+        text("SELECT id FROM organizations ORDER BY id LIMIT 1"))).scalar()
+    if org is None:
+        return []
+    rows = (await db.execute(text(
+        "SELECT om.user_id FROM organization_members om JOIN enterprise_role r ON r.id = om.role_id "
+        "WHERE om.organization_id = :o AND om.status = 'active' AND r.scope = 'organization' AND r.code IN ('owner', 'admin') "
+        "ORDER BY r.code = 'owner' DESC, om.user_id"), {"o": org})).all()
+    return [row[0] for row in rows] + await _platform_admin_ids_async(db)
+
+
+async def _platform_admin_ids_async(db) -> list:
+    """平台管理员（部署、配置系统的人；模型连接通常由他们统一配置），排在企业所有者 / 管理员之后。"""
+    import os
+    from sqlalchemy import select
+    from models.init_db import Role, User, association_table
+    from service.admin_service import ADMIN_ROLE_NAMES
+    names = [n.strip() for n in os.getenv("ADMIN_USER_NAMES", "admin").split(",") if n.strip()]
+    by_role = (await db.execute(select(association_table.c.user_id).join(Role, Role.id == association_table.c.role_id)
+                                .where(Role.role_name.in_(ADMIN_ROLE_NAMES)))).scalars().all()
+    by_name = (await db.execute(select(User.id).where(User.name.in_(names)))).scalars().all()
+    return sorted({*by_role, *by_name})

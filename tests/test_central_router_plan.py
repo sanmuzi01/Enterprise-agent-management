@@ -152,5 +152,88 @@ class RoutePlanTest(unittest.TestCase):
             self.assertEqual(client.get("/admin/org/handoffs?limit=5", headers=self.other["headers"]).status_code, 200)
 
 
+@unittest.skipUnless(_AVAILABLE, _WHY)
+class OwnDepartmentFallbackTest(unittest.TestCase):
+    """部门助手只对本部门成员开放。销售员工问报销 / 请假：财务、人事助手他用不了，但这是他自己的通用办公事务，
+    交给他本部门的销售助手办（模板里都带通用办公工具）；问采购、库存这类部门专属业务，照旧说明没有可用的助手。"""
+
+    @classmethod
+    def setUpClass(cls):
+        import uuid
+        from tests.test_enterprise_access import _add_org_member, _add_team_member, _create_org, _create_team
+        cls.db = SessionLocal()
+        cls.admin = rc.create_user("own-admin")
+        cls.seller = rc.create_user("own-seller")
+        cls.accountant = rc.create_user("own-acct")
+        cls.org = _create_org(cls.db, "own-org-" + uuid.uuid4().hex[:6], cls.admin["id"])
+        cls.sales = _create_team(cls.db, cls.org, "own-sales", cls.admin["id"])
+        cls.fin = _create_team(cls.db, cls.org, "own-fin", cls.admin["id"])
+        for user in (cls.seller, cls.accountant):
+            _add_org_member(cls.db, cls.org, user["id"], "member")
+        _add_team_member(cls.db, cls.sales, cls.seller["id"], "member")
+        _add_team_member(cls.db, cls.fin, cls.accountant["id"], "member")
+        cls.agents = {}
+
+        def make(key, **kw):
+            agent = Agent(user_id=cls.admin["id"], name=f"own-{key}", lifecycle_status="published", organization_id=cls.org, **kw)
+            cls.db.add(agent)
+            cls.db.commit()
+            cls.agents[key] = agent.id
+        make("central", agent_type="central", scope_type="organization")
+        make("sales", agent_type="department", department_code="sales", team_id=cls.sales, scope_type="department")
+        make("finance", agent_type="department", department_code="finance", team_id=cls.fin, scope_type="department")
+
+    @classmethod
+    def tearDownClass(cls):
+        ids = {"a": cls.seller["id"], "b": cls.accountant["id"]}
+        cls.db.execute(text("DELETE FROM agent_handoff WHERE user_id IN (:a, :b)"), ids)
+        cls.db.commit()
+        rc.cleanup()
+        cls.db.execute(text("DELETE FROM agent WHERE id IN :ids").bindparams(
+            __import__("sqlalchemy").bindparam("ids", expanding=True)), {"ids": list(cls.agents.values())})
+        cls.db.execute(text("DELETE FROM team_members WHERE team_id IN (:a, :b)"), {"a": cls.sales, "b": cls.fin})
+        cls.db.execute(text("DELETE FROM teams WHERE id IN (:a, :b)"), {"a": cls.sales, "b": cls.fin})
+        cls.db.execute(text("DELETE FROM organization_members WHERE organization_id=:o"), {"o": cls.org})
+        cls.db.execute(text("DELETE FROM organizations WHERE id=:o"), {"o": cls.org})
+        cls.db.commit()
+        cls.db.close()
+
+    def plan(self, user, message):
+        return run_db(lambda db: central_router.plan_route_async(db, user["id"], self.agents["central"], message, None))
+
+    def test_sales_staff_expense_goes_to_own_department_agent(self):
+        plan = self.plan(self.seller, "帮我报销 300 元打车费")
+        self.assertEqual((plan.reason, plan.department_code), ("own_department", "finance"))
+        self.assertEqual((plan.target_agent_id, plan.target_name), (self.agents["sales"], "own-sales"))
+        self.assertEqual(plan.public()["reason"], "own_department")
+
+    def test_sales_staff_leave_goes_to_own_department_agent(self):
+        plan = self.plan(self.seller, "我还有几天年假")
+        self.assertEqual((plan.reason, plan.department_code, plan.target_agent_id), ("own_department", "hr", self.agents["sales"]))
+
+    def test_department_specific_business_is_not_redirected(self):
+        plan = self.plan(self.seller, "这个供应商的库存够吗")
+        self.assertEqual((plan.reason, plan.target_agent_id), ("no_usable_agent", self.agents["central"]))
+
+    def test_finance_staff_still_go_to_finance_agent(self):
+        plan = self.plan(self.accountant, "帮我报销 300 元打车费")
+        self.assertEqual((plan.reason, plan.target_agent_id), ("routed", self.agents["finance"]))
+
+    def test_own_customer_questions_route_normally(self):
+        plan = self.plan(self.seller, "帮我跟进一下这个客户")
+        self.assertEqual((plan.reason, plan.target_agent_id), ("routed", self.agents["sales"]))
+
+
+class TemplateGeneralToolsTest(unittest.TestCase):
+    def test_every_department_template_can_do_own_office_affairs(self):
+        from service.enterprise_agent_templates import TEMPLATES
+        for template in TEMPLATES.values():
+            if template["agent_type"] != "department":
+                continue
+            for tool in ("create_leave_draft", "submit_expense_claim", "create_it_ticket", "read_feishu_group_chat"):
+                self.assertIn(tool, template["tools"], f"{template['id']} 缺 {tool}")
+            self.assertEqual(len(template["tools"]), len(set(template["tools"])), template["id"])
+
+
 if __name__ == "__main__":
     unittest.main()

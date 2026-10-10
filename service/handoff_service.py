@@ -7,7 +7,8 @@ from sqlalchemy.orm import aliased
 
 from models.init_db import Agent, AgentHandoff, User
 
-REASON_LABELS = {"routed": "已转交部门助手", "no_match": "未命中任何部门，中央助手自己回答",
+REASON_LABELS = {"routed": "已转交部门助手", "own_department": "通用办公事务，交给员工本部门助手办理",
+                 "no_match": "未命中任何部门，中央助手自己回答",
                  "no_usable_agent": "命中部门但你没有可用的部门助手，中央助手自己回答"}
 
 

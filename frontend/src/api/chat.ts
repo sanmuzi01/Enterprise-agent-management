@@ -37,7 +37,7 @@ export interface RagSavings {
 
 export interface RouteAlternative { agent_id: number; name: string; department_code: string; matched_keywords: string[] }
 export interface RouteInfo {
-  reason: 'routed' | 'no_match' | 'no_usable_agent'
+  reason: 'routed' | 'own_department' | 'no_match' | 'no_usable_agent'
   department_code: string | null
   target_agent_id: number
   target_name: string | null

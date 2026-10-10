@@ -452,7 +452,8 @@ def get_agent_debug(db, user, agent_id: int) -> Optional[Dict[str, Any]]:
             "memory_enabled": agent.memory_enabled,
         },
         "readiness": {
-            "model_configured": get_api_config(db, user.id, agent.model_name) is not None,
+            # 企业助手（中央 / 部门）用企业管理员配置的模型连接，员工不用自己配（见 llm_config_service.use_agent_credentials）
+            "model_configured": get_api_config(db, user.id, agent.model_name) is not None or _enterprise_model_ready(db, agent),
             "embedding_configured": embedding_configured,
             "rag_ready": agent.rag_enabled != 1 or (embedding_configured and len(done_docs) > 0),
             "skill_count": len(skill_config.get("skills", [])),
@@ -579,3 +580,22 @@ def dry_run_agent(db, user, agent_id: int, user_message: str, conversation_id: i
             "tool_count": len(debug["tool_names"]),
         },
     }
+
+
+def _enterprise_model_ready(db, agent) -> bool:
+    """企业助手：助手创建人、企业所有者 / 管理员、平台管理员里有人配了这个模型（运行时会用企业的连接，
+    规则同 llm_config_service.use_agent_credentials）。"""
+    if getattr(agent, "agent_type", None) not in ("central", "department"):
+        return False
+    from sqlalchemy import select, text
+    from models.init_db import Role, association_table
+    from service.admin_service import ADMIN_ROLE_NAMES
+    from service.llm.llm_config_service import get_api_config
+    org = getattr(agent, "organization_id", None) or db.execute(text("SELECT id FROM organizations ORDER BY id LIMIT 1")).scalar()
+    admins = [r[0] for r in db.execute(text(
+        "SELECT om.user_id FROM organization_members om JOIN enterprise_role r ON r.id = om.role_id "
+        "WHERE om.organization_id = :o AND om.status = 'active' AND r.scope = 'organization' AND r.code IN ('owner', 'admin')"),
+        {"o": org}).all()] if org else []
+    platform = db.execute(select(association_table.c.user_id).join(Role, Role.id == association_table.c.role_id)
+                          .where(Role.role_name.in_(ADMIN_ROLE_NAMES))).scalars().all()
+    return any(get_api_config(db, uid, agent.model_name) is not None for uid in [agent.user_id, *admins, *platform])

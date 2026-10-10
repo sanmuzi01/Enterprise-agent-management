@@ -50,7 +50,7 @@ class RoutePlan:
     """一次中央 Agent 路由的决定：转给谁、为什么、还有哪些部门也相关（供用户明确切换）。"""
     target_agent_id: int
     central_agent_id: Optional[int] = None
-    reason: str = "not_central"   # not_central / existing_conversation / no_match / routed / no_usable_agent
+    reason: str = "not_central"   # not_central / existing_conversation / no_match / routed / own_department / no_usable_agent
     department_code: Optional[str] = None
     target_name: Optional[str] = None
     matched_keywords: List[str] = field(default_factory=list)
@@ -59,7 +59,7 @@ class RoutePlan:
 
     @property
     def decided_by_central(self) -> bool:
-        return self.reason in ("routed", "no_match", "no_usable_agent")
+        return self.reason in ("routed", "own_department", "no_match", "no_usable_agent")
 
     def public(self) -> Optional[Dict[str, Any]]:
         """给前端看的转交说明；非中央 Agent 或已有会话时没有。"""
@@ -126,6 +126,11 @@ async def plan_route_async(db, user_id: int, agent_id: int, message: str,
         plan.target_name = primary["name"]
         logger.info(f"中央Agent[{agent_id}] 路由到部门Agent[{plan.target_agent_id}]"
                     f"（部门={plan.department_code}，备选 {len(plan.alternatives)} 个）")
+    elif plan.unavailable and (own := await _own_department_fallback_async(db, user_id, plan.unavailable)):
+        # 问题属于别的部门（比如销售员工问报销），但这是员工自己的通用办公事务：交给他本部门的助手办
+        entry, (plan.target_agent_id, plan.target_name) = own
+        plan.reason, plan.department_code, plan.matched_keywords = "own_department", entry["department_code"], entry["matched_keywords"]
+        logger.info(f"中央Agent[{agent_id}] 命中部门 {plan.department_code} 的通用办公事务，交给本部门Agent[{plan.target_agent_id}]")
     elif plan.unavailable:
         plan.reason = "no_usable_agent"
         plan.department_code = plan.unavailable[0]["department_code"]
@@ -156,6 +161,30 @@ async def record_handoff_async(db, user_id: int, plan: RoutePlan, message: str) 
     except Exception:  # noqa: BLE001
         await db.rollback()
         logger.warning("记录转交失败", exc_info=True)
+
+
+def _general_keywords(department_code: str) -> tuple:
+    from service.enterprise_agent_templates import TEMPLATES
+    return next((t.get("general_keywords", ()) for t in TEMPLATES.values()
+                 if t["agent_type"] == "department" and t.get("department_code") == department_code), ())
+
+
+async def _own_department_fallback_async(db, user_id: int, unavailable: List[Dict[str, Any]]):
+    """命中的部门员工用不了，但命中的是请假、报销、IT 工单这类通用办公事务（模板的 general_keywords）：
+    找员工本部门已发布、能用的部门助手（它带着通用办公工具）。返回 (命中项, (agent_id, 名称))，没有返回 None。
+    采购、客户这类部门专属业务不在此列，照旧由中央助手说明“你没有可用的助手”。"""
+    general = [u for u in unavailable if set(u["matched_keywords"]) & set(_general_keywords(u["department_code"]))]
+    if not general:
+        return None
+    from sqlalchemy import text
+    rows = (await db.execute(text(
+        "SELECT a.id, a.name, a.scope_type, a.team_id, a.organization_id FROM agent a "
+        "JOIN team_members tm ON tm.team_id = a.team_id AND tm.user_id = :u AND tm.status = 'active' "
+        "WHERE a.agent_type = 'department' AND a.lifecycle_status = 'published' ORDER BY a.id"), {"u": user_id})).all()
+    agent_id = await _pick_usable_async(db, user_id, rows)
+    if agent_id is None:
+        return None
+    return general[0], (agent_id, next(row[1] for row in rows if row[0] == agent_id))
 
 
 def _find_department_agent(db, user_id: int, department_code: str) -> Optional[int]:

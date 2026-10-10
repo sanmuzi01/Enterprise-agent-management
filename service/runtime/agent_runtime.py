@@ -340,7 +340,7 @@ def _execute_react_sync(user_id: int, agent_id: int, agent_model_name: str,
         sdb.close()
 
 
-async def run_with_history_async(
+async def _run_with_history_impl(
         db, user_id: int, agent_id: int, user_message: str,
         history: List[Dict[str, str]] = None,
         conversation_id: int = None,
@@ -475,7 +475,7 @@ async def run_with_history_async(
 # AsyncSession 版流式（阶段 3）：chat_service.chat_with_agent_stream_async → 这条
 # ============================================================================
 
-async def run_stream_with_history_async(
+async def _run_stream_with_history_impl(
         db, user_id: int, agent_id: int, user_message: str,
         history: List[Dict[str, str]] = None,
         conversation_id: int = None,
@@ -678,3 +678,43 @@ async def run_stream_with_history_async(
         await _finalize_run_async(db, run_id, "failed", error_msg=str(e), exc=e)
         yield make_error(message="服务暂时异常，请稍后重试", detail=str(e)[:300])
         return
+
+
+async def _agent_for_credentials(db, agent_id: int):
+    from models.agent_async_dao import get_agent_by_id_async
+    return await get_agent_by_id_async(db, agent_id)
+
+
+async def run_with_history_async(
+        db, user_id: int, agent_id: int, user_message: str,
+        history: List[Dict[str, str]] = None,
+        conversation_id: int = None,
+) -> Dict[str, Any]:
+    """非流式聊天执行。企业助手（中央 / 部门）运行期间，员工自己没配模型时用企业管理员配置的模型连接
+    （service/llm/llm_config_service.use_agent_credentials）；权限检查和其余逻辑见 _run_with_history_impl。"""
+    from service.llm import llm_config_service
+    agent = await _agent_for_credentials(db, agent_id)
+    token = llm_config_service.use_agent_credentials(agent, await llm_config_service.enterprise_admin_ids_async(db, agent))
+    try:
+        return await _run_with_history_impl(db, user_id, agent_id, user_message, history, conversation_id)
+    finally:
+        llm_config_service.reset_agent_credentials(token)
+
+
+async def run_stream_with_history_async(
+        db, user_id: int, agent_id: int, user_message: str,
+        history: List[Dict[str, str]] = None,
+        conversation_id: int = None,
+) -> AsyncGenerator[str, None]:
+    """流式聊天执行，模型连接规则同 run_with_history_async。"""
+    from service.llm import llm_config_service
+    agent = await _agent_for_credentials(db, agent_id)
+    token = llm_config_service.use_agent_credentials(agent, await llm_config_service.enterprise_admin_ids_async(db, agent))
+    inner = _run_stream_with_history_impl(db, user_id, agent_id, user_message, history, conversation_id)
+    try:
+        async for chunk in inner:
+            yield chunk
+    finally:
+        # 用户关掉流式响应时，内层也要立刻收尾（把运行标成已取消、停掉模型调用），不能等垃圾回收
+        await inner.aclose()
+        llm_config_service.reset_agent_credentials(token)

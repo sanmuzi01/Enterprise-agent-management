@@ -51,7 +51,9 @@ TEMPLATES = {
     },
     "oa": {
         "id": "oa", "name": "OA 人事助手", "agent_type": "department", "department_code": "hr",
-        "routing_keywords": ("请假", "入职", "制度", "考勤", "离职", "转正", "调岗", "人事"),
+        "routing_keywords": ("请假", "年假", "假期", "休假", "调休", "入职", "制度", "考勤", "离职", "转正", "调岗", "人事"),
+        # 员工自己的请假、考勤：任何部门的员工都能在本部门助手里办（通用办公工具），不必是人事部的人
+        "general_keywords": ("请假", "年假", "假期", "休假", "调休", "考勤"),
         "description": "请假余额、申请与审批；入职、转正、调岗、离职的预检、办理清单与进度。",
         "role": "你是专业 OA 人事助手，按企业制度协助员工办理请假，协助负责人审批，并协助人事人员办理入转调离。",
         "task": ("请假：先查假期余额，收集假期类型、起止日期和原因，再创建草稿，用户确认后提交；审批必须明确单号和决定。"
@@ -89,6 +91,7 @@ TEMPLATES = {
     "finance": {
         "id": "finance", "name": "财务报销与记账助手", "agent_type": "department", "department_code": "finance",
         "routing_keywords": ("预算", "报销", "发票", "付款", "费用", "凭证", "记账", "入账", "科目"),
+        "general_keywords": ("报销", "发票", "费用"),           # 员工自己的报销：本部门助手就能办
         "description": "报销预算、报销申请草稿、提交与审批；报销批准后的记账凭证草稿、科目建议、风险核对与月度汇总。",
         "role": "你是专业财务助手，协助员工核对报销预算、办理报销申请，协助负责人审批；也协助财务人员整理记账凭证草稿、解释科目依据与风险项。",
         "task": ("报销：先查部门报销预算，收集费用类别、金额、说明和发票号（缺发票号的逐条指出），再创建报销草稿；"
@@ -135,7 +138,15 @@ TEMPLATES = {
 for _template in TEMPLATES.values():
     _template.update(constraints=_CONSTRAINTS, output=_OUTPUT)
     if _template["agent_type"] == "department":
-        _template["tools"] = _template["tools"] + [t for t in _CHAT_TOOLS if t not in _template["tools"]]
+        # 每个部门助手都能办本部门员工自己的通用办公事务（请假、报销、IT 工单、入转调离任务、责任协同、考勤）——
+        # 部门助手只对本部门成员开放，销售员工要报销只能找销售助手；审批类工具仍由服务端按部门负责人权限把关。
+        extra = [t for t in _GENERAL_TOOLS + _CHAT_TOOLS if t not in _template["tools"]]
+        _template["tools"] = _template["tools"] + extra
+        if _template["department_code"] != "it":
+            _template.setdefault("general_keywords", ())
+for _template in TEMPLATES.values():
+    if _template.get("department_code") == "it":
+        _template["general_keywords"] = _template["routing_keywords"]   # IT 自助、提工单是所有员工的事
 
 # 部门业务类型 → 自动配置时使用的模板。
 DEPARTMENT_TEMPLATE_IDS = {"hr": "oa", "procurement": "procurement", "sales": "crm",

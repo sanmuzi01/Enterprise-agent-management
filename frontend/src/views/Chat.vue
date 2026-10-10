@@ -270,6 +270,9 @@
             <p v-if="evt.reason === 'routed'">
               已转交给「{{ evt.target_name }}」处理<span v-if="evt.matched_keywords?.length">（命中：{{ evt.matched_keywords.join('、') }}）</span>。
             </p>
+            <p v-else-if="evt.reason === 'own_department'">
+              这是你自己的{{ departmentLabel(evt.department_code) }}事务（命中：{{ evt.matched_keywords?.join('、') }}），已交给你本部门的「{{ evt.target_name }}」办理。
+            </p>
             <p v-else-if="evt.reason === 'no_usable_agent'">
               问题涉及「{{ departmentLabel(evt.department_code) }}」，但你所在的部门没有已发布的{{ departmentLabel(evt.department_code) }}助手，由中央助手直接回答；可联系企业管理员配置并发布。
             </p>
