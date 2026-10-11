@@ -144,9 +144,10 @@ function leaveCard(r: Raw): BusinessCard {
 function purchaseCard(r: Raw): BusinessCard {
   const lines: Raw[] = Array.isArray(r.lines) ? r.lines : []
   const fields: CardField[] = [
-    { label: '物品', value: lines.map((l) => `${l.productName || l.sku} × ${l.quantity}`).join('、') || '—' },
+    { label: '物品', value: lines.map((l) => `${l.productName || l.sku}${l.nonCatalog ? '（目录外）' : ''} × ${l.quantity}`).join('、') || '—' },
     { label: '金额', value: money(r.totalAmount) },
   ]
+  if (r.reason) fields.push({ label: '用途', value: String(r.reason) })
   if (r.purchaseOrder?.supplierName) fields.push({ label: '供应商', value: String(r.purchaseOrder.supplierName) })
   if (r.decisionNote) fields.push({ label: '审批意见', value: String(r.decisionNote) })
   return {

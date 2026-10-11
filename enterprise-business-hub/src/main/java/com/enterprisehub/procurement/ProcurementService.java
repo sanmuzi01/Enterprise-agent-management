@@ -66,29 +66,51 @@ public class ProcurementService {
         return BudgetDto.from(budget);
     }
 
+    /**
+     * 建采购草稿。每条明细二选一：目录内物品按 SKU 取目录单价；目录外物品（目录里没有的东西）
+     * 用名称 + 申请人给的预估单价登记，审批人能看到这是目录外物品——不能因为目录里没有就办不了。
+     */
     @Transactional
     public PurchaseRequestDto createDraft(long requesterUserId, long teamId, CreatePurchaseDraftRequest body,
                                            String traceId) {
         List<Product> products = new ArrayList<>();
         BigDecimal totalAmount = BigDecimal.ZERO;
+        int nonCatalogCount = 0;
         for (CreatePurchaseDraftRequest.LineItem item : body.lines()) {
-            Product product = productRepository.findBySku(item.sku())
-                    .orElseThrow(() -> badRequest("未知产品: " + item.sku()));
-            products.add(product);
-            totalAmount = totalAmount.add(product.getUnitPrice().multiply(BigDecimal.valueOf(item.quantity())));
+            if (item.catalogItem()) {
+                Product product = productRepository.findBySku(item.sku().trim())
+                        .orElseThrow(() -> badRequest("未知产品: " + item.sku()
+                                + "（产品目录里没有这个 SKU；目录外的物品请填写物品名称和预估单价）"));
+                products.add(product);
+                totalAmount = totalAmount.add(product.getUnitPrice().multiply(BigDecimal.valueOf(item.quantity())));
+            } else {
+                if (item.itemName() == null || item.itemName().isBlank()) {
+                    throw badRequest("每条明细要么填产品目录里的 SKU，要么填目录外物品的名称和预估单价");
+                }
+                if (item.estimatedUnitPrice() == null || item.estimatedUnitPrice().signum() <= 0) {
+                    throw badRequest("目录外物品「" + item.itemName().trim() + "」需要填写预估单价");
+                }
+                products.add(null);
+                nonCatalogCount++;
+                totalAmount = totalAmount.add(item.estimatedUnitPrice().multiply(BigDecimal.valueOf(item.quantity())));
+            }
         }
 
-        PurchaseRequest request = new PurchaseRequest(requesterUserId, teamId, totalAmount);
+        String reason = body.reason() == null || body.reason().isBlank() ? null : body.reason().trim();
+        PurchaseRequest request = new PurchaseRequest(requesterUserId, teamId, totalAmount, reason);
         requestRepository.save(request);
         for (int i = 0; i < body.lines().size(); i++) {
             CreatePurchaseDraftRequest.LineItem item = body.lines().get(i);
             Product product = products.get(i);
-            lineRepository.save(new PurchaseRequestLine(request.getId(), product.getId(), item.quantity(),
-                    product.getUnitPrice()));
+            lineRepository.save(product != null
+                    ? new PurchaseRequestLine(request.getId(), product.getId(), item.quantity(), product.getUnitPrice())
+                    : PurchaseRequestLine.nonCatalog(request.getId(), item.itemName().trim(), item.quantity(),
+                            item.estimatedUnitPrice()));
         }
 
         auditService.record(requesterUserId, "procurement.draft_created", "purchase_request", request.getId(),
-                "{\"lineCount\":" + body.lines().size() + ",\"totalAmount\":" + totalAmount + "}", traceId);
+                "{\"lineCount\":" + body.lines().size() + ",\"nonCatalogCount\":" + nonCatalogCount
+                        + ",\"totalAmount\":" + totalAmount + "}", traceId);
         return toDto(request);
     }
 
@@ -168,6 +190,7 @@ public class ProcurementService {
 
     private void createPurchaseOrder(PurchaseRequest request) {
         String supplierCode = lineRepository.findByPurchaseRequestId(request.getId()).stream()
+                .filter(line -> !line.isNonCatalog())              // 目录外物品没有登记供应商
                 .map(line -> productRepository.findById(line.getProductId()).orElse(null))
                 .filter(Objects::nonNull)
                 .map(Product::getSupplierCode)
@@ -184,10 +207,14 @@ public class ProcurementService {
     private PurchaseRequestDto toDto(PurchaseRequest request) {
         List<PurchaseRequestDto.LineDto> lines = lineRepository.findByPurchaseRequestId(request.getId()).stream()
                 .map(line -> {
+                    if (line.isNonCatalog()) {
+                        return new PurchaseRequestDto.LineDto(null, line.getItemName(), line.getQuantity(),
+                                line.getUnitPrice(), true);
+                    }
                     Product product = productRepository.findById(line.getProductId()).orElse(null);
                     String sku = product != null ? product.getSku() : "?";
                     String name = product != null ? product.getName() : "?";
-                    return new PurchaseRequestDto.LineDto(sku, name, line.getQuantity(), line.getUnitPrice());
+                    return new PurchaseRequestDto.LineDto(sku, name, line.getQuantity(), line.getUnitPrice(), false);
                 })
                 .toList();
 
@@ -199,7 +226,8 @@ public class ProcurementService {
                 request.getId(), request.getRequesterUserId(), request.getTeamId(),
                 request.getStatus().name(), request.getTotalAmount(), lines,
                 request.getApproverUserId(), request.getDecisionNote(),
-                request.getCreatedAt(), request.getSubmittedAt(), request.getDecidedAt(), orderDto
+                request.getCreatedAt(), request.getSubmittedAt(), request.getDecidedAt(), orderDto,
+                request.getReason()
         );
     }
 

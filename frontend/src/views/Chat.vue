@@ -693,7 +693,7 @@ const stepIcon = (s: any) => {
   if (t.includes('retrieve') || s.thought?.includes('检索') || s.thought?.includes('RAG')) {
     return { icon: BookOpen, text: 'text-amber-600', border: 'border-amber-300', tag: 'bg-amber-50 text-amber-700' }
   }
-  if (t.includes('permission')) {
+  if (t.includes('permission') || t === 'guard') {
     return { icon: AlertTriangle, text: 'text-red-600', border: 'border-red-300', tag: 'bg-red-50 text-red-700' }
   }
   // Tool 调用
@@ -707,6 +707,7 @@ const stepLabel = (s: any) => {
   const t = String(s.step_type || '').toLowerCase()
   if (t.includes('retrieve')) return '知识库检索'
   if (t.includes('permission')) return '权限拒绝'
+  if (t === 'guard') return '防编造核对'
   if (t.includes('tool')) return '工具执行'
   if (s.tool_name) return '工具：' + toolDisplayName(s.tool_name)
   return 'LLM 推理'

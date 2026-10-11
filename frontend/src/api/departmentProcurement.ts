@@ -1,10 +1,11 @@
 import request from '../utils/request'
 
 export interface PurchaseLineDto {
-  sku: string
+  sku: string | null          // 目录外物品没有 SKU
   productName: string
   quantity: number
-  unitPrice: number
+  unitPrice: number           // 目录外物品是申请人给的预估单价
+  nonCatalog?: boolean
 }
 
 export interface PurchaseOrderDto {
@@ -27,6 +28,7 @@ export interface PurchaseRequestDto {
   submittedAt: string | null
   decidedAt: string | null
   purchaseOrder: PurchaseOrderDto | null
+  reason?: string | null      // 采购用途
 }
 
 export async function getMyPurchaseRequests(): Promise<PurchaseRequestDto[]> {

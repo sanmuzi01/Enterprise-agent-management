@@ -16,9 +16,11 @@ public record PurchaseRequestDto(
         Instant createdAt,
         Instant submittedAt,
         Instant decidedAt,
-        PurchaseOrderDto purchaseOrder
+        PurchaseOrderDto purchaseOrder,
+        String reason
 ) {
-    public record LineDto(String sku, String productName, int quantity, BigDecimal unitPrice) {
+    /** 目录外物品 sku 为空、nonCatalog=true，unitPrice 是申请人给的预估单价。 */
+    public record LineDto(String sku, String productName, int quantity, BigDecimal unitPrice, boolean nonCatalog) {
     }
 
     public record PurchaseOrderDto(String supplierCode, String supplierName, String status) {

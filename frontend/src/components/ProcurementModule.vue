@@ -44,6 +44,7 @@
             {{ lineSummary(r.lines) }} · 合计 ¥{{ r.totalAmount.toFixed(2) }}
           </p>
           <p class="mt-0.5 text-xs text-slate-400">
+            <span v-if="r.reason">用途：{{ r.reason }} </span>
             <span v-if="r.decisionNote">处理意见：{{ r.decisionNote }}</span>
             <span v-if="r.purchaseOrder">· 供应商：{{ r.purchaseOrder.supplierName || r.purchaseOrder.supplierCode }}</span>
           </p>
@@ -72,7 +73,7 @@
       <li v-for="r in pendingRequests" :key="r.id" class="flex items-center justify-between px-4 py-3">
         <div>
           <p class="text-sm text-slate-900">{{ lineSummary(r.lines) }} · 合计 ¥{{ r.totalAmount.toFixed(2) }}</p>
-          <p class="mt-0.5 text-xs text-slate-400">申请人 #{{ r.requesterUserId }}</p>
+          <p class="mt-0.5 text-xs text-slate-400">申请人 #{{ r.requesterUserId }}<span v-if="r.reason"> · 用途：{{ r.reason }}</span></p>
         </div>
         <div class="flex gap-1.5">
           <button
@@ -113,7 +114,7 @@ const draftForm = reactive({
 })
 
 const lineSummary = (lines: PurchaseLineDto[]) =>
-  lines.map((l) => `${l.productName || l.sku} ×${l.quantity}`).join('、') || '无明细'
+  lines.map((l) => `${l.productName || l.sku}${l.nonCatalog ? '（目录外）' : ''} ×${l.quantity}`).join('、') || '无明细'
 
 async function loadMyRequests() {
   try {

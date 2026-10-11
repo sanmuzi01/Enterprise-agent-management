@@ -83,13 +83,18 @@ class ListInventoryTool(BaseTool):
         return "list_inventory"
 
     def get_description(self) -> str:
-        return ("列出全部产品的库存（不需要 SKU）；low_stock_only=true 只看低于安全库存的，并给出建议采购量和预计金额。"
-                "用户要“采购方案 / 采购计划 / 该补什么货”时先调用它，不要让用户报 SKU。")
+        return ("列出产品目录里的产品和库存（不需要 SKU）。low_stock_only=true 只看低于安全库存的，并给出建议采购量和预计金额；"
+                "keyword 按名称或 SKU 在整个目录里查找（例如 keyword=显卡）。"
+                "用户要“采购方案 / 该补什么货”时用 low_stock_only；用户说要买某样东西时用 keyword 先在目录里找，"
+                "找不到就是目录外物品。不要让用户报 SKU。")
 
     def get_parameters(self) -> dict:
         return {
             "type": "object",
-            "properties": {"low_stock_only": {"type": "boolean", "description": "只看低于安全库存的产品，默认 true"}},
+            "properties": {
+                "low_stock_only": {"type": "boolean", "description": "只看低于安全库存的产品，默认 true；传 keyword 时忽略"},
+                "keyword": {"type": "string", "description": "按产品名称或 SKU 查找，例如“显卡”“5070”"},
+            },
         }
 
     def execute(self, **kwargs) -> str:
@@ -97,7 +102,8 @@ class ListInventoryTool(BaseTool):
             user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
-        low_only = kwargs.get("low_stock_only", True) is not False
+        keyword = str(kwargs.get("keyword") or "").strip()
+        low_only = not keyword and kwargs.get("low_stock_only", True) is not False
         try:
             products = hub.call(
                 "GET", "/procurement/products" + ("?lowStockOnly=true" if low_only else ""), user_id, auth["team_id"],
@@ -106,12 +112,27 @@ class ListInventoryTool(BaseTool):
             ) or []
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
+        if keyword:
+            products = _match_products(products, keyword)
         items = [restock_suggestion(p) if p.get("belowSafetyStock") else p for p in products]
         low = [p for p in items if p.get("belowSafetyStock")]
-        return json.dumps({"products": items, "low_stock_count": len(low),
-                           "suggested_total_amount": round(sum(p.get("estimatedAmount", 0) for p in low), 2),
-                           "note": "建议采购量 = 安全库存 × 2 − 现有库存，只是参考；结合预算余额和用途调整后再起草采购申请。"},
-                          ensure_ascii=False)
+        result = {"products": items, "low_stock_count": len(low),
+                  "suggested_total_amount": round(sum(p.get("estimatedAmount", 0) for p in low), 2),
+                  "note": "建议采购量 = 安全库存 × 2 − 现有库存，只是参考；结合预算余额和用途调整后再起草采购申请。"}
+        if keyword:
+            result["keyword"] = keyword
+            if not items:
+                result["note"] = (f"产品目录里没有找到“{keyword}”。这是目录外物品：可以按物品名称 + 预估单价起草采购申请"
+                                  "（create_purchase_draft 的 item_name / estimated_unit_price）；预估单价必须由用户提供，不能自己估。")
+        return json.dumps(result, ensure_ascii=False)
+
+
+def _match_products(products: list, keyword: str) -> list:
+    """按名称或 SKU 模糊匹配（不区分大小写；“5070 显卡”这种多个词要全部命中）。"""
+    words = [w for w in keyword.lower().replace("，", " ").replace(",", " ").split() if w]
+    def text(p):
+        return f"{p.get('sku') or ''} {p.get('name') or ''}".lower()
+    return [p for p in products if all(w in text(p) for w in words)]
 
 
 @ToolRegistry.register
@@ -174,7 +195,11 @@ class CreatePurchaseDraftTool(BaseTool):
         return "create_purchase_draft"
 
     def get_description(self) -> str:
-        return "创建一条采购申请草稿（还没提交），可以包含多个产品明细。"
+        return ("创建一条采购申请草稿（还没提交），可以包含多个明细。lines 每一项二选一："
+                "目录里有的物品写 {\"sku\": \"产品编号\", \"quantity\": 数量}；"
+                "目录里没有的物品写 {\"item_name\": \"物品名称\", \"estimated_unit_price\": 预估单价, \"quantity\": 数量}，"
+                "预估单价必须是用户给的，不能自己估。reason 写采购用途（给审批人看）。"
+                "建好后返回的 id 就是采购单号；用户要提交的话，接着调用 submit_purchase_request 生成提交确认。")
 
     def get_parameters(self) -> dict:
         return {
@@ -182,16 +207,20 @@ class CreatePurchaseDraftTool(BaseTool):
             "properties": {
                 "lines": {
                     "type": "array",
-                    "description": "采购明细列表",
+                    "description": ("采购明细列表。目录内：{\"sku\", \"quantity\"}；"
+                                    "目录外：{\"item_name\", \"estimated_unit_price\", \"quantity\"}"),
                     "items": {
                         "type": "object",
                         "properties": {
-                            "sku": {"type": "string", "description": "产品编号"},
+                            "sku": {"type": "string", "description": "产品编号（目录内物品）"},
+                            "item_name": {"type": "string", "description": "物品名称（目录外物品）"},
+                            "estimated_unit_price": {"type": "number", "description": "预估单价（目录外物品，由用户提供）"},
                             "quantity": {"type": "integer", "description": "采购数量"},
                         },
-                        "required": ["sku", "quantity"],
+                        "required": ["quantity"],
                     },
                 },
+                "reason": {"type": "string", "description": "采购用途 / 原因，例如“新员工配电脑”"},
             },
             "required": ["lines"],
         }
@@ -201,17 +230,61 @@ class CreatePurchaseDraftTool(BaseTool):
             user_id, auth = _require_user_and_auth(self._ctx)
         except ValueError as e:
             return json.dumps({"error": str(e)}, ensure_ascii=False)
-        lines = kwargs.get("lines") or []
+        try:
+            lines = _normalize_lines(kwargs.get("lines") or [])
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        body = {"lines": lines}
+        reason = str(kwargs.get("reason") or "").strip()
+        if reason:
+            body["reason"] = reason[:500]
         try:
             result = hub.call(
                 "POST", "/procurement/requests", user_id, auth["team_id"], ["procurement.write"],
                 "create_purchase_draft",
                 is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
-                json_body={"lines": lines}, idempotency_key=str(uuid.uuid4()),
+                json_body=body, idempotency_key=str(uuid.uuid4()),
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
+        if isinstance(result, dict) and result.get("id"):
+            result = {**result, "next_step": (
+                f"草稿已建好，采购单号 #{result['id']}，还没有提交。用户要提交的话，接着调用 "
+                f"submit_purchase_request(request_id={result['id']})，界面上会出现确认卡片，用户点确认后才真正提交。")}
         return json.dumps(result, ensure_ascii=False)
+
+
+def _normalize_lines(lines: list) -> list:
+    """模型给的明细 → 业务中心的请求体。目录内用 sku；目录外用 itemName + estimatedUnitPrice。
+    这里只整理格式、挡掉明显缺项；SKU 是否存在、金额和预算由业务中心判断。"""
+    if not isinstance(lines, list) or not lines:
+        raise ValueError("采购明细不能为空")
+    normalized = []
+    for raw in lines:
+        if not isinstance(raw, dict):
+            raise ValueError("每条采购明细都要有物品和数量")
+        try:
+            quantity = int(raw.get("quantity"))
+        except (TypeError, ValueError):
+            raise ValueError("采购数量必须是正整数") from None
+        if quantity <= 0:
+            raise ValueError("采购数量必须是正整数")
+        sku = str(raw.get("sku") or "").strip()
+        if sku:
+            normalized.append({"sku": sku, "quantity": quantity})
+            continue
+        name = str(raw.get("item_name") or raw.get("itemName") or "").strip()
+        price = raw.get("estimated_unit_price", raw.get("estimatedUnitPrice"))
+        if not name:
+            raise ValueError("每条明细要么填产品目录里的 sku，要么填目录外物品的 item_name 和 estimated_unit_price")
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            price = 0
+        if price <= 0:
+            raise ValueError(f"目录外物品「{name}」需要用户提供预估单价（estimated_unit_price），请先问用户，不要自己估")
+        normalized.append({"itemName": name[:200], "estimatedUnitPrice": round(price, 2), "quantity": quantity})
+    return normalized
 
 
 @ToolRegistry.register

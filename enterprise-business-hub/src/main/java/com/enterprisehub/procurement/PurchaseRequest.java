@@ -49,15 +49,28 @@ public class PurchaseRequest {
     @Column(name = "decided_at")
     private Instant decidedAt;
 
+    /** 采购用途 / 原因（可选），给审批人看。 */
+    @Column(name = "reason", length = 500)
+    private String reason;
+
     protected PurchaseRequest() {
     }
 
     public PurchaseRequest(long requesterUserId, long teamId, BigDecimal totalAmount) {
+        this(requesterUserId, teamId, totalAmount, null);
+    }
+
+    public PurchaseRequest(long requesterUserId, long teamId, BigDecimal totalAmount, String reason) {
         this.requesterUserId = requesterUserId;
         this.teamId = teamId;
         this.totalAmount = totalAmount;
+        this.reason = reason;
         this.status = PurchaseStatus.DRAFT;
         this.createdAt = Instant.now();
+    }
+
+    public String getReason() {
+        return reason;
     }
 
     public void submit() {

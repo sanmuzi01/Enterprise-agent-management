@@ -114,6 +114,49 @@ class ProcurementToolsTest(unittest.TestCase):
         ))
         self.assertEqual(kwargs["json_body"], {"lines": lines})
         self.assertEqual(json.loads(result)["status"], "DRAFT")
+        self.assertIn("submit_purchase_request(request_id=1)", json.loads(result)["next_step"])
+
+    def test_list_inventory_keyword_searches_whole_catalog(self, _auth_mock):
+        products = [{"sku": "GPU-4060", "name": "RTX 4060 显卡", "unitPrice": 2399, "onHandQty": 2, "safetyStockQty": 1,
+                     "belowSafetyStock": False},
+                    {"sku": "PAPER-A4", "name": "A4 纸", "unitPrice": 25, "onHandQty": 3, "safetyStockQty": 10,
+                     "belowSafetyStock": True}]
+        with patch("service.tools.procurement.hub.call", return_value=products) as mock_call:
+            tool = ListInventoryTool()
+            tool.set_context(_ctx())
+            found = json.loads(tool.execute(keyword="显卡"))
+            missing = json.loads(tool.execute(keyword="5070 显卡"))
+        self.assertEqual(mock_call.call_args.args[1], "/procurement/products")      # 找东西要查整个目录，不只看缺货的
+        self.assertEqual([p["sku"] for p in found["products"]], ["GPU-4060"])
+        self.assertEqual(missing["products"], [])
+        self.assertIn("目录外物品", missing["note"])
+        self.assertIn("必须由用户提供", missing["note"])
+
+    def test_create_draft_with_non_catalog_item_and_reason(self, _auth_mock):
+        lines = [{"item_name": "RTX 5070 显卡", "estimated_unit_price": "4999", "quantity": 10},
+                 {"sku": " PAPER-A4 ", "quantity": 2}]
+        with patch("service.tools.procurement.hub.call", return_value={"id": 8, "status": "DRAFT"}) as mock_call:
+            tool = CreatePurchaseDraftTool()
+            tool.set_context(_ctx())
+            tool.execute(lines=lines, reason="新员工配电脑")
+        self.assertEqual(mock_call.call_args.kwargs["json_body"], {
+            "lines": [{"itemName": "RTX 5070 显卡", "estimatedUnitPrice": 4999.0, "quantity": 10},
+                      {"sku": "PAPER-A4", "quantity": 2}],
+            "reason": "新员工配电脑"})
+
+    def test_create_draft_non_catalog_without_price_asks_user_instead_of_calling_hub(self, _auth_mock):
+        for lines in ([{"item_name": "RTX 5070 显卡", "quantity": 10}],
+                      [{"item_name": "RTX 5070 显卡", "estimated_unit_price": 0, "quantity": 10}],
+                      [{"quantity": 1}],
+                      [{"sku": "A", "quantity": 0}],
+                      []):
+            with self.subTest(lines=lines), patch("service.tools.procurement.hub.call") as mock_call:
+                tool = CreatePurchaseDraftTool()
+                tool.set_context(_ctx())
+                result = json.loads(tool.execute(lines=lines))
+                self.assertIn("error", result)
+                mock_call.assert_not_called()
+        self.assertIn("预估单价", json.loads(tool.execute(lines=[{"item_name": "显卡", "quantity": 1}]))["error"])
 
     def test_submit_uses_write_scope(self, _auth_mock):
         with patch("service.tools.procurement.hub.call", return_value={"status": "SUBMITTED"}) as mock_call:

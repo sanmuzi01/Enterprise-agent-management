@@ -256,6 +256,17 @@ def _plan_react_steps(step_no_ref: Dict[str, int], step_info: Dict[str, Any],
             tool_result=_short_text(step_info.get("tool_result"), 2000),
         ))
         step_no_ref["value"] += 1
+    elif step_type == "guard":
+        # 防编造核对（service/runtime/action_guard.py）：回答声称已办理却没有调用办理类工具
+        planned.append(dict(
+            step_no=step_no_ref["value"],
+            step_type="guard",
+            thought=_short_text(step_info.get("content"), 500),
+            tool_name="action_guard",
+            tool_args="",
+            tool_result="",
+        ))
+        step_no_ref["value"] += 1
     return planned
 
 

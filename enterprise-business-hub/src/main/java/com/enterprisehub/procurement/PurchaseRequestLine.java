@@ -24,8 +24,12 @@ public class PurchaseRequestLine {
     @Column(name = "purchase_request_id", nullable = false)
     private long purchaseRequestId;
 
-    @Column(name = "product_id", nullable = false)
-    private long productId;
+    /** 目录内物品指向 product；目录外物品为空，用 itemName 记名称、unitPrice 记申请人给的预估单价。 */
+    @Column(name = "product_id")
+    private Long productId;
+
+    @Column(name = "item_name", length = 200)
+    private String itemName;
 
     @Column(name = "quantity", nullable = false)
     private int quantity;
@@ -43,6 +47,17 @@ public class PurchaseRequestLine {
         this.unitPrice = unitPrice;
     }
 
+    /** 目录外物品：没有 product，只有名称和预估单价。 */
+    public static PurchaseRequestLine nonCatalog(long purchaseRequestId, String itemName, int quantity,
+                                                BigDecimal estimatedUnitPrice) {
+        PurchaseRequestLine line = new PurchaseRequestLine();
+        line.purchaseRequestId = purchaseRequestId;
+        line.itemName = itemName;
+        line.quantity = quantity;
+        line.unitPrice = estimatedUnitPrice;
+        return line;
+    }
+
     public Long getId() {
         return id;
     }
@@ -51,8 +66,16 @@ public class PurchaseRequestLine {
         return purchaseRequestId;
     }
 
-    public long getProductId() {
+    public Long getProductId() {
         return productId;
+    }
+
+    public String getItemName() {
+        return itemName;
+    }
+
+    public boolean isNonCatalog() {
+        return productId == null;
     }
 
     public int getQuantity() {

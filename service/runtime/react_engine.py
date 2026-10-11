@@ -34,6 +34,7 @@ from langgraph.prebuilt import ToolNode#提供的工具执行节点
 from langgraph.config import get_stream_writer
 from utils.logger_handler import get_logger
 from service.runtime.sse_events import make_thinking, make_tool_call, make_tool_result, make_answer, make_answer_delta
+from service.runtime import action_guard
 from service.llm.usage import extract_usage
 
 logger = get_logger("react_engine")
@@ -70,6 +71,11 @@ class ReActEngine:
         self.cancel_event = threading.Event()
         self._usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self._usage_calls = 0
+        # 防编造（service/runtime/action_guard.py）：只对绑了办理类工具（write / high_risk）的助手生效
+        self._guard_enabled = any(action_guard.is_action_tool(getattr(t, "name", "")) for t in (tools or []))
+        self._action_done = False      # 这一次运行里有没有办理类工具真的办成（成功或已生成待确认单）
+        self._guard_retries = 0
+        self._guard_retry_pending = False
         #工具绑定llm
         if tools:
             self.llm_with_tools = llm.bind_tools(tools)
@@ -92,6 +98,7 @@ class ReActEngine:
             workflow.add_conditional_edges(
                 "agent",self._should_continue,{
                     "continue": "tools",
+                    "retry": "agent",      # 回答声称已办理却没办：让模型重来一次
                     "end": END,
                 },)
             # tools 执行完回到 agent 继续思考
@@ -110,6 +117,11 @@ class ReActEngine:
     def _run_tools(self, state):
         self._check_cancelled()
         result = self.tool_node.invoke(state)
+        tool_messages = result.get("messages", []) if isinstance(result, dict) else []
+        for msg in tool_messages:
+            if (isinstance(msg, ToolMessage) and action_guard.is_action_tool(getattr(msg, "name", "") or "")
+                    and action_guard.tool_result_outcome(msg.content) in ("ok", "pending")):
+                self._action_done = True
         # requires_context=True 的工具（比如 outline_generator）会自己调一次 LLM；
         # 这次运行的总用量必须把它算进去，不然「Token 用量」display 永远只统计主循环。
         if self._ctx is not None and hasattr(self._ctx, "drain_usage"):
@@ -134,6 +146,9 @@ class ReActEngine:
         self._streaming = streaming
         self._usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self._usage_calls = 0
+        self._action_done = False
+        self._guard_retries = 0
+        self._guard_retry_pending = False
         if self._ctx is not None and hasattr(self._ctx, "drain_usage"):
             self._ctx.drain_usage()  # 清掉上一次运行可能残留的用量记录
 
@@ -186,11 +201,40 @@ class ReActEngine:
         }
         if self.step_callback:
             self.step_callback(step_info)
+        if not tool_calls:
+            guarded = self._guard_final_answer(response)
+            if guarded is not None:
+                return guarded
         #返回新消息
         return {"messages": [response], "steps": [step_info]}
 
+    def _guard_final_answer(self, response):
+        """最终回答说“已办理”，这一轮却没有办理类工具办成：第一次让模型重来，第二次在回答末尾附上核对提示。
+        返回 None 表示放行。"""
+        content = response.content if isinstance(response.content, str) else ""
+        if not self._guard_enabled or self._action_done or not action_guard.claims_action(content):
+            return None
+        if self._guard_retries < 1:
+            self._guard_retries += 1
+            self._guard_retry_pending = True
+            logger.warning("[ReAct] 回答声称已办理但本轮没有执行任何办理类工具，要求模型重新办理")
+            guard_step = {"step_type": "guard", "content": "回答声称已办理但没有调用办理类工具，已要求重新办理"}
+            if self.step_callback:
+                self.step_callback(guard_step)
+            return {"messages": [response, HumanMessage(content=action_guard.GUARD_RETRY_PROMPT)],
+                    "steps": [guard_step]}
+        logger.warning("[ReAct] 重试后回答仍声称已办理但没有执行办理类工具，附上系统核对提示")
+        guard_step = {"step_type": "guard", "content": "重试后仍声称已办理但没有调用办理类工具，已在回答后附上核对提示"}
+        if self.step_callback:
+            self.step_callback(guard_step)
+        flagged = AIMessage(content=content + action_guard.GUARD_WARNING)
+        return {"messages": [flagged], "steps": [guard_step]}
+
     def _should_continue(self, state: AgentState) -> str:
         # 条件判断，是否调用工具
+        if self._guard_retry_pending:
+            self._guard_retry_pending = False
+            return "retry"
         last_message = state["messages"][-1]
         # 查询次数，防止死循环
         if hasattr(last_message, "tool_calls") and last_message.tool_calls:
@@ -335,7 +379,10 @@ class ReActEngine:
                 # ---- 节点: agent（LLM 思考完成） ----
                 if node_name =="agent":
                     msgs = node_output.get("messages",[])
-                    if msgs:
+                    if msgs and isinstance(msgs[-1], HumanMessage):
+                        # 防编造重试：刚才流出去的“已办理”是假的，清空页面上的回答，等模型重新办理
+                        yield make_answer("")
+                    elif msgs:
                         last_ai = msgs[-1]  # AIMessage
                         content = getattr(last_ai, "content", "") or ""
                         tool_calls = getattr(last_ai, "tool_calls", None) or []

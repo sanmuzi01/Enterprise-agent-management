@@ -196,6 +196,63 @@ class ProcurementControllerIntegrationTest {
     }
 
     @Test
+    void nonCatalogItem_canBeDraftedSubmittedAndApproved_withReasonVisibleToApprover() {
+        // 目录里没有的东西（例如新型号显卡）：按名称 + 预估单价登记，和目录内物品混在一张单里也行
+        String requestsPath = "/procurement/requests";
+        String draftBodyJson = writeJson(Map.of(
+                "reason", "新员工配电脑",
+                "lines", List.of(
+                        Map.of("itemName", "RTX 5070 显卡", "estimatedUnitPrice", 200, "quantity", 2),
+                        Map.of("sku", sku, "quantity", 1))));
+        HttpHeaders writeHeaders = signedHeaders(HttpMethod.POST, requestsPath, draftBodyJson, userId,
+                List.of("procurement.write"), "create_purchase_draft");
+        writeHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<Map> draft = rest.exchange(url(requestsPath), HttpMethod.POST,
+                new HttpEntity<>(draftBodyJson, writeHeaders), Map.class);
+        assertThat(draft.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) draft.getBody().get("totalAmount")).doubleValue()).isEqualTo(500.00); // 2*200 + 1*100
+        assertThat(draft.getBody().get("reason")).isEqualTo("新员工配电脑");
+        List<Map<String, Object>> lines = (List<Map<String, Object>>) draft.getBody().get("lines");
+        Map<String, Object> gpu = lines.stream().filter(l -> Boolean.TRUE.equals(l.get("nonCatalog"))).findFirst().orElseThrow();
+        assertThat(gpu.get("productName")).isEqualTo("RTX 5070 显卡");
+        assertThat(gpu.get("sku")).isNull();
+        long requestId = ((Number) draft.getBody().get("id")).longValue();
+
+        String submitPath = "/procurement/requests/" + requestId + "/submit";
+        HttpHeaders submitHeaders = signedHeaders(HttpMethod.POST, submitPath, null, userId,
+                List.of("procurement.write"), "submit_purchase_request");
+        submitHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        assertThat(rest.exchange(url(submitPath), HttpMethod.POST, new HttpEntity<>(submitHeaders), Map.class)
+                .getBody().get("status")).isEqualTo("SUBMITTED");
+
+        String approvePath = "/procurement/requests/" + requestId + "/approve";
+        String approveBodyJson = writeJson(Map.of("note", "同意"));
+        HttpHeaders approveHeaders = signedHeaders(HttpMethod.POST, approvePath, approveBodyJson, approverId,
+                teamId, List.of("procurement.approve"), "approve_purchase_request", false, true);
+        approveHeaders.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<Map> approved = rest.exchange(url(approvePath), HttpMethod.POST,
+                new HttpEntity<>(approveBodyJson, approveHeaders), Map.class);
+        assertThat(approved.getBody().get("status")).isEqualTo("APPROVED");
+        assertThat(jdbc.queryForObject("SELECT remaining_amount FROM department_budget WHERE team_id = ?",
+                java.math.BigDecimal.class, teamId)).isEqualByComparingTo("500.00");
+    }
+
+    @Test
+    void nonCatalogItem_withoutEstimatedPrice_isRejectedWithClearMessage() {
+        String requestsPath = "/procurement/requests";
+        String body = writeJson(Map.of("lines", List.of(Map.of("itemName", "RTX 5070 显卡", "quantity", 2))));
+        HttpHeaders headers = signedHeaders(HttpMethod.POST, requestsPath, body, userId,
+                List.of("procurement.write"), "create_purchase_draft");
+        headers.set("Idempotency-Key", UUID.randomUUID().toString());
+        ResponseEntity<String> resp = rest.exchange(url(requestsPath), HttpMethod.POST,
+                new HttpEntity<>(body, headers), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(resp.getBody()).contains("需要填写预估单价");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM purchase_request WHERE requester_user_id = ?",
+                Integer.class, userId)).isZero();
+    }
+
+    @Test
     void missingScope_returns403() {
         String path = "/procurement/products/" + sku;
         ResponseEntity<String> resp = rest.exchange(url(path), HttpMethod.GET,
