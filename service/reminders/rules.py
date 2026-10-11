@@ -4,6 +4,7 @@
 调用 Java 业务系统时，用"本来就有权看到这些数据的人"的身份签名（部门负责人看本部门待审批、
 部门成员看本部门客户、员工看自己的报销单），权限标志如实从数据库计算，不做任何提权。
 """
+from types import SimpleNamespace
 from datetime import timedelta
 from typing import List, Tuple
 
@@ -39,7 +40,13 @@ async def _pending_for_team(db, team, approver_id):
                          ("expense", fin.list_team_pending_expense_claims_async),
                          ("ticket", it.list_team_pending_async),
                          ("hr", hr.team_pending_approval_async)):
-        results.extend((kind, item) for item in await loader(db, approver_id, team.id))
+        try:
+            items = await loader(db, approver_id, team.id)
+        except PermissionDenied:
+            # 这个部门不开放这类业务（例如人事部没有采购）：跳过这一类，不能让整条规则失败——
+            # 以前这里一抛错，所有部门的请假、报销、采购审批都收不到超时提醒
+            continue
+        results.extend((kind, item) for item in items)
     return results
 
 
@@ -354,7 +361,9 @@ async def run_weekly_digest(db) -> Tuple[int, int]:
     now, sent = utcnow(), 0
     week = (now + timedelta(hours=8)).strftime("%G-W%V")
     since = now - timedelta(days=7)
-    for team in await active_teams(db):
+    # 先取出编号和名字：同一周再跑时摘要已发过，notify 撞去重会回滚，回滚让会话里已加载的部门对象过期，
+    # 再读属性就懒加载（异步里 MissingGreenlet）——以前这条规则每周第一次之后就一直失败
+    for team in [SimpleNamespace(id=t.id, name=t.name) for t in await active_teams(db)]:
         rows = (await db.execute(select(AutomationWork.kind, AutomationWork.status, func.count()).where(
             AutomationWork.team_id == team.id, AutomationWork.created_at >= since
         ).group_by(AutomationWork.kind, AutomationWork.status))).all()

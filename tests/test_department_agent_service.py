@@ -222,6 +222,18 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         self.assertEqual(synced[0].kwargs["detail"]["fields"], ["task"])
         self.assertIn("收集 SKU", synced[0].kwargs["detail"]["before"]["task"])          # 原说明可以找回
 
+    def test_missing_prompt_file_is_recreated_by_repair(self):
+        """提示词文件不在了（例如演示数据脚本以前把它写进了测试用的临时目录）：一键修复按模板重建。"""
+        from prompt import prompt_manager
+        from service.enterprise_agent_templates import get_template
+        team, status = self.new_team("it")
+        agent_id = status["agent"]["id"]
+        (prompt_manager.PROMPT_DIR / f"{agent_id}.yaml").unlink()
+        self.assertEqual(run_db(lambda db: svc.agent_status(db, team))["state"], "needs_repair")
+        fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
+        self.assertEqual(fixed["state"], "pending_publish")
+        self.assertEqual(prompt_manager.read_prompt_file(agent_id)["task"], get_template("it")["task"])
+
     def test_central_router_picks_department_agent_of_users_own_team(self):
         from service.runtime.central_router import _find_department_agent_async
         team_a, _ = self.new_team("sales")

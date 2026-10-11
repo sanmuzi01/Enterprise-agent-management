@@ -160,9 +160,13 @@ async def repair(db, team_id: int, operator_id: int) -> Dict[str, Any]:
             )
     changed = prompt_differences(primary, template)
     if changed:
-        from prompt.prompt_manager import read_prompt_file
+        from prompt.prompt_manager import create_prompt_file, read_prompt_file
         from service import audit_service
-        before = read_prompt_file(primary.id) or {}
+        before = read_prompt_file(primary.id)
+        if before is None:
+            # 提示词文件不在了（例如被测试脚本写进了临时目录）：按模板重建，更新说明的接口只能改已存在的文件
+            create_prompt_file(primary.id, *(template.get(f, "") for f in PROMPT_FIELDS))
+            before = {}
         await agent_admin_service.update_managed_agent(
             db, primary.id, operator_id, **{f: template[f] for f in changed})
         await audit_service.record_async(

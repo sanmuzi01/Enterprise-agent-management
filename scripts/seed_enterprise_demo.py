@@ -31,6 +31,11 @@ if is_production():
 os.environ.setdefault("OFFLINE_DEMO_MODEL", "1")
 
 from tests import _route_client as rc  # noqa: E402  先导入：设置非生产环境变量
+from prompt import prompt_manager as _prompt_manager  # noqa: E402
+
+# 测试辅助模块为了不污染真实数据，把助手提示词目录换成了临时目录（进程结束就删）。演示数据要的是真实的助手：
+# 换回真实目录，否则这里建的部门助手、中央助手全都没有提示词（角色、任务、约束都丢了）。
+_prompt_manager.PROMPT_DIR = pathlib.Path(_prompt_manager.__file__).resolve().parent / "prompts"
 
 from dotenv import load_dotenv  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402

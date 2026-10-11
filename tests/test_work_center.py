@@ -358,6 +358,41 @@ class WorkCenterTest(unittest.TestCase):
         titles = [n["title"] for n in self.notifications(self.member)]
         self.assertEqual(titles, ["待办即将到期：回电话"])
 
+    def test_approval_waiting_skips_business_a_department_does_not_have(self):
+        """人事部没有采购业务：查采购待审批会被拒绝。只能跳过这一类，不能让整条规则失败（以前所有部门都收不到超时提醒）。"""
+        from service.exceptions import PermissionDenied
+        now = utcnow()
+        leave = [{"id": 511, "applicantUserId": self.member["id"], "leaveTypeCode": "annual", "startDate": "2026-12-01",
+                  "endDate": "2026-12-01", "days": 1, "submittedAt": iso(now - timedelta(hours=30))}]
+        empty = AsyncMock(return_value=[])
+        with self.scoped(),                 patch("service.department_workspace_service.list_team_pending_leave_requests_async",
+                      AsyncMock(side_effect=lambda db, uid, team_id: leave if team_id == self.team else [])),                 patch("service.procurement_workspace_service.list_team_pending_purchase_requests_async",
+                      AsyncMock(side_effect=PermissionDenied("「采购业务」仅对采购部门开放，当前部门（人事）不能使用"))),                 patch("service.finance_workspace_service.list_team_pending_expense_claims_async", empty),                 patch("service.it_service.list_team_pending_async", empty),                 patch("service.hr_service.team_pending_approval_async", empty):
+            created, _ = run_db(rules.run_approval_waiting)
+        self.assertEqual(created, 1)
+        self.assertIn("请假单 #511", next(i for i in self.items(self.admin) if "511" in i["title"])["title"])
+
+    def test_weekly_digest_survives_commits_across_teams(self):
+        """同一周第二次运行：摘要已发过，notify 撞去重会回滚事务，回滚会让会话里已加载的部门对象全部过期，
+        再读下一个部门的属性就懒加载（异步里 MissingGreenlet）——线上这条规则因此每周第一次之后一直失败。"""
+        second = _create_team(self.db, self.org, "wc-team-2", self.other["id"])
+        _add_org_member(self.db, self.org, self.other["id"], "member")
+        _add_team_member(self.db, second, self.other["id"], "admin")
+        original = rules.active_teams
+
+        async def same_session(db, code=None):
+            return [t for t in await original(db) if t.id in (self.team, second)]
+        try:
+            with patch.object(rules, "active_teams", side_effect=same_session):
+                run_db(rules.run_weekly_digest)
+                run_db(rules.run_weekly_digest)          # 第二次：撞去重、回滚
+            digests = [n for n in self.notifications(self.other) if n["category"] == "digest"]
+            self.assertEqual(len(digests), 1)
+        finally:
+            self.db.execute(text("DELETE FROM team_members WHERE team_id = :t"), {"t": second})
+            self.db.execute(text("DELETE FROM teams WHERE id = :t"), {"t": second})
+            self.db.commit()
+
     def test_weekly_digest_once_per_week_for_team_admins(self):
         with self.scoped():
             run_db(rules.run_weekly_digest)
