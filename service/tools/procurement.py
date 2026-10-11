@@ -66,6 +66,54 @@ class GetInventoryStatusTool(BaseTool):
         return json.dumps(result, ensure_ascii=False)
 
 
+def restock_suggestion(product: dict) -> dict:
+    """低于安全库存的产品：建议补到安全库存的 2 倍（留出一个补货周期的余量），附预计金额。只是建议，最终由人定。"""
+    on_hand, safety = int(product.get("onHandQty") or 0), int(product.get("safetyStockQty") or 0)
+    quantity = max(safety * 2 - on_hand, 0)
+    price = float(product.get("unitPrice") or 0)
+    return {**product, "suggestedQty": quantity, "estimatedAmount": round(quantity * price, 2)}
+
+
+@ToolRegistry.register
+class ListInventoryTool(BaseTool):
+    requires_context = True
+    risk_level = "read"
+
+    def get_name(self) -> str:
+        return "list_inventory"
+
+    def get_description(self) -> str:
+        return ("列出全部产品的库存（不需要 SKU）；low_stock_only=true 只看低于安全库存的，并给出建议采购量和预计金额。"
+                "用户要“采购方案 / 采购计划 / 该补什么货”时先调用它，不要让用户报 SKU。")
+
+    def get_parameters(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {"low_stock_only": {"type": "boolean", "description": "只看低于安全库存的产品，默认 true"}},
+        }
+
+    def execute(self, **kwargs) -> str:
+        try:
+            user_id, auth = _require_user_and_auth(self._ctx)
+        except ValueError as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+        low_only = kwargs.get("low_stock_only", True) is not False
+        try:
+            products = hub.call(
+                "GET", "/procurement/products" + ("?lowStockOnly=true" if low_only else ""), user_id, auth["team_id"],
+                ["procurement.read"], "list_inventory",
+                is_org_admin=auth["is_org_admin"], is_team_admin=auth["is_team_admin"],
+            ) or []
+        except hub.EnterpriseHubError as exc:
+            return _error_json(exc)
+        items = [restock_suggestion(p) if p.get("belowSafetyStock") else p for p in products]
+        low = [p for p in items if p.get("belowSafetyStock")]
+        return json.dumps({"products": items, "low_stock_count": len(low),
+                           "suggested_total_amount": round(sum(p.get("estimatedAmount", 0) for p in low), 2),
+                           "note": "建议采购量 = 安全库存 × 2 − 现有库存，只是参考；结合预算余额和用途调整后再起草采购申请。"},
+                          ensure_ascii=False)
+
+
 @ToolRegistry.register
 class GetDepartmentBudgetTool(BaseTool):
     requires_context = True
@@ -97,7 +145,24 @@ class GetDepartmentBudgetTool(BaseTool):
             )
         except hub.EnterpriseHubError as exc:
             return _error_json(exc)
+        if isinstance(result, dict):
+            # 写明这是哪个部门的预算：用户问“IT 部门的采购方案”时，模型不能把采购部自己的预算说成 IT 部门的
+            name = _team_name(auth["team_id"])
+            result = {**result, "department": name,
+                      "note": f"这是当前用户所在部门「{name}」的预算；其他部门的预算查不到，用户问别的部门时要如实说明。"}
         return json.dumps(result, ensure_ascii=False)
+
+
+def _team_name(team_id) -> str:
+    if team_id is None:
+        return "（企业管理员视角，未指定部门）"
+    from sqlalchemy import text
+    from models.init_db import SessionLocal
+    db = SessionLocal()
+    try:
+        return db.execute(text("SELECT name FROM teams WHERE id = :t"), {"t": team_id}).scalar() or f"部门 {team_id}"
+    finally:
+        db.close()
 
 
 @ToolRegistry.register

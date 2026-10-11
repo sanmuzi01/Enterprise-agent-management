@@ -52,6 +52,14 @@ public class ProcurementService {
         return ProductDto.from(product);
     }
 
+    /** 全部产品的库存（按 SKU 排序）；lowStockOnly 只看低于安全库存的——采购 Agent 做“采购方案”时先看这个，不用让员工报 SKU。 */
+    public List<ProductDto> listProducts(boolean lowStockOnly) {
+        return productRepository.findAllByOrderBySkuAsc().stream()
+                .filter(p -> !lowStockOnly || p.isBelowSafetyStock())
+                .map(ProductDto::from)
+                .toList();
+    }
+
     public BudgetDto getBudget(long teamId, int year) {
         DepartmentBudget budget = budgetRepository.findByTeamIdAndYear(teamId, year)
                 .orElseThrow(() -> badRequest("没有 " + year + " 年度的部门预算记录"));

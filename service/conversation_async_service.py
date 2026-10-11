@@ -16,6 +16,7 @@ def _conv_to_dict(conv: Conversation) -> Dict[str, Any]:
         "id": conv.id,
         "user_id": conv.user_id,
         "agent_id": conv.agent_id,
+        "entry_agent_id": getattr(conv, "entry_agent_id", None),
         "title": conv.title,
         "is_pinned": conv.is_pinned or 0,
         "is_archived": conv.is_archived or 0,
@@ -43,7 +44,17 @@ async def list_conversations(
         logger.warning(f"权限拒绝：用户{user_id}尝试列出助手 {agent_id} 的会话")
         return []
     convs = await dao.list_conversations_by_agent_async(db, user_id, agent_id, limit)
-    return [_conv_to_dict(conv) for conv in convs]
+    items = [_conv_to_dict(conv) for conv in convs]
+    # 经中央助手转交出去的会话：标出实际是哪个部门助手在办（会话列表里显示“已转交给 ××”）
+    others = {c["agent_id"] for c in items if c["agent_id"] != agent_id}
+    if others:
+        from sqlalchemy import select
+        from models.init_db import Agent
+        names = dict((await db.execute(select(Agent.id, Agent.name).where(Agent.id.in_(others)))).all())
+        for c in items:
+            if c["agent_id"] != agent_id:
+                c["handled_by"] = names.get(c["agent_id"])
+    return items
 
 
 async def create_conversation(

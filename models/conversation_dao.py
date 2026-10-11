@@ -3,6 +3,8 @@
 职责：纯数据库操作（CRUD），不含业务逻辑
 遵循现有 DAO 风格：db.query + flush（不 commit，由路由层管事务）
 """
+from sqlalchemy import or_
+
 from utils.timeutil import utcnow
 from typing import List, Optional
 from models.init_db import Conversation, Message
@@ -30,7 +32,8 @@ def list_conversations_by_agent(
     """查询某用户某Agent下的所有会话（按最近更新时间倒序）"""
     return (
         db.query(Conversation)
-        .filter(Conversation.user_id == user_id, Conversation.agent_id == agent_id)
+        .filter(Conversation.user_id == user_id,
+                or_(Conversation.agent_id == agent_id, Conversation.entry_agent_id == agent_id))
         .order_by(
             Conversation.is_archived.asc(),
             Conversation.is_pinned.desc(),

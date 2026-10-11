@@ -312,12 +312,14 @@ def template_skill_missing_tools(agent: Agent, template: Dict[str, Any]) -> List
 async def sync_template_skill_tools(db, agent: Agent, template: Dict[str, Any]) -> List[str]:
     """把模板新增的工具补进 Agent 的专业技能（原有工具和其它配置原样保留）。返回补上的工具。"""
     missing = template_skill_missing_tools(agent, template)
-    if not missing:
+    data = _template_skill_config(agent) or {}
+    prompt_outdated = bool(data) and data.get("system_prompt") != template["constraints"]
+    if not missing and not prompt_outdated:
         return []
     import yaml
     from service.skills_core.config_io import atomic_write_validated
-    data = _template_skill_config(agent) or {}
     data["tools"] = list(data.get("tools") or []) + [{"name": tool} for tool in missing]
+    data["system_prompt"] = template["constraints"]       # 约束随模板更新（例如“能查到的先自己查”）
     validation = atomic_write_validated(f"enterprise/agent_{agent.id}.yml", yaml.safe_dump(data, allow_unicode=True))
     if not validation["ok"]:
         raise InvalidInput("专业技能配置校验失败")

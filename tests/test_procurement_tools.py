@@ -27,6 +27,7 @@ from service.tools.procurement import (
     GetPurchaseStatusTool,
     GetTeamPendingPurchaseRequestsTool,
     RejectPurchaseRequestTool,
+    ListInventoryTool,
     SubmitPurchaseRequestTool,
 )
 
@@ -52,6 +53,31 @@ def _auth(team_id=9, is_org_admin=False, is_team_admin=False):
 
 @patch("service.tools.procurement.hub.resolve_caller_context", return_value=_auth())
 class ProcurementToolsTest(unittest.TestCase):
+    def test_list_inventory_suggests_restock_without_asking_for_sku(self, _auth_mock):
+        products = [{"sku": "PAPER-A4", "name": "A4 纸", "unitPrice": 25, "onHandQty": 3, "safetyStockQty": 10, "belowSafetyStock": True},
+                    {"sku": "MOUSE", "name": "鼠标", "unitPrice": 60, "onHandQty": 0, "safetyStockQty": 4, "belowSafetyStock": True}]
+        with patch("service.tools.procurement.hub.call", return_value=products) as mock_call:
+            tool = ListInventoryTool()
+            tool.set_context(_ctx())
+            result = json.loads(tool.execute())
+        mock_call.assert_called_once_with(
+            "GET", "/procurement/products?lowStockOnly=true", 2001, 9, ["procurement.read"], "list_inventory",
+            is_org_admin=False, is_team_admin=False)
+        by_sku = {p["sku"]: p for p in result["products"]}
+        self.assertEqual((by_sku["PAPER-A4"]["suggestedQty"], by_sku["PAPER-A4"]["estimatedAmount"]), (17, 425.0))   # 补到 2 倍安全库存
+        self.assertEqual((by_sku["MOUSE"]["suggestedQty"], by_sku["MOUSE"]["estimatedAmount"]), (8, 480.0))
+        self.assertEqual((result["low_stock_count"], result["suggested_total_amount"]), (2, 905.0))
+
+    def test_list_inventory_all_products(self, _auth_mock):
+        products = [{"sku": "PEN", "unitPrice": 2, "onHandQty": 50, "safetyStockQty": 10, "belowSafetyStock": False}]
+        with patch("service.tools.procurement.hub.call", return_value=products) as mock_call:
+            tool = ListInventoryTool()
+            tool.set_context(_ctx())
+            result = json.loads(tool.execute(low_stock_only=False))
+        self.assertEqual(mock_call.call_args.args[1], "/procurement/products")
+        self.assertNotIn("suggestedQty", result["products"][0])          # 库存够的不给建议量
+        self.assertEqual(result["low_stock_count"], 0)
+
     def test_get_inventory_status_builds_read_scope(self, _auth_mock):
         with patch("service.tools.procurement.hub.call", return_value={"sku": "SKU-1"}) as mock_call:
             tool = GetInventoryStatusTool()
@@ -64,14 +90,17 @@ class ProcurementToolsTest(unittest.TestCase):
         self.assertEqual(json.loads(result)["sku"], "SKU-1")
 
     def test_get_budget_with_year(self, _auth_mock):
-        with patch("service.tools.procurement.hub.call", return_value={"remainingAmount": 500}) as mock_call:
+        with patch("service.tools.procurement.hub.call", return_value={"remainingAmount": 500}) as mock_call,                 patch("service.tools.procurement._team_name", return_value="采购部"):
             tool = GetDepartmentBudgetTool()
             tool.set_context(_ctx())
-            tool.execute(year=2026)
+            result = json.loads(tool.execute(year=2026))
         mock_call.assert_called_once_with(
             "GET", "/procurement/budget?year=2026", 2001, 9, ["procurement.read"], "get_department_budget",
             is_org_admin=False, is_team_admin=False,
         )
+        # 写明是哪个部门的预算：用户问别的部门时，模型不能把自己部门的预算说成别人的
+        self.assertEqual((result["remainingAmount"], result["department"]), (500, "采购部"))
+        self.assertIn("其他部门的预算查不到", result["note"])
 
     def test_create_draft_passes_lines_and_write_scope(self, _auth_mock):
         lines = [{"sku": "SKU-1", "quantity": 3}]

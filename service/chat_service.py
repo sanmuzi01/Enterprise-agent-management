@@ -17,7 +17,8 @@ import models.conversation_async_dao as conv_async_dao
 logger = get_logger("chat_service")
 # 同步对话（非流式）：阶段 2 起整条走 AsyncSession（get_async_db）。
 # 兼容不变：conversation_id=None 自动新建会话并在返回体里带回。
-async def chat_with_agent(db, user, agent_id: int, user_message: str,conversation_id: Optional[int] = None,) -> Dict[str, Any]:
+async def chat_with_agent(db, user, agent_id: int, user_message: str, conversation_id: Optional[int] = None,
+                          entry_agent_id: Optional[int] = None) -> Dict[str, Any]:
     """用户与智能体对话：验证可用权 → 交给Runtime执行 → 返回结果"""
     # 1. 验证智能体可用权（自己的，或该 Agent 部门/企业共享给了当前用户）——这层只管权限，不管怎么推理
     agent = await get_usable_agent_async(db, user.id, agent_id)
@@ -26,7 +27,9 @@ async def chat_with_agent(db, user, agent_id: int, user_message: str,conversatio
         raise ValueError("智能体不存在或无权使用")
     # 2. 会话管理：conversation_id 空 → 新建；非空 → 校验归属
     if conversation_id is None:
-        conv = await conv_async_dao.create_conversation_async(db, user_id=user.id, agent_id=agent_id)
+        # entry_agent_id：经中央助手转交时记下中央助手，它的会话列表里才看得到这段对话
+        conv = await conv_async_dao.create_conversation_async(db, user_id=user.id, agent_id=agent_id,
+                                                              entry_agent_id=entry_agent_id)
         conversation_id = conv.id
         logger.info(f"自动新建会话: id={conversation_id}, agent_id={agent_id}")
     else:
@@ -71,7 +74,7 @@ async def chat_with_agent(db, user, agent_id: int, user_message: str,conversatio
     result["conversation_id"] = conversation_id
     return result
 async def chat_with_agent_stream_async(db, user, agent_id: int, user_message: str,
-                                       conversation_id: Optional[int] = None):
+                                       conversation_id: Optional[int] = None, entry_agent_id: Optional[int] = None):
     """流式对话（SSE，AsyncSession 版）。阶段 3 起 `POST /chat/{id}/stream` 走这条。
 
     事件透传：转发 runtime 的每个事件，从 `answer` 事件里抠出最终回答，流结束后存 AI 消息 + commit，
@@ -86,7 +89,9 @@ async def chat_with_agent_stream_async(db, user, agent_id: int, user_message: st
         return
 
     if conversation_id is None:
-        conv = await conv_async_dao.create_conversation_async(db, user_id=user.id, agent_id=agent_id)
+        # entry_agent_id：经中央助手转交时记下中央助手，它的会话列表里才看得到这段对话
+        conv = await conv_async_dao.create_conversation_async(db, user_id=user.id, agent_id=agent_id,
+                                                              entry_agent_id=entry_agent_id)
         conversation_id = conv.id
         logger.info(f"自动新建会话: id={conversation_id}, agent_id={agent_id}")
     else:

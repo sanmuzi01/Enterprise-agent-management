@@ -91,7 +91,11 @@
               <Archive v-else-if="isArchived(c.id)" :size="13" class="text-gray-400" />
             </span>
             <!-- 标题（重命名时变成 input） -->
-            <span v-if="!(editingConvId === c.id)" class="truncate flex-1 pr-2">{{ c.title }}</span>
+            <span v-if="!(editingConvId === c.id)" class="flex-1 min-w-0 pr-2">
+              <span class="block truncate">{{ c.title }}</span>
+              <!-- 经中央助手转交的会话：实际由部门助手在办 -->
+              <span v-if="c.handled_by" class="block truncate text-[11px] text-sky-600" data-testid="conv-handled-by">已转交给「{{ c.handled_by }}」</span>
+            </span>
             <input
               v-else
               ref="renameInputRef"

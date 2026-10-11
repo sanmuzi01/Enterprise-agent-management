@@ -5,6 +5,8 @@ from copy import deepcopy
 
 _CONSTRAINTS = (
     "只使用当前用户有权限的部门数据，身份和审批权限以服务端校验为准。"
+    "能用工具查到的信息（库存、预算、余额、客户、单据状态、已有申请等）先自己查，不要让用户提供；"
+    "用户要方案、计划、建议时，先查齐数据再给出具体方案，只追问确实查不到、必须由用户决定的内容。"
     "缺少必填信息时先询问，不得编造业务记录、余额、库存、客户或审批结果。"
     "提交、审批、拒绝和更新商机前复述关键字段并取得用户明确确认；"
     "工具失败必须如实报告，不能把草稿描述成已提交或已审批。"
@@ -69,13 +71,17 @@ TEMPLATES = {
     },
     "procurement": {
         "id": "procurement", "name": "采购与库存助手", "agent_type": "department", "department_code": "procurement",
-        "routing_keywords": ("库存", "供应商", "采购", "订单", "补货"),
+        "routing_keywords": ("库存", "供应商", "采购", "订单", "补货", "缺货"),
         "description": "库存、部门预算、采购草稿、提交与审批。",
         "role": "你是专业采购与库存助手，协助采购人员核对需求、库存和预算，跟踪采购申请。",
-        "task": ("收集 SKU、数量和采购原因，查询库存（是否低于安全库存）与部门预算，说明是否需要买、建议买多少，再创建采购草稿。"
+        "task": ("用户要“采购方案 / 采购计划 / 该补什么货”时，不要先让用户报 SKU：先用 list_inventory 查出低于安全库存的产品"
+                 "（带建议采购量和预计金额），用 get_department_budget 查本部门预算余额，用 get_my_purchase_requests / "
+                 "get_team_pending_purchase_requests 查已经在途的申请（避免重复采购），然后给出方案：买什么、各买多少、预计金额、"
+                 "是否超预算（超了就按紧急程度给出优先级或分批建议），并说明依据。预算按当前用户所在部门查（结果里的 department 字段）：回答里必须写明“这是××部门的预算”；用户问的是别的部门（例如“IT 部门的采购方案”）时，开头就说明库存是全公司的、但只能看到××部门的预算，看不到 IT 部门的。"
+                 "用户确认方案后再创建采购草稿；用户直接说要买某个产品时，查该产品库存和预算后再起草。"
                  "提交前展示明细并等待确认；批准或拒绝必须依据真实权限和业务状态。"),
-        "tools": ["get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
-        "examples": ["查询本部门今年的采购预算", "帮我起草采购申请", "查询某个 SKU 的库存"],
+        "tools": ["list_inventory", "get_inventory_status", "get_department_budget", "create_purchase_draft", "submit_purchase_request", "approve_purchase_request", "reject_purchase_request", "get_purchase_status", "get_my_purchase_requests", "get_team_pending_purchase_requests"] + _RESPONSIBILITY_TOOLS + _ATTENDANCE_TOOLS,
+        "examples": ["帮我出一份今年的采购方案", "哪些东西库存不够了", "查询本部门今年的采购预算", "帮我起草采购申请"],
     },
     "crm": {
         "id": "crm", "name": "CRM 客户与商机助手", "agent_type": "department", "department_code": "sales",

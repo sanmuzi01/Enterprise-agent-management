@@ -74,6 +74,7 @@ export const TOOL_NAMES: Record<string, string> = {
   extract_responsibility_plan: '整理责任计划',
   generate_voucher_draft: '生成记账凭证草稿',
   get_attendance_summary: '查看考勤异常汇总',
+  list_inventory: '查看库存与补货建议',
   read_feishu_group_chat: '读取飞书群聊记录',
   get_customer_summary: '查询客户摘要',
   get_department_budget: '查询采购预算',

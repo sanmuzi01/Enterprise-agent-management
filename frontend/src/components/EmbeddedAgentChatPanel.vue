@@ -108,15 +108,18 @@
       />
       <button @click="send()" :disabled="loading || !inputText.trim()" data-testid="agent-send"
         class="rounded bg-indigo-600 px-4 py-2 text-sm text-white disabled:opacity-50">发送</button>
+      <button v-if="messages.length" type="button" @click="startNew" :disabled="loading" data-testid="agent-new-conversation"
+        class="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50">新对话</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { isImeEnter } from '../utils/ime'
-import { nextTick, ref, watch } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
 import { AlertTriangle, Check, Hand, Loader2, Minus, X } from 'lucide-vue-next'
 import * as chatApi from '../api/chat'
+import * as convApi from '../api/conversation'
 import AgentResultCard from './department/AgentResultCard.vue'
 import { buildMessageCards, cardFromRecord, parseJson, toolError, type CardTarget, type MessageCards, type ToolResultInput } from '../utils/agentCards'
 import { isWriteTool, summarizeReply, type ReplySummary, type SummaryStep } from '../utils/agentSummary'
@@ -178,7 +181,40 @@ watch(() => props.agentId, () => {
   messages.value = []
   conversationId.value = null
   inputText.value = ''
+  void restoreLatest()
 })
+
+// 离开页面再回来、切换部门再切回来：接着最近一次对话（12 小时内的），聊过的内容不会“不见了”。
+// 对话本来就存在服务端，这里只是把它读回来；想换个话题点“新对话”。
+const RESTORE_WITHIN_MS = 12 * 60 * 60 * 1000
+async function restoreLatest() {
+  const agentAtStart = props.agentId
+  try {
+    const latest = (await convApi.listConversations(agentAtStart)).find((c: any) => c.is_archived !== 1)
+    if (!latest || props.agentId !== agentAtStart || messages.value.length || loading.value) return
+    const updated = Date.parse(String(latest.update_time || '').replace(' ', 'T') + 'Z')   // 服务端存的是 UTC
+    if (!updated || Date.now() - updated > RESTORE_WITHIN_MS) return
+    const history = await convApi.listMessages(latest.id)
+    if (props.agentId !== agentAtStart || messages.value.length || loading.value) return
+    conversationId.value = latest.id
+    messages.value = history.map((m: any) => ({
+      role: m.role === 'user' ? 'user' : 'assistant', content: m.content || '',
+      steps: [], results: [], confirmations: [], finished: true,
+    }))
+    scrollToBottom()
+  } catch {
+    // 读不回来就当新对话，不影响使用
+  }
+}
+
+function startNew() {
+  messages.value = []
+  conversationId.value = null
+  inputText.value = ''
+  inputRef.value?.focus()
+}
+
+onMounted(restoreLatest)
 
 const ARG_LABELS: Record<string, string> = {
   request_id: '单号', ticket_id: '工单号', note: '备注', reason: '原因', decision: '决定', amount: '金额',

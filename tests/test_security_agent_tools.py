@@ -39,7 +39,7 @@ RISK_SNAPSHOT = {
     "get_my_leave_requests": "read", "get_my_purchase_requests": "read", "get_opportunities": "read", "get_purchase_status": "read",
     "get_responsibility_detail": "read", "get_responsibility_weekly_summary": "read", "get_team_pending_expense_claims": "read",
     "get_team_pending_leave_requests": "read", "get_team_pending_purchase_requests": "read", "get_voucher_detail": "read", "get_voucher_monthly_summary": "read",
-    "list_hr_cases": "read", "list_it_devices": "read", "list_it_queue": "read", "list_my_responsibilities": "read", "list_pending_acceptance": "read",
+    "list_hr_cases": "read", "list_inventory": "read", "list_it_devices": "read", "list_it_queue": "read", "list_my_responsibilities": "read", "list_pending_acceptance": "read",
     "list_pending_verification": "read", "list_pending_vouchers": "read", "list_team_customers": "read", "outline_generator": "read", "precheck_hr_case": "read",
     "raise_responsibility_objection": "write", "read_feishu_group_chat": "read", "reject_expense_claim": "high_risk", "reject_leave_request": "high_risk", "reject_purchase_request": "high_risk",
     "report_responsibility_blocker": "write", "report_responsibility_progress": "write", "request_rework": "high_risk", "run_skill_script": "read",

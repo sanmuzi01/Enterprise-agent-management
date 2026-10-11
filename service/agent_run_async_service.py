@@ -39,6 +39,13 @@ async def list_runs(
 ) -> Optional[List[Dict]]:
     if await get_usable_agent_async(db, user_id, agent_id) is None:
         return None
+    if conversation_id is not None:
+        # 经中央助手转交的会话：运行记录在部门助手名下，按会话查（会话必须是本人的、并且是从这个助手发起或由它处理）
+        from models.conversation_async_dao import get_owned_conversation_async
+        conv = await get_owned_conversation_async(db, user_id, conversation_id)
+        if conv is not None and conv.agent_id != agent_id and getattr(conv, "entry_agent_id", None) == agent_id:
+            runs = await dao.list_runs_by_agent_async(db, conv.agent_id, limit=limit, conversation_id=conversation_id)
+            return [_run_to_dict(run) for run in runs]
     runs = await dao.list_runs_by_agent_async(
         db, agent_id, limit=limit, conversation_id=conversation_id
     )

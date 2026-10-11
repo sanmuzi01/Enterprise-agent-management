@@ -134,6 +134,7 @@ async def chat_stream(
         agent_id=agent_id,
         user_message=user_message,
         conversation_id=request.conversation_id,
+        entry_agent_id=plan.central_agent_id,
     )
 
     async def limited_generator():

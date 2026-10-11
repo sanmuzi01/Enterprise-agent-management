@@ -44,6 +44,18 @@ async def _has_template_skill(db, agent: Agent) -> bool:
     return found is not None
 
 
+PROMPT_FIELDS = {"role": "角色", "task": "任务", "constraints": "约束", "output": "输出格式"}
+
+
+def prompt_differences(agent: Agent, template: Dict[str, Any]) -> List[str]:
+    """部门助手的说明（角色 / 任务 / 约束 / 输出格式）和当前模板不一样的字段。
+    说明是建助手时按当时的模板写进它自己的提示词文件的，模板后来改进了（例如采购助手改成先自己查库存再出方案），
+    老助手不会跟着变——在状态里提示出来，由管理员点一键修复更新。"""
+    from prompt.prompt_manager import read_prompt_file
+    current = read_prompt_file(agent.id) or {}
+    return [name for name in PROMPT_FIELDS if template.get(name) and (current.get(name) or "") != template[name]]
+
+
 def _primary(agents: List[Agent], expected_code: Optional[str]) -> Optional[Agent]:
     matching = [a for a in agents if a.department_code == expected_code and a.lifecycle_status != RETIRED_STATUS]
     return next((a for a in matching if a.lifecycle_status == "published"), matching[0] if matching else None)
@@ -77,6 +89,10 @@ async def agent_status(db, team_id: int) -> Dict[str, Any]:
                 missing = agent_admin_service.template_skill_missing_tools(primary, template)
                 if missing:
                     issues.append(f"专业技能缺少 {len(missing)} 项新能力（模板已更新），一键修复会补上")
+            changed = prompt_differences(primary, template)
+            if changed:
+                issues.append("助手说明和当前模板不一致（" + "、".join(PROMPT_FIELDS[f] for f in changed) +
+                              "）：模板改进过，或被手动改过。一键修复会改成当前模板的说明，原说明记入审计、可以找回")
             from service.llm.model_catalog import CHAT_MODELS, normalize_model_name
             if normalize_model_name(primary.model_name or "") not in CHAT_MODELS:
                 issues.append(f"模型「{primary.model_name}」不是可用的聊天模型")
@@ -142,6 +158,18 @@ async def repair(db, team_id: int, operator_id: int) -> Dict[str, Any]:
                 operator_id, "agent.template_tools_synced", resource_type="agent", resource_id=primary.id,
                 detail={"team_id": team.id, "template_id": template_id, "added_tools": added},
             )
+    changed = prompt_differences(primary, template)
+    if changed:
+        from prompt.prompt_manager import read_prompt_file
+        from service import audit_service
+        before = read_prompt_file(primary.id) or {}
+        await agent_admin_service.update_managed_agent(
+            db, primary.id, operator_id, **{f: template[f] for f in changed})
+        await audit_service.record_async(
+            operator_id, "agent.template_prompt_synced", resource_type="agent", resource_id=primary.id,
+            detail={"team_id": team.id, "template_id": template_id, "fields": changed,
+                    "before": {f: before.get(f) for f in changed}})
+        await db.refresh(primary)
     if not primary.model_name:
         await agent_admin_service.update_managed_agent(db, primary.id, operator_id, model_name="glm-4")
     return await agent_status(db, team.id)

@@ -24,7 +24,8 @@ async def run_turn(db, user, agent_id: int, user_message: str,
     with concurrency_guard(key=f"agent_run:user:{user_id}", limit_env="USER_MAX_CONCURRENT_AGENT_RUNS", default_limit=2,
                            ttl_env="AGENT_RUN_CONCURRENCY_TTL_SECONDS", default_ttl=300, label="Agent"):
         result = await chat_service.chat_with_agent(db=db, user=user, agent_id=plan.target_agent_id,
-                                                    user_message=user_message, conversation_id=conversation_id)
+                                                    user_message=user_message, conversation_id=conversation_id,
+                                                    entry_agent_id=plan.central_agent_id)
     if "answer" in result:
         await quota_service.check_and_notify_threshold_async(db, user_id, quota_before["used_tokens"])
     return result, plan

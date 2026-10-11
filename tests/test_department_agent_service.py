@@ -200,6 +200,28 @@ class DepartmentAgentProvisioningTest(unittest.TestCase):
         self.assertEqual(names, get_template("crm")["tools"])
         self.assertIn("read_feishu_group_chat", names)
 
+    def test_outdated_prompt_is_reported_and_synced_with_audit(self):
+        """模板改进了说明（例如采购助手改成先自己查库存再出方案），老助手的说明不会自己变：
+        状态里要提示，一键修复改成当前模板的说明，原说明记入审计。"""
+        from unittest import mock
+        from prompt.prompt_manager import read_prompt_file, update_prompt_file
+        from service.enterprise_agent_templates import get_template
+        team, status = self.new_team("procurement")
+        agent_id = status["agent"]["id"]
+        old = read_prompt_file(agent_id)
+        update_prompt_file(agent_id, old["role"], "收集 SKU、数量和采购原因，查询库存与部门预算后创建采购草稿。",
+                           old["constraints"], old["output"])
+        broken = run_db(lambda db: svc.agent_status(db, team))
+        self.assertEqual(broken["state"], "needs_repair")
+        self.assertTrue(any("助手说明和当前模板不一致（任务）" in i for i in broken["issues"]), broken["issues"])
+        with mock.patch("service.audit_service.record_async", new_callable=mock.AsyncMock) as audit:
+            fixed = run_db(lambda db: svc.repair(db, team, self.admin["id"]))
+        self.assertEqual(fixed["state"], "pending_publish")
+        self.assertEqual(read_prompt_file(agent_id)["task"], get_template("procurement")["task"])
+        synced = [c for c in audit.await_args_list if c.args[1] == "agent.template_prompt_synced"]
+        self.assertEqual(synced[0].kwargs["detail"]["fields"], ["task"])
+        self.assertIn("收集 SKU", synced[0].kwargs["detail"]["before"]["task"])          # 原说明可以找回
+
     def test_central_router_picks_department_agent_of_users_own_team(self):
         from service.runtime.central_router import _find_department_agent_async
         team_a, _ = self.new_team("sales")

@@ -131,6 +131,28 @@ class RoutePlanTest(unittest.TestCase):
         self.db.commit()
         self.assertEqual(self.db.query(AgentHandoff).filter(AgentHandoff.user_id == self.owner["id"]).count(), 1)
 
+    def test_routed_conversation_stays_visible_under_central_agent(self):
+        """经中央助手转交的会话归部门助手，但员工回到中央助手页面时要能看到它、能看到运行轨迹（不能“一切换就不见了”）。"""
+        import json
+        client = rc.make_client()
+        with client.stream("POST", f"/chat/{self.agents['central']}/stream", json={"message": "帮我查报销预算"},
+                           headers=self.owner["headers"]) as response:
+            body = "".join(response.iter_text())
+        conv_ids = [json.loads(line[len("data: "):]).get("conversation_id") for line in body.splitlines()
+                    if line.startswith("data: ") and "conversation_id" in line]
+        conv_id = next(c for c in conv_ids if c)
+        central = client.get(f"/conversation/agent/{self.agents['central']}", headers=self.owner["headers"]).json()
+        mine = next(c for c in central if c["id"] == conv_id)
+        self.assertEqual((mine["agent_id"], mine["entry_agent_id"]), (self.agents["finance"], self.agents["central"]))
+        self.assertEqual(mine["handled_by"], "plan-finance")                         # 列表里标出实际在办的助手
+        finance = client.get(f"/conversation/agent/{self.agents['finance']}", headers=self.owner["headers"]).json()
+        self.assertIn(conv_id, [c["id"] for c in finance])                          # 部门助手那边照样能看到
+        runs = client.get(f"/run/{self.agents['central']}/list", params={"conversation_id": conv_id},
+                          headers=self.owner["headers"]).json()
+        self.assertTrue(runs and all(r["agent_id"] == self.agents["finance"] for r in runs), runs)
+        messages = client.get(f"/conversation/{conv_id}/messages", headers=self.owner["headers"])
+        self.assertEqual(messages.status_code, 200)
+
     def test_personal_agent_stream_has_no_route_event(self):
         client = rc.make_client()
         with client.stream("POST", f"/chat/{self.agents['personal']}/stream", json={"message": "我想请假"},

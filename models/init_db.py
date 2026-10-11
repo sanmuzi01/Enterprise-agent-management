@@ -1223,10 +1223,14 @@ class Conversation(Base):
     __table_args__ = (
         Index("idx_conversation_user_agent_flags_time", "user_id", "agent_id", "is_archived", "is_pinned", "update_time"),
         Index("idx_conversation_user_time", "user_id", "update_time"),
+        Index("idx_conversation_entry_agent", "user_id", "entry_agent_id"),
     )
     id = Column(Integer, primary_key=True, autoincrement=True)
     user_id = Column(Integer, ForeignKey("user.id", name="fk_conv_user"), nullable=False)
     agent_id = Column(Integer, ForeignKey("agent.id", name="fk_conv_agent"), nullable=False)
+    # 员工从哪个助手发起的（中央助手转交给部门助手时，会话归部门助手，这里记中央助手）：
+    # 中央助手的会话列表要能看到经它转交出去的会话，不然员工回到中央助手页面，聊过的内容就“不见了”
+    entry_agent_id = Column(Integer, nullable=True)
     title = Column(String(255), default="新会话")        # 会话标题（可由首条消息自动生成）
     is_pinned = Column(Integer, default=0)                # 0=普通 1=置顶
     is_archived = Column(Integer, default=0)              # 0=正常 1=归档

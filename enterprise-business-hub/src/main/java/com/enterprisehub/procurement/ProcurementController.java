@@ -29,6 +29,12 @@ public class ProcurementController {
         this.idempotencyService = idempotencyService;
     }
 
+    @GetMapping("/products")
+    public Object listProducts(@RequestParam(defaultValue = "false") boolean lowStockOnly) {
+        ScopeGuard.require("procurement.read");
+        return procurementService.listProducts(lowStockOnly);
+    }
+
     @GetMapping("/products/{sku}")
     public Object getProduct(@PathVariable String sku) {
         ScopeGuard.require("procurement.read");

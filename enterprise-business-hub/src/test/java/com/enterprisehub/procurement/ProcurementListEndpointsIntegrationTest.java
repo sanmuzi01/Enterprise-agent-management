@@ -252,4 +252,40 @@ class ProcurementListEndpointsIntegrationTest {
         List<Long> ids = List.of(resp.getBody()).stream().map(m -> ((Number) m.get("id")).longValue()).toList();
         assertThat(ids).containsExactly(pending);
     }
+
+    @Test
+    void products_listsInventory_andCanFilterLowStock() {
+        String lowSku = "SKU-LOW-" + userId;
+        jdbc.update("INSERT INTO product (sku, name, unit, unit_price, on_hand_qty, safety_stock_qty, supplier_code) "
+                + "VALUES (?, ?, '个', 25.00, 2, 10, 'SUP-001')", lowSku, "低库存测试产品-" + userId);
+        try {
+            String path = "/procurement/products";
+            HttpHeaders headers = signedHeaders(HttpMethod.GET, path, null, userId, teamId,
+                    List.of("procurement.read"), "list_inventory", false, false);
+            ResponseEntity<Map[]> all = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), Map[].class);
+            assertThat(all.getStatusCode()).isEqualTo(HttpStatus.OK);
+            List<Object> skus = List.of(all.getBody()).stream().map(m -> m.get("sku")).toList();
+            assertThat(skus).contains(sku, lowSku);
+
+            String lowPath = "/procurement/products?lowStockOnly=true";
+            HttpHeaders lowHeaders = signedHeaders(HttpMethod.GET, lowPath, null, userId, teamId,
+                    List.of("procurement.read"), "list_inventory", false, false);
+            ResponseEntity<Map[]> low = rest.exchange(url(lowPath), HttpMethod.GET, new HttpEntity<>(lowHeaders), Map[].class);
+            assertThat(low.getStatusCode()).isEqualTo(HttpStatus.OK);
+            List<Object> lowSkus = List.of(low.getBody()).stream().map(m -> m.get("sku")).toList();
+            assertThat(lowSkus).contains(lowSku).doesNotContain(sku);     // sku 有 100 个，安全库存 5，不在低库存里
+            assertThat(List.of(low.getBody())).allMatch(m -> Boolean.TRUE.equals(m.get("belowSafetyStock")));
+        } finally {
+            jdbc.update("DELETE FROM product WHERE sku = ?", lowSku);
+        }
+    }
+
+    @Test
+    void products_requiresReadScope() {
+        String path = "/procurement/products";
+        HttpHeaders headers = signedHeaders(HttpMethod.GET, path, null, userId, teamId,
+                List.of("crm.read"), "list_inventory", false, false);
+        ResponseEntity<String> resp = rest.exchange(url(path), HttpMethod.GET, new HttpEntity<>(headers), String.class);
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.FORBIDDEN);
+    }
 }

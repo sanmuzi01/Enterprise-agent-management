@@ -3,7 +3,7 @@
 from utils.timeutil import utcnow
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.init_db import Conversation, Message
@@ -42,7 +42,8 @@ async def list_conversations_by_agent_async(
 
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.user_id == user_id, Conversation.agent_id == agent_id)
+        .where(Conversation.user_id == user_id,
+               or_(Conversation.agent_id == agent_id, Conversation.entry_agent_id == agent_id))
         .order_by(
             Conversation.is_archived.asc(),
             Conversation.is_pinned.desc(),
@@ -72,10 +73,12 @@ async def create_conversation_async(
         user_id: int,
         agent_id: int,
         title: str = "新会话",
+        entry_agent_id: Optional[int] = None,
 ) -> Conversation:
     conv = Conversation(
         user_id=user_id,
         agent_id=agent_id,
+        entry_agent_id=entry_agent_id,
         title=title,
         create_time=utcnow(),
         update_time=utcnow(),

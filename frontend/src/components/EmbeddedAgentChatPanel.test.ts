@@ -8,7 +8,10 @@ vi.mock('../api/chat', async (importActual) => {
   return { ...actual, sendStream: vi.fn(), confirmToolCall: vi.fn(), rejectToolCall: vi.fn() }
 })
 
+vi.mock('../api/conversation', () => ({ listConversations: vi.fn(async () => []), listMessages: vi.fn(async () => []) }))
+
 import * as chatApi from '../api/chat'
+import * as convApi from '../api/conversation'
 import type { SseEvent } from '../api/chat'
 import EmbeddedAgentChatPanel from './EmbeddedAgentChatPanel.vue'
 
@@ -165,5 +168,35 @@ describe('中文输入法回车', () => {
     await flushPromises()
     expect(sendStream).toHaveBeenCalledTimes(1)
     expect(sendStream.mock.calls[0][0].message).toBe('报销')
+  })
+})
+
+describe('离开页面再回来', () => {
+  const utc = (msAgo: number) => new Date(Date.now() - msAgo).toISOString().slice(0, 19).replace('T', ' ')
+
+  it('接着最近一次对话（服务端存着的），聊过的内容不会不见', async () => {
+    vi.mocked(convApi.listConversations).mockResolvedValueOnce([{ id: 42, is_archived: 0, update_time: utc(60_000) }] as any)
+    vi.mocked(convApi.listMessages).mockResolvedValueOnce([
+      { role: 'user', content: '帮我看一下采购方案' }, { role: 'assistant', content: '有 2 种产品低于安全库存' },
+    ] as any)
+    const w = mount(EmbeddedAgentChatPanel, { props: { agentId: 7 } })
+    await flushPromises()
+    expect(w.text()).toContain('帮我看一下采购方案')
+    expect(w.text()).toContain('有 2 种产品低于安全库存')
+    streamOf([{ type: 'answer', content: '好的' }, { type: 'done', conversation_id: 42 }])
+    await ask(w, '那就按方案起草')
+    expect(sendStream.mock.calls.at(-1)![0].conversationId).toBe(42)          // 接着原会话问，不是另开一个
+    await w.find('[data-testid=agent-new-conversation]').trigger('click')
+    expect(w.text()).not.toContain('帮我看一下采购方案')                         // “新对话”换个话题
+    w.unmount()
+  })
+
+  it('太久以前的对话不自动接上', async () => {
+    vi.mocked(convApi.listConversations).mockResolvedValueOnce([{ id: 43, is_archived: 0, update_time: utc(2 * 86_400_000) }] as any)
+    const w = mount(EmbeddedAgentChatPanel, { props: { agentId: 8 } })
+    await flushPromises()
+    expect(convApi.listMessages).not.toHaveBeenCalled()
+    expect(w.find('[data-testid=agent-new-conversation]').exists()).toBe(false)
+    w.unmount()
   })
 })
