@@ -246,11 +246,15 @@
               v-model="userQuery"
               @input="searchUsers"
               type="text"
-              placeholder="搜索用户名"
+              placeholder="搜索用户名或手机号"
               class="h-9 w-full rounded border border-slate-300 pl-8 pr-3 text-sm outline-none focus:border-indigo-500"
             />
           </div>
-          <ul v-if="userResults.length" class="max-h-40 overflow-y-auto rounded border border-slate-100">
+          <p v-if="userTotal > userResults.length" class="text-xs text-amber-600">
+            共 {{ userTotal }} 个用户，只显示前 {{ userResults.length }} 个，请输入更具体的名字
+          </p>
+          <p v-else-if="userQuery.trim() && !userResults.length" class="text-xs text-slate-400">没有找到“{{ userQuery.trim() }}”</p>
+          <ul v-if="userResults.length" class="max-h-60 overflow-y-auto rounded border border-slate-100">
             <li
               v-for="u in userResults"
               :key="u.id"
@@ -484,18 +488,24 @@ const memberDialog = ref<{ visible: boolean; userId: number | null; roleCode: st
 })
 const userQuery = ref('')
 const userResults = ref<AdminUser[]>([])
+const userTotal = ref(0)
+const USER_PICK_LIMIT = 50
 const selectedMemberCandidate = computed(() => userResults.value.find((u) => u.id === memberDialog.value.userId) || null)
 
+// 打开弹窗就列出用户；输入后按用户名 / 手机号筛选。结果比能显示的多时提示“输入更具体的名字”，
+// 以前只取最新的 10 个、也不提示，搜 demo 时较早建的 demo_emp、demo_buyer 根本出不来。
+let searchSeq = 0
 const searchUsers = async () => {
-  if (!userQuery.value.trim()) {
-    userResults.value = []
-    return
-  }
+  const seq = ++searchSeq
   try {
-    const page = await listAdminUsers({ search: userQuery.value.trim(), limit: 10 })
+    const page = await listAdminUsers({ search: userQuery.value.trim() || undefined, limit: USER_PICK_LIMIT })
+    if (seq !== searchSeq) return            // 打字很快时只用最后一次的结果
     userResults.value = page.items
+    userTotal.value = page.total
   } catch {
+    if (seq !== searchSeq) return
     userResults.value = []
+    userTotal.value = 0
   }
 }
 
@@ -503,6 +513,8 @@ const openAddMember = () => {
   memberDialog.value = { visible: true, userId: null, roleCode: 'member' }
   userQuery.value = ''
   userResults.value = []
+  userTotal.value = 0
+  void searchUsers()
 }
 
 const submitMemberDialog = async () => {
