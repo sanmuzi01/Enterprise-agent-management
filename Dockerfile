@@ -1,5 +1,5 @@
 # 后端镜像（api / worker 共用，靠 command 区分）。
-FROM python:3.12-slim
+FROM python:3.14-slim
 
 # FORWARDED_ALLOW_IPS：只有从这些地址（本机、Docker 内网）连进来的请求，才采信 X-Forwarded-For。
 # 客户端 IP 取"从右往左第一个不在此列表里的地址"：nginx 追加的真实连接 IP 在最右边，
